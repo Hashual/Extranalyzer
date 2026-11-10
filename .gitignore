@@ -1,0 +1,16 @@
+# Données privées — ne jamais versionner
+extraits/
+*.xlsx
+*.pdf
+!tests/**/*.pdf
+data/
+secrets/
+.superpowers/
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
