@@ -7,7 +7,7 @@ services:
     volumes:
       - data:/data
     tmpfs:
-      - /tmp
+      - /tmp:size=64m
     secrets:
       - password
     environment:

@@ -15,7 +15,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/tmp \
     EXTRANALYZER_DATA_DIR=/data
 COPY --from=build /install /usr/local
-RUN adduser -D -u 10001 app && mkdir /data && chown app:app /data
+RUN pip uninstall -y pip \
+ && adduser -D -u 10001 app && mkdir /data && chown app:app /data
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
