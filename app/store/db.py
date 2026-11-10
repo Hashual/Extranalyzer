@@ -5,9 +5,13 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 
 
-def connect(path: Path) -> sqlite3.Connection:
-    """Ouvre la base ; crée le schéma si user_version vaut 0."""
-    conn = sqlite3.connect(path)
+def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Ouvre la base ; crée le schéma si user_version vaut 0.
+
+    `check_same_thread=False` : connexion ouverte dans un thread et utilisée (séquentiellement) dans un
+    autre, comme une dépendance FastAPI par requête.
+    """
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")
     version = conn.execute("PRAGMA user_version").fetchone()[0]
