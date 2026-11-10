@@ -5,7 +5,7 @@ import pytest
 
 from app.analytics.periods import Period, previous_period
 from app.analytics.recurring import recurring
-from app.analytics.totals import by_category, monthly_series, top_increases, totals
+from app.analytics.totals import by_category, monthly_series, top_increases, totals, unclassified_count
 from app.store.db import connect
 
 P = Period(date(2025, 1, 1), date(2025, 1, 31))
@@ -184,3 +184,11 @@ def test_recurring_sums_month_gap_and_exclusions(conn):
     r = recurring(conn, Period(date(2025, 1, 1), date(2025, 5, 31)), None)
     assert r == [{"label_norm": "cantine", "avg_amount": Decimal("10.00"),
                   "months": ["2025-01", "2025-02", "2025-03"]}]
+
+
+def test_unclassified_count_all_accounts_all_dates_without_mirrors(conn):
+    seed(conn)
+    src = tx(conn, 1, "2024-06-01", -1000, None)
+    tx(conn, 2, "2024-06-01", 1000, None, mirror=src)          # jambe miroir : suit sa source
+    tx(conn, 2, "2026-03-01", 300, None)                       # livret, hors de toute période affichée
+    assert unclassified_count(conn) == 2

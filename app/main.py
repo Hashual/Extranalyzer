@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from app.analytics.totals import unclassified_count
 from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, load_or_create_secret, \
     verify_password
 from app.classify.pipeline import on_new_transactions
@@ -104,8 +105,7 @@ def _meta(conn: sqlite3.Connection) -> dict:
             roots[root]["children"].append({"id": i, "name": name})
         else:
             log.warning("catégorie %s ignorée : aucune racine (parent absent ou cycle)", i)
-    unclassified = conn.execute(
-        "SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL").fetchone()[0]
+    unclassified = unclassified_count(conn)
     low, high = conn.execute("SELECT MIN(op_date), MAX(op_date) FROM transactions").fetchone()
     return {"accounts": accounts, "categories": list(roots.values()), "unclassified_count": unclassified,
             "data_range": {"min": low, "max": high}}

@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.analytics.totals import unclassified_count  # noqa: E402
 from app.classify import pipeline  # noqa: E402
 from app.classify.seed import load_seed  # noqa: E402
 from app.importer.creditmutuel import CreditMutuelParser  # noqa: E402
@@ -66,8 +67,7 @@ def collect(folder: Path) -> tuple[dict[str, int], Counter]:
                 counts[status] = conn.execute("SELECT COUNT(*) FROM sections WHERE status = ?",
                                               (status,)).fetchone()[0]
             counts["transactions"] = _scalar(conn, "SELECT COUNT(*) FROM transactions")
-            counts["unclassified"] = _scalar(
-                conn, "SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL")
+            counts["unclassified"] = unclassified_count(conn)
             counts["transfer_pairs"] = _scalar(
                 conn, "SELECT COUNT(*) FROM transactions WHERE mirror_of IS NOT NULL")
         finally:

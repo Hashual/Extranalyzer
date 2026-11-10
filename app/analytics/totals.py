@@ -27,6 +27,13 @@ class Totals:
     unclassified_credits: Decimal
 
 
+def unclassified_count(conn: sqlite3.Connection) -> int:
+    """Opérations à classer, tous comptes et toutes dates (jambes miroir exclues : elles suivent leur
+    source). Seule définition, partagée par la pastille de la barre, l'onglet À classer et les scripts."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL").fetchone()[0]
+
+
 def scope_clause(p: Period, account_ids: list[int] | None, include_mirrors: bool = False) -> tuple[str, list]:
     """Clause WHERE commune sur `transactions t JOIN accounts a` : période, comptes
     (None -> comptes courants, [] -> rien) et, sauf `include_mirrors`, sans jambes miroir."""

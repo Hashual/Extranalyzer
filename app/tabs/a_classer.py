@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.analytics.totals import scope_clause
+from app.analytics.totals import scope_clause, unclassified_count
 from app.classify.rules import create_rule, set_manual_category
 from app.deps import get_conn
 from app.importer.amounts import from_cents
@@ -38,12 +38,6 @@ def _sign(low: int, high: int) -> str:
     if low > 0:
         return "credit"
     return "mixed"
-
-
-def unclassified_count(conn: sqlite3.Connection) -> int:
-    """Même définition que la pastille de la barre (`/api/meta`)."""
-    return conn.execute(
-        "SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL").fetchone()[0]
 
 
 @router.get("/list")

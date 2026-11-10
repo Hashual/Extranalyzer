@@ -321,6 +321,21 @@ def test_a_classer_groups_by_label(env):
     assert get(client, "/a_classer/list", **JAN, accounts="1,2")["groups"][0]["count"] == 3
 
 
+def test_badge_count_equals_a_classer_list_over_full_range_and_all_accounts(env):
+    client, conn, _, ids = env
+    _add_unknown(conn, "u2", "2024-12-22", -500)
+    _add_unknown(conn, "u3", "2025-01-23", -900, account=2)
+    src = _add_unknown(conn, "p1", "2025-01-26", -700, "VIR VERS LIVRET")
+    conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, mirror_of) "
+                 "VALUES (2, 'p2', '2025-01-26', 'VIR DEPUIS CC', 'vir depuis cc', 700, ?)", (src,))
+    conn.commit()
+    meta = client.get("/api/meta").json()
+    everything = {"start": meta["data_range"]["min"], "end": meta["data_range"]["max"],
+                  "accounts": ",".join(str(a["id"]) for a in meta["accounts"])}
+    groups = get(client, "/a_classer/list", **everything)["groups"]
+    assert sum(g["count"] for g in groups) == meta["unclassified_count"] == 5
+
+
 def test_a_classer_mixed_sign_and_sort(env):
     client, conn, _, _ = env
     _add_unknown(conn, "m1", "2025-01-03", -100, "VIR MIXTE IOTA")
