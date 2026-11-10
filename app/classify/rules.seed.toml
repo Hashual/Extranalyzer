@@ -64,6 +64,7 @@ children = ["Livret Bleu", "Livret Jeune", "CEL", "Kraken", "Intérêts"]
 [[rule]]
 pattern = "INTERETS"
 match = "contains"
+direction = "credit"          # les intérêts débiteurs (découvert) ne sont pas de l'épargne
 category = "Épargne/Intérêts"
 
 [[rule]]

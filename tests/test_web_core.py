@@ -406,3 +406,39 @@ def test_static_shell_is_served(settings):
     for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js",
                  "/static/vendor/chart.umd.min.js"):
         assert c.get(path).status_code == 200, path
+
+
+def _rule_patterns(settings):
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    try:
+        return sorted(r[0] for r in conn.execute("SELECT pattern FROM rules"))
+    finally:
+        conn.close()
+
+
+def test_seed_rules_only_on_fresh_install(settings):
+    create_app(settings)
+    assert _rule_patterns(settings) == ["F COTIS", "INTERETS"]
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    conn.execute("DELETE FROM rules WHERE pattern = 'INTERETS'")
+    conn.commit()
+    conn.close()
+    create_app(settings)                     # redémarrage : la règle supprimée ne revient pas
+    assert _rule_patterns(settings) == ["F COTIS"]
+
+
+def test_seed_rules_not_restored_when_transactions_exist(settings):
+    create_app(settings)
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    conn.execute("DELETE FROM rules")
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
+    conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents) "
+                 "VALUES (1, 'k1', '2025-01-05', 'OP', 'op', -100)")
+    conn.execute("DELETE FROM categories WHERE name = 'CEL'")
+    conn.commit()
+    conn.close()
+    create_app(settings)
+    assert _rule_patterns(settings) == []
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    assert conn.execute("SELECT COUNT(*) FROM categories WHERE name = 'CEL'").fetchone()[0] == 1   # catégories : idempotent
+    conn.close()

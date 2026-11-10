@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, load_or_create_secret, \
     verify_password
 from app.classify.pipeline import on_new_transactions
-from app.classify.seed import load_seed
+from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
@@ -71,12 +71,16 @@ def _content_length(request: Request) -> int | None:
 
 
 def _init_storage(settings: Settings) -> None:
-    """Au démarrage : crée les dossiers, ouvre la base (schéma) puis charge le seed."""
+    """Au démarrage : crée les dossiers, ouvre la base (schéma) puis charge le seed.
+
+    Les catégories du seed sont complétées à chaque démarrage ; ses règles ne sont installées que sur
+    une installation neuve (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
+    """
     (settings.data_dir / "pdfs").mkdir(parents=True, exist_ok=True)
     conn = connect(settings.data_dir / "extranalyzer.db")
     try:
         with resources.as_file(resources.files("app.classify").joinpath("rules.seed.toml")) as seed:
-            load_seed(conn, seed)
+            load_seed(conn, seed, with_rules=is_fresh_install(conn))
     finally:
         conn.close()
 

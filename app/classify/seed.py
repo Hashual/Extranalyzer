@@ -26,12 +26,12 @@ def _category_by_path(conn: sqlite3.Connection, path: str) -> int:
     return parent_id
 
 
-def _load(conn: sqlite3.Connection, data: dict) -> None:
+def _load(conn: sqlite3.Connection, data: dict, with_rules: bool) -> None:
     for root in data.get("category", []):
         root_id = _ensure_category(conn, root["name"], None, root["kind"])
         for child in root.get("children", []):
             _ensure_category(conn, child, root_id, root["kind"])
-    for rule in data.get("rule", []):
+    for rule in data.get("rule", []) if with_rules else []:
         category_id = _category_by_path(conn, rule["category"])
         match, direction = rule.get("match", "contains"), rule.get("direction")
         exists = conn.execute(
@@ -45,11 +45,20 @@ def _load(conn: sqlite3.Connection, data: dict) -> None:
                  default_priority(rule["pattern"], match, direction, None)))
 
 
-def load_seed(conn: sqlite3.Connection, path: Path) -> None:
-    """Crée les catégories et règles manquantes. Valide seulement si aucune transaction n'est en cours."""
+def is_fresh_install(conn: sqlite3.Connection) -> bool:
+    """Ni règle ni transaction : seule situation où les règles du seed sont (ré)installées."""
+    return conn.execute("SELECT NOT EXISTS (SELECT 1 FROM rules) AND NOT EXISTS (SELECT 1 FROM transactions)"
+                        ).fetchone()[0] == 1
+
+
+def load_seed(conn: sqlite3.Connection, path: Path, *, with_rules: bool = True) -> None:
+    """Crée les catégories manquantes et, si `with_rules`, les règles manquantes.
+
+    Valide seulement si aucune transaction SQLite n'est en cours.
+    """
     data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     if conn.in_transaction:
-        _load(conn, data)
+        _load(conn, data, with_rules)
     else:
         with conn:
-            _load(conn, data)
+            _load(conn, data, with_rules)

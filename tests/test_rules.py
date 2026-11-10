@@ -203,6 +203,22 @@ def test_seed_rules_classify_generic_labels(conn):
     assert names[cat_of(conn, t1)] == "Intérêts" and names[cat_of(conn, t2)] == "Frais bancaires"
 
 
+def test_seed_interest_rule_only_matches_credits(conn):
+    load_seed(conn, SEED)
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', 'CC', 'checking')")
+    overdraft, earned = add_tx(conn, "INTERETS DEBITEURS", -420), add_tx(conn, "INTERETS CREDITEURS", 150)
+    apply_rules(conn)
+    names = dict(conn.execute("SELECT id, name FROM categories").fetchall())
+    assert cat_of(conn, overdraft) is None
+    assert names[cat_of(conn, earned)] == "Intérêts"
+
+
+def test_load_seed_without_rules_creates_only_categories(conn):
+    load_seed(conn, SEED, with_rules=False)
+    categories, rules = _counts(conn)
+    assert categories > 25 and rules == 0
+
+
 def test_load_seed_commits_when_not_in_transaction(tmp_path):
     c = connect(tmp_path / "s.db")
     load_seed(c, SEED)
