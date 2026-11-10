@@ -13,7 +13,7 @@ def _strip_reference(match: re.Match) -> str:
 
 def normalize_label(label: str) -> str:
     """Libellé stable pour l'identité et le classement : majuscules, sans numéros variables."""
-    text = label.upper()
+    text = " ".join(label.upper().split())
     text = _CARD_RE.sub("", text)
     text = _DATE_RE.sub("", text)
     text = _PAYMENT_CODE_RE.sub(r"\1", text)

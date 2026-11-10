@@ -164,6 +164,44 @@ def test_resolve_conflict_refused(tmp_path, conn, pdf_dir):
         resolve_conflict(conn, report.sections[0].section_id, True, rec, pdf_dir=pdf_dir, parsers=PARSERS)
 
 
+def test_accept_conflict_requires_pdf_dir_and_parsers(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")]),
+                        "b.pdf", pdf_dir, PARSERS, Recorder())
+    with pytest.raises(ValueError):
+        resolve_conflict(conn, report.sections[0].section_id, True, Recorder())
+    assert _statuses(conn) == ["ok", "conflict"]
+
+
+def test_accept_conflict_unbalanced_on_reparse_keeps_old_version(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    before = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")]),
+                        "b.pdf", pdf_dir, PARSERS, Recorder())
+    rec = Recorder()
+    resolve_conflict(conn, report.sections[0].section_id, True, rec, pdf_dir=pdf_dir, parsers=[_BrokenParser()])
+    assert not conn.in_transaction
+    assert _statuses(conn) == ["ok", "error"]
+    assert conn.execute("SELECT gap_cents FROM sections ORDER BY id").fetchall()[1] == (100,)
+    assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before
+    assert rec.calls == []
+
+
+def test_accept_conflict_identical_on_reparse_is_superseded(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    before = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+    # importé avec un parseur « régressé » (montant faussé mais équilibré) → conflit ;
+    # le parseur corrigé relit un contenu identique à la version en place.
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section()], x_shift=10), "b.pdf", pdf_dir,
+                        [_ShiftedParser()], Recorder())
+    assert report.sections[0].status == "conflict"
+    rec = Recorder()
+    resolve_conflict(conn, report.sections[0].section_id, True, rec, pdf_dir=pdf_dir, parsers=PARSERS)
+    assert _statuses(conn) == ["ok", "superseded"]
+    assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before
+    assert rec.calls == []
+
+
 def test_manual_override_survives_conflict_resolution(tmp_path, conn, pdf_dir):
     import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
     cat = _override(conn, "PRLV SEPA BETA")
@@ -230,14 +268,20 @@ def test_failure_in_transaction_rolls_back_and_removes_file(tmp_path, conn, pdf_
     assert list(pdf_dir.iterdir()) == []
 
 
-def test_tx_key_collision_with_other_statement_is_reported(tmp_path, conn, pdf_dir):
+def test_tx_key_collision_with_other_statement_marks_only_that_section(tmp_path, conn, pdf_dir):
     import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
     # même compte, autre date de relevé, mais mêmes opérations : identités en collision
-    data = make_statement(tmp_path / "b.pdf", "10 mai 2024", [_cc_section()]).read_bytes()
+    data = make_statement(tmp_path / "b.pdf", "10 mai 2024", [_cc_section(), _livret_section()]).read_bytes()
     report = import_pdf(conn, data, "b.pdf", pdf_dir, PARSERS, Recorder())
-    assert report.error and report.document_id is None
-    assert _count(conn, "SELECT COUNT(*) FROM documents") == 1
-    assert len(list(pdf_dir.iterdir())) == 1
+    assert report.error is None and report.document_id is not None
+    cc, livret = report.sections
+    assert (cc.status, cc.gap) == ("error", Decimal("0.00"))
+    assert "00000000001" in cc.message and "2024-04-10" in cc.message
+    assert livret.status == "ok"
+    assert _statuses(conn) == ["ok", "error", "ok"]
+    assert _count(conn) == 4
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE section_id = ?", cc.section_id) == 0
+    assert len(list(pdf_dir.iterdir())) == 2
 
 
 def _override(conn, label):
@@ -287,13 +331,14 @@ class _BrokenParser:
 def test_reanalyse_keeps_old_version_when_section_now_fails(tmp_path, conn, pdf_dir):
     import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
                PARSERS, Recorder())
-    before = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+    cc_rows = "SELECT * FROM transactions WHERE account_id = (SELECT id FROM accounts WHERE number = '00000000001') ORDER BY id"
+    before = conn.execute(cc_rows).fetchall()
+    assert len(before) == 3
     [report] = reanalyse_all(conn, pdf_dir, [_BrokenParser()], Recorder())
     assert report.error
     assert [(s.status, s.gap) for s in report.sections] == [("error", Decimal("1.00")), ("ok", Decimal("0.00"))]
     assert _statuses(conn) == ["ok", "ok"]
-    after = conn.execute("SELECT * FROM transactions WHERE account_id = 1 ORDER BY id").fetchall()
-    assert after == [r for r in before if r[2] == 1]
+    assert conn.execute(cc_rows).fetchall() == before
 
 
 def test_reanalyse_fixes_section_previously_in_error(tmp_path, conn, pdf_dir):
@@ -304,3 +349,51 @@ def test_reanalyse_fixes_section_previously_in_error(tmp_path, conn, pdf_dir):
     assert [s.status for s in report.sections] == ["ok", "ok"]
     assert _statuses(conn) == ["ok", "ok"]
     assert _count(conn) == 4
+
+
+class _ShiftedParser:
+    """Parseur « régressé » mais équilibré : déplace 1,00 € d'une transaction à l'autre."""
+
+    name = "creditmutuel"
+
+    def can_parse(self, pdf_path):
+        return CreditMutuelParser().can_parse(pdf_path)
+
+    def parse(self, pdf_path):
+        doc = CreditMutuelParser().parse(pdf_path)
+        s = doc.sections[0]
+        t0, t1, *rest = s.transactions
+        txs = [replace(t0, amount=t0.amount - 1), replace(t1, amount=t1.amount + 1), *rest]
+        doc.sections[0] = replace(s, transactions=txs)
+        return doc
+
+
+class _DroppingParser:
+    """Parseur « régressé » : ne retrouve plus la deuxième section."""
+
+    name = "creditmutuel"
+
+    def can_parse(self, pdf_path):
+        return CreditMutuelParser().can_parse(pdf_path)
+
+    def parse(self, pdf_path):
+        doc = CreditMutuelParser().parse(pdf_path)
+        del doc.sections[1]
+        return doc
+
+
+def test_reanalyse_reports_ok_section_no_longer_found(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    livret_rows = "SELECT * FROM transactions WHERE account_id = (SELECT id FROM accounts WHERE number = '00000000002')"
+    before = conn.execute(livret_rows).fetchall()
+    assert len(before) == 1
+    [report] = reanalyse_all(conn, pdf_dir, [_DroppingParser()], Recorder())
+    assert "00000000002" in report.error
+    assert [(s.account_number, s.status) for s in report.sections] == [
+        ("00000000001", "ok"), ("00000000002", "error")]
+    missing = report.sections[1]
+    assert missing.message == "ancienne version conservée"
+    assert missing.statement_date == date(2024, 4, 10) and missing.gap == Decimal("0.00")
+    assert _statuses(conn) == ["ok", "ok"]
+    assert conn.execute(livret_rows).fetchall() == before

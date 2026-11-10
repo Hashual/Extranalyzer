@@ -16,13 +16,15 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.classify.normalize import normalize_label
-from app.importer.amounts import to_cents
+from app.importer.amounts import from_cents, to_cents
 from app.importer.base import StatementParser
 from app.importer.validate import reconciliation_gap
-from app.model import ParsedDocument, ParsedSection, ParseError
+from app.model import ParsedDocument, ParsedSection, ParsedTransaction, ParseError
 from app.store import repo
 
 OnNewTransactions = Callable[[sqlite3.Connection, list[int]], None]
+
+KEPT_OLD_VERSION = "ancienne version conservée"
 
 
 @dataclass
@@ -34,6 +36,7 @@ class SectionReport:
     tx_count: int        # transactions lues dans la section (insérées seulement si `ok`)
     info_lines: int = 0
     section_id: int | None = None
+    message: str | None = None
 
 
 @dataclass
@@ -44,8 +47,11 @@ class ImportReport:
     error: str | None
 
 
-class DuplicateTransactionError(Exception):
-    """Une opération de la section existe déjà, rattachée à un autre relevé."""
+@dataclass(frozen=True)
+class _KeyedTx:
+    tx: ParsedTransaction
+    label_norm: str
+    key: str
 
 
 def tx_key(account_number: str, op_date: date, amount: Decimal, label_norm: str, rank: int) -> str:
@@ -65,10 +71,10 @@ def _transaction(conn: sqlite3.Connection):
     conn.execute("BEGIN")
     try:
         yield
+        conn.commit()
     except BaseException:
         conn.rollback()
         raise
-    conn.commit()
 
 
 def _parse(pdf_path: Path, parsers: list[StatementParser]) -> tuple[StatementParser, ParsedDocument]:
@@ -78,9 +84,32 @@ def _parse(pdf_path: Path, parsers: list[StatementParser]) -> tuple[StatementPar
     raise ParseError("format de relevé non reconnu")
 
 
-def _report(section: ParsedSection, status: str, gap: Decimal, section_id: int | None) -> SectionReport:
+def _report(section: ParsedSection, status: str, gap: Decimal, section_id: int | None,
+            message: str | None = None) -> SectionReport:
     return SectionReport(section.account_number, section.statement_date, status, gap,
-                         len(section.transactions), section.info_lines, section_id)
+                         len(section.transactions), section.info_lines, section_id, message)
+
+
+def _keyed(section: ParsedSection) -> list[_KeyedTx]:
+    """Identité stable de chaque transaction ; `rank` = rang parmi les doublons exacts de la section."""
+    keyed = []
+    ranks: Counter = Counter()
+    for t in section.transactions:
+        norm = normalize_label(t.label)
+        identity = (t.op_date, to_cents(t.amount), norm)
+        rank = ranks[identity]
+        ranks[identity] += 1
+        keyed.append(_KeyedTx(t, norm, tx_key(section.account_number, t.op_date, t.amount, norm, rank)))
+    return keyed
+
+
+def _collision_message(conn: sqlite3.Connection, keyed: list[_KeyedTx],
+                       exclude_section_id: int | None = None) -> str | None:
+    hit = repo.find_key_collision(conn, [k.key for k in keyed], exclude_section_id)
+    if hit is None:
+        return None
+    number, statement_date = hit
+    return f"opérations déjà importées avec le relevé du compte {number} au {statement_date or 'inconnu'}"
 
 
 def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, gap: Decimal,
@@ -94,21 +123,11 @@ def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, 
 
 
 def _insert_transactions(conn: sqlite3.Connection, section_id: int, account_id: int,
-                         section: ParsedSection, on_new_transactions: OnNewTransactions) -> None:
-    ids = []
-    ranks: Counter = Counter()
-    for t in section.transactions:
-        norm = normalize_label(t.label)
-        identity = (t.op_date, to_cents(t.amount), norm)
-        rank = ranks[identity]
-        ranks[identity] += 1
-        key = tx_key(section.account_number, t.op_date, t.amount, norm, rank)
-        if repo.transaction_exists(conn, key):
-            raise DuplicateTransactionError(
-                f"opération du {t.op_date.isoformat()} sur le compte {section.account_number} "
-                f"déjà importée depuis un autre relevé")
-        ids.append(repo.insert_transaction(conn, section_id, account_id, key, t.op_date.isoformat(),
-                                           t.value_date.isoformat(), t.label, norm, to_cents(t.amount)))
+                         keyed: list[_KeyedTx], on_new_transactions: OnNewTransactions) -> None:
+    ids = [repo.insert_transaction(conn, section_id, account_id, k.key, k.tx.op_date.isoformat(),
+                                   k.tx.value_date.isoformat(), k.tx.label, k.label_norm,
+                                   to_cents(k.tx.amount))
+           for k in keyed]
     if ids:
         on_new_transactions(conn, ids)
 
@@ -119,12 +138,16 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
     statement_date = section.statement_date.isoformat()
     gap, digest = reconciliation_gap(section), content_hash(section)
     status = _status_for(conn, account_id, statement_date, gap, digest)
+    keyed = _keyed(section)
+    message = _collision_message(conn, keyed) if status == "ok" else None
+    if message is not None:
+        status = "error"
     section_id = repo.insert_section(conn, document_id, account_id, statement_date,
                                      to_cents(section.opening), to_cents(section.closing), to_cents(gap),
                                      status, digest)
     if status == "ok":
-        _insert_transactions(conn, section_id, account_id, section, on_new_transactions)
-    return _report(section, status, gap, section_id)
+        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
+    return _report(section, status, gap, section_id, message)
 
 
 def import_pdf(conn: sqlite3.Connection, pdf_bytes: bytes, filename: str, pdf_dir: Path,
@@ -143,16 +166,13 @@ def import_pdf(conn: sqlite3.Connection, pdf_bytes: bytes, filename: str, pdf_di
 
     pdf_dir.mkdir(parents=True, exist_ok=True)
     stored = pdf_dir / f"{sha}.pdf"
-    stored.write_bytes(pdf_bytes)
     try:
+        stored.write_bytes(pdf_bytes)
         with _transaction(conn):
             imported_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             document_id = repo.insert_document(conn, sha, filename, stored.name, parser.name,
                                                doc.statement_date.isoformat(), imported_at)
             reports = [_import_section(conn, document_id, s, on_new_transactions) for s in doc.sections]
-    except DuplicateTransactionError as exc:
-        stored.unlink(missing_ok=True)
-        return ImportReport(None, False, [], str(exc))
     except BaseException:
         stored.unlink(missing_ok=True)
         raise
@@ -180,18 +200,24 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
     if section is None:
         raise ParseError(f"section {account_number} au {statement_date} introuvable dans le PDF")
     gap, digest = reconciliation_gap(section), content_hash(section)
+    opening, closing = to_cents(section.opening), to_cents(section.closing)
     with _transaction(conn):
         if gap != 0:     # le parseur a changé depuis : l'ancienne version reste en place
-            repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),
-                                to_cents(gap), "error", digest)
+            repo.update_section(conn, section_id, opening, closing, to_cents(gap), "error", digest)
             return
         old = repo.find_ok_section(conn, account_id, statement_date, exclude_id=section_id)
+        if old is not None and old[1] == digest:     # contenu désormais identique : rien à remplacer
+            repo.update_section(conn, section_id, opening, closing, 0, "superseded", digest)
+            return
+        keyed = _keyed(section)
+        if _collision_message(conn, keyed, None if old is None else old[0]) is not None:
+            repo.update_section(conn, section_id, opening, closing, 0, "error", digest)
+            return
         if old is not None:
             repo.set_section_status(conn, old[0], "superseded")
             repo.delete_section_transactions(conn, old[0])
-        repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing), 0,
-                            "ok", digest)
-        _insert_transactions(conn, section_id, account_id, section, on_new_transactions)
+        repo.update_section(conn, section_id, opening, closing, 0, "ok", digest)
+        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
@@ -204,21 +230,37 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
         return _import_section(conn, document_id, section, on_new_transactions), False
     section_id, old_status = existing
     gap, digest = reconciliation_gap(section), content_hash(section)
+    keyed = _keyed(section)
 
     if old_status == "superseded":       # déjà tranché : on n'y touche pas
         return _report(section, "superseded", gap, section_id), False
     if old_status == "ok":
-        if gap != 0:
-            return _report(section, "error", gap, section_id), True
+        message = KEPT_OLD_VERSION if gap != 0 else _collision_message(conn, keyed, section_id)
+        if message is not None:
+            if message != KEPT_OLD_VERSION:
+                message = f"{message} ; {KEPT_OLD_VERSION}"
+            return _report(section, "error", gap, section_id, message), True
         status = "ok"
         repo.delete_section_transactions(conn, section_id)
     else:                                # error ou conflict : réévaluée comme à l'import
         status = _status_for(conn, account_id, statement_date, gap, digest, exclude_id=section_id)
+        message = _collision_message(conn, keyed, section_id) if status == "ok" else None
+        if message is not None:
+            status = "error"
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),
                         to_cents(gap), status, digest)
     if status == "ok":
-        _insert_transactions(conn, section_id, account_id, section, on_new_transactions)
-    return _report(section, status, gap, section_id), False
+        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
+    return _report(section, status, gap, section_id, message), False
+
+
+def _missing_ok_sections(conn: sqlite3.Connection, document_id: int, seen: set[int]) -> list[SectionReport]:
+    """Sections `ok` du document que le parseur ne retrouve plus : conservées et signalées."""
+    return [SectionReport(number, date.fromisoformat(statement_date), "error", from_cents(gap_cents), 0,
+                          section_id=section_id, message=KEPT_OLD_VERSION)
+            for section_id, number, statement_date, status, gap_cents
+            in repo.list_document_sections(conn, document_id)
+            if status == "ok" and section_id not in seen]
 
 
 def reanalyse_all(conn: sqlite3.Connection, pdf_dir: Path, parsers: list[StatementParser],
@@ -234,16 +276,12 @@ def reanalyse_all(conn: sqlite3.Connection, pdf_dir: Path, parsers: list[Stateme
         except ParseError as exc:
             reports.append(ImportReport(document_id, False, [], str(exc)))
             continue
-        try:
-            with _transaction(conn):
-                repo.set_document_parser(conn, document_id, parser.name)
-                results = [_reanalyse_section(conn, document_id, s, on_new_transactions)
-                           for s in doc.sections]
-        except DuplicateTransactionError as exc:
-            reports.append(ImportReport(document_id, False, [], str(exc)))
-            continue
-        kept = [r.account_number for r, kept_old in results if kept_old]
-        error = (f"section(s) {', '.join(kept)} non réconciliée(s) après ré-analyse : ancienne version conservée"
-                 if kept else None)
-        reports.append(ImportReport(document_id, False, [r for r, _ in results], error))
+        with _transaction(conn):
+            repo.set_document_parser(conn, document_id, parser.name)
+            results = [_reanalyse_section(conn, document_id, s, on_new_transactions) for s in doc.sections]
+            missing = _missing_ok_sections(conn, document_id, {r.section_id for r, _ in results})
+        sections = [r for r, _ in results] + missing
+        kept = [r.account_number for r, kept_old in results if kept_old] + [r.account_number for r in missing]
+        error = f"section(s) {', '.join(kept)} : {KEPT_OLD_VERSION}" if kept else None
+        reports.append(ImportReport(document_id, False, sections, error))
     return reports

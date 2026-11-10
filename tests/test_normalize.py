@@ -21,3 +21,7 @@ def test_normalize_label_keeps_short_or_digit_poor_tokens():
 def test_normalize_label_psc_and_mob():
     assert normalize_label("PAIEMENT PSC 0412 BOUTIQUE") == "PAIEMENT PSC BOUTIQUE"
     assert normalize_label("PAIEMENT MOB 0412 BOUTIQUE") == "PAIEMENT MOB BOUTIQUE"
+
+
+def test_normalize_label_squeezes_spaces_before_substitutions():
+    assert normalize_label("PAIEMENT CB  1203 VILLEA	MAGASIN ALPHA CARTE  0000") == "PAIEMENT CB VILLEA MAGASIN ALPHA"

@@ -111,8 +111,29 @@ def delete_section_transactions(conn: sqlite3.Connection, section_id: int) -> No
     conn.execute("DELETE FROM transactions WHERE section_id = ?", (section_id,))
 
 
-def transaction_exists(conn: sqlite3.Connection, tx_key: str) -> bool:
-    return conn.execute("SELECT 1 FROM transactions WHERE tx_key = ?", (tx_key,)).fetchone() is not None
+def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],
+                       exclude_section_id: int | None = None) -> tuple[str, str | None] | None:
+    """(numéro de compte, date du relevé) de la première transaction existante portant l'une des
+    `tx_keys`, hors section `exclude_section_id` ; None s'il n'y en a pas."""
+    for key in tx_keys:
+        row = conn.execute(
+            "SELECT a.number, s.statement_date FROM transactions t JOIN accounts a ON a.id = t.account_id "
+            "LEFT JOIN sections s ON s.id = t.section_id "
+            "WHERE t.tx_key = ? AND COALESCE(t.section_id, -1) != COALESCE(?, -2)",
+            (key, exclude_section_id),
+        ).fetchone()
+        if row is not None:
+            return row
+    return None
+
+
+def list_document_sections(conn: sqlite3.Connection, document_id: int) -> list[tuple]:
+    """(id, numéro de compte, statement_date, status, gap_cents) des sections du document."""
+    return conn.execute(
+        "SELECT s.id, a.number, s.statement_date, s.status, s.gap_cents FROM sections s "
+        "JOIN accounts a ON a.id = s.account_id WHERE s.document_id = ? ORDER BY s.id",
+        (document_id,),
+    ).fetchall()
 
 
 def insert_transaction(conn: sqlite3.Connection, section_id: int, account_id: int, tx_key: str,
