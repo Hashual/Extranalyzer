@@ -1,3 +1,5 @@
+BEGIN;
+
 CREATE TABLE accounts (
     id INTEGER PRIMARY KEY,
     number TEXT UNIQUE NOT NULL,
@@ -41,13 +43,14 @@ CREATE TABLE rules (
     pattern TEXT NOT NULL,
     match TEXT NOT NULL CHECK(match IN ('contains','startswith','regex')),
     direction TEXT NULL CHECK(direction IN ('debit','credit')),
-    account_id INTEGER NULL,
-    category_id INTEGER NOT NULL,
+    account_id INTEGER NULL REFERENCES accounts(id),
+    category_id INTEGER NOT NULL REFERENCES categories(id),
     priority INTEGER NOT NULL
 );
 
 CREATE TABLE transactions (
     id INTEGER PRIMARY KEY,
+    -- nullable: future non-PDF sources (exchange/wallet) have no section
     section_id INTEGER REFERENCES sections(id),
     account_id INTEGER NOT NULL REFERENCES accounts(id),
     tx_key TEXT UNIQUE NOT NULL,
@@ -56,19 +59,26 @@ CREATE TABLE transactions (
     label TEXT NOT NULL,
     label_norm TEXT NOT NULL,
     amount_cents INTEGER NOT NULL,
-    category_id INTEGER NULL,
-    rule_id INTEGER NULL,
+    category_id INTEGER NULL REFERENCES categories(id),
+    rule_id INTEGER NULL REFERENCES rules(id),
     manual INTEGER NOT NULL DEFAULT 0,
     mirror_of INTEGER NULL REFERENCES transactions(id)
 );
 
 CREATE TABLE manual_overrides (
     tx_key TEXT PRIMARY KEY,
-    category_id INTEGER NOT NULL
+    category_id INTEGER NOT NULL REFERENCES categories(id)
 );
 
 CREATE INDEX idx_transactions_op_date ON transactions(op_date);
 CREATE INDEX idx_transactions_category_id ON transactions(category_id);
 CREATE INDEX idx_transactions_account_id ON transactions(account_id);
 
+CREATE UNIQUE INDEX ux_categories_name_parent ON categories(name, COALESCE(parent_id, 0));
+CREATE INDEX idx_transactions_section_id ON transactions(section_id);
+CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
+CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
+
 PRAGMA user_version = 1;
+
+COMMIT;
