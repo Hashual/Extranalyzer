@@ -37,6 +37,7 @@ class SectionReport:
     info_lines: int = 0
     section_id: int | None = None
     message: str | None = None
+    orphaned_overrides: int = 0     # reclassements manuels qui ne retrouvent plus leur opération
 
 
 @dataclass
@@ -85,9 +86,9 @@ def _parse(pdf_path: Path, parsers: list[StatementParser]) -> tuple[StatementPar
 
 
 def _report(section: ParsedSection, status: str, gap: Decimal, section_id: int | None,
-            message: str | None = None) -> SectionReport:
+            message: str | None = None, orphaned_overrides: int = 0) -> SectionReport:
     return SectionReport(section.account_number, section.statement_date, status, gap,
-                         len(section.transactions), section.info_lines, section_id, message)
+                         len(section.transactions), section.info_lines, section_id, message, orphaned_overrides)
 
 
 def _keyed(section: ParsedSection) -> list[_KeyedTx]:
@@ -101,6 +102,39 @@ def _keyed(section: ParsedSection) -> list[_KeyedTx]:
         ranks[identity] += 1
         keyed.append(_KeyedTx(t, norm, tx_key(section.account_number, t.op_date, t.amount, norm, rank)))
     return keyed
+
+
+def _slots(rows: list[tuple[str, str, int]]) -> list[tuple[tuple[str, int, int], str]]:
+    """((op_date, montant, rang parmi les opérations de même date et même montant), tx_key) de chaque
+    ligne (tx_key, op_date, amount_cents), dans l'ordre de la section."""
+    ranks: Counter = Counter()
+    slots = []
+    for key, op_date, cents in rows:
+        slots.append(((op_date, cents, ranks[(op_date, cents)]), key))
+        ranks[(op_date, cents)] += 1
+    return slots
+
+
+def _carry_overrides(conn: sqlite3.Connection, old_section_id: int, keyed: list[_KeyedTx]) -> int:
+    """Avant de remplacer les opérations de `old_section_id` par `keyed` : reporte les reclassements
+    manuels dont l'identité change (libellé relu autrement) sur l'opération de même date, même montant
+    et même rang ; renvoie le nombre de ceux qui ne trouvent aucune correspondance."""
+    old_rows = repo.section_transactions(conn, old_section_id)
+    overrides = repo.manual_overrides_for(conn, [key for key, _, _ in old_rows])
+    if not overrides:
+        return 0
+    new_keys = {k.key for k in keyed}
+    new_by_slot = dict(_slots([(k.key, k.tx.op_date.isoformat(), to_cents(k.tx.amount)) for k in keyed]))
+    moves, orphaned = {}, 0
+    for slot, old_key in _slots(old_rows):
+        if old_key not in overrides or old_key in new_keys:     # identité inchangée : rien à faire
+            continue
+        if slot in new_by_slot:
+            moves[old_key] = new_by_slot[slot]
+        else:
+            orphaned += 1
+    repo.move_manual_overrides(conn, moves)
+    return orphaned
 
 
 def _collision_message(conn: sqlite3.Connection, keyed: list[_KeyedTx],
@@ -185,8 +219,11 @@ def import_pdf(conn: sqlite3.Connection, pdf_bytes: bytes, filename: str, pdf_di
 
 def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
                      on_new_transactions: OnNewTransactions, *, pdf_dir: Path | None = None,
-                     parsers: list[StatementParser] | None = None) -> None:
-    """Tranche une section `conflict`. Accepter re-lit le PDF conservé : `pdf_dir` et `parsers` requis."""
+                     parsers: list[StatementParser] | None = None) -> int:
+    """Tranche une section `conflict`. Accepter re-lit le PDF conservé : `pdf_dir` et `parsers` requis.
+
+    Renvoie le nombre de reclassements manuels de l'ancienne version qui ne retrouvent pas leur opération.
+    """
     row = repo.get_section(conn, section_id)
     if row is None or row[4] != "conflict":
         raise ValueError(f"la section {section_id} n'est pas en conflit")
@@ -194,7 +231,7 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
     if not accept:
         with _transaction(conn):
             repo.set_section_status(conn, section_id, "superseded")
-        return
+        return 0
     if pdf_dir is None or parsers is None:
         raise ValueError("pdf_dir et parsers sont requis pour accepter la nouvelle version")
 
@@ -208,22 +245,25 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
     with _transaction(conn):
         if gap != 0:     # le parseur a changé depuis : l'ancienne version reste en place
             repo.update_section(conn, section_id, opening, closing, to_cents(gap), "error", digest)
-            return
+            return 0
         old = repo.find_ok_section(conn, account_id, statement_date, exclude_id=section_id)
         if old is not None and old[1] == digest:     # contenu désormais identique : rien à remplacer
             repo.update_section(conn, section_id, opening, closing, 0, "superseded", digest)
-            return
+            return 0
         keyed = _keyed(section)
         message = _collision_message(conn, keyed, None if old is None else old[0])
         if message is not None:
             repo.update_section(conn, section_id, opening, closing, 0, "error", digest, message)
-            return
+            return 0
         unmirrored: list[int] = []
+        orphaned = 0
         if old is not None:
+            orphaned = _carry_overrides(conn, old[0], keyed)
             repo.set_section_status(conn, old[0], "superseded")
             unmirrored = repo.delete_section_transactions(conn, old[0])
         repo.update_section(conn, section_id, opening, closing, 0, "ok", digest)
         _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
+    return orphaned
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
@@ -247,9 +287,10 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
                 message = f"{message} ; {KEPT_OLD_VERSION}"
             return _report(section, "error", gap, section_id, message), True
         status = "ok"
+        orphaned = _carry_overrides(conn, section_id, keyed)
         unmirrored = repo.delete_section_transactions(conn, section_id)
     else:                                # error ou conflict : réévaluée comme à l'import
-        unmirrored = []
+        orphaned, unmirrored = 0, []
         status = _status_for(conn, account_id, statement_date, gap, digest, exclude_id=section_id)
         message = _collision_message(conn, keyed, section_id) if status == "ok" else None
         if message is not None:
@@ -258,7 +299,7 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
                         to_cents(gap), status, digest, message)
     if status == "ok":
         _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
-    return _report(section, status, gap, section_id, message), False
+    return _report(section, status, gap, section_id, message, orphaned), False
 
 
 def _missing_ok_sections(conn: sqlite3.Connection, document_id: int, seen: set[int]) -> list[SectionReport]:

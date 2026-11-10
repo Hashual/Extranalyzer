@@ -202,18 +202,19 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
 
     @api.post("/sections/{section_id}/resolve")
     def resolve(section_id: int, body: ResolveBody):
-        def run(conn: sqlite3.Connection) -> str:
+        def run(conn: sqlite3.Connection) -> tuple[str, int]:
             if conn.execute("SELECT 1 FROM sections WHERE id = ?", (section_id,)).fetchone() is None:
                 raise UnknownSection
-            resolve_conflict(conn, section_id, body.accept, on_new_transactions, pdf_dir=pdf_dir, parsers=PARSERS)
-            return conn.execute("SELECT status FROM sections WHERE id = ?", (section_id,)).fetchone()[0]
+            orphaned = resolve_conflict(conn, section_id, body.accept, on_new_transactions, pdf_dir=pdf_dir,
+                                        parsers=PARSERS)
+            return conn.execute("SELECT status FROM sections WHERE id = ?", (section_id,)).fetchone()[0], orphaned
         try:
-            status = write(run)
+            status, orphaned = write(run)
         except UnknownSection:
             raise HTTPException(404, f"section {section_id} introuvable") from None
         except (ValueError, ParseError) as exc:
             raise HTTPException(409, mask_numbers(str(exc))) from None
-        return {"id": section_id, "status": status}
+        return {"id": section_id, "status": status, "orphaned_overrides": orphaned}
 
     @api.post("/reanalyse")
     def reanalyse():

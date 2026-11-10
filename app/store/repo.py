@@ -117,6 +117,33 @@ def delete_section_transactions(conn: sqlite3.Connection, section_id: int) -> li
     return unmirrored
 
 
+def section_transactions(conn: sqlite3.Connection, section_id: int) -> list[tuple[str, str, int]]:
+    """(tx_key, op_date, amount_cents) des transactions de la section, dans l'ordre du relevé."""
+    return conn.execute("SELECT tx_key, op_date, amount_cents FROM transactions WHERE section_id = ? ORDER BY id",
+                        (section_id,)).fetchall()
+
+
+def manual_overrides_for(conn: sqlite3.Connection, tx_keys: list[str]) -> dict[str, int]:
+    """{tx_key: category_id} des reclassements manuels portant sur l'une des `tx_keys`."""
+    found: dict[str, int] = {}
+    for start in range(0, len(tx_keys), 500):
+        chunk = tx_keys[start:start + 500]
+        found.update(conn.execute(f"SELECT tx_key, category_id FROM manual_overrides "
+                                  f"WHERE tx_key IN ({','.join('?' * len(chunk))})", chunk).fetchall())
+    return found
+
+
+def move_manual_overrides(conn: sqlite3.Connection, moves: dict[str, str]) -> None:
+    """Reporte chaque reclassement manuel de l'ancienne identité (clé) sur la nouvelle (valeur)."""
+    categories = manual_overrides_for(conn, list(moves))
+    for old_key in categories:
+        conn.execute("DELETE FROM manual_overrides WHERE tx_key = ?", (old_key,))
+    for old_key, category_id in categories.items():
+        conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
+                     "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id",
+                     (moves[old_key], category_id))
+
+
 def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],
                        exclude_section_id: int | None = None) -> tuple[str, str | None] | None:
     """(numéro de compte, date du relevé) de la première transaction existante portant l'une des

@@ -459,3 +459,58 @@ def test_former_mirror_is_reclassified_when_its_source_is_replaced(tmp_path, con
                      parsers=PARSERS)
     # la nouvelle source (30 €) ne s'apparie plus : l'ancien miroir est reclassé par les règles
     assert conn.execute(livret).fetchone() == (None, None, 0)
+
+
+class _RelabelParser:
+    """Parseur corrigé qui lit désormais un libellé plus complet pour le prélèvement."""
+
+    name = "creditmutuel"
+
+    def can_parse(self, pdf_path):
+        return CreditMutuelParser().can_parse(pdf_path)
+
+    def parse(self, pdf_path):
+        doc = CreditMutuelParser().parse(pdf_path)
+        s = doc.sections[0]
+        txs = [replace(t, label="PRLV SEPA BETA ENERGIE") if t.label == "PRLV SEPA BETA" else t
+               for t in s.transactions]
+        doc.sections[0] = replace(s, transactions=txs)
+        return doc
+
+
+def test_manual_override_follows_label_change_on_reanalyse(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    cat = _override(conn, "PRLV SEPA BETA")
+    [report] = reanalyse_all(conn, pdf_dir, [_RelabelParser()], Recorder())
+    assert [s.orphaned_overrides for s in report.sections] == [0, 0]
+    row = conn.execute("SELECT tx_key, category_id, manual FROM transactions "
+                       "WHERE label = 'PRLV SEPA BETA ENERGIE'").fetchone()
+    assert row[1:] == (cat, 1)
+    assert conn.execute("SELECT tx_key FROM manual_overrides").fetchall() == [(row[0],)]
+
+
+def test_unmappable_manual_override_is_counted_on_reanalyse(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    _override(conn, "PAIEMENT CB 0703 VILLEA MAGASIN ALPHA CARTE 0000")
+    [report] = reanalyse_all(conn, pdf_dir, [_ShiftedParser()], Recorder())     # son montant change
+    assert [s.status for s in report.sections] == ["ok", "ok"]
+    assert [s.orphaned_overrides for s in report.sections] == [1, 0]
+    assert conn.execute("SELECT COUNT(*) FROM transactions WHERE manual = 1").fetchone()[0] == 0
+
+
+def test_manual_override_follows_label_change_on_conflict_acceptance(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    cat = _override(conn, "PRLV SEPA BETA")
+    relabelled = FSection(CC, OPEN, ("CREDITEUR", "10/04/2024", "1.087,50"), [
+        FTx("11/03/2024", "11/03/2024", ["PAIEMENT CB 0703 VILLEA", "MAGASIN ALPHA CARTE 0000"], debit="2,50"),
+        FTx("12/03/2024", "12/03/2024", ["VIR DE M TEST"], credit="1.000,00"),
+        FTx("13/03/2024", "13/03/2024", ["PRLV SEPA BETA ENERGIE"], debit="10,00")])
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [relabelled]), "b.pdf", pdf_dir, PARSERS, Recorder())
+    assert report.sections[0].status == "conflict"
+    orphaned = resolve_conflict(conn, report.sections[0].section_id, True, Recorder(), pdf_dir=pdf_dir,
+                                parsers=PARSERS)
+    assert orphaned == 0
+    assert conn.execute("SELECT category_id, manual FROM transactions "
+                        "WHERE label = 'PRLV SEPA BETA ENERGIE'").fetchone() == (cat, 1)

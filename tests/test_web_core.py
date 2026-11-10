@@ -375,7 +375,7 @@ def test_resolve_conflict_accept(client, tmp_path):
     assert section["status"] == "conflict"
 
     r = client.post(f"/api/sections/{section['section_id']}/resolve", json={"accept": True}, headers=H)
-    assert r.status_code == 200 and r.json()["status"] == "ok"
+    assert r.status_code == 200 and r.json() == {"id": section["section_id"], "status": "ok", "orphaned_overrides": 0}
     r = client.post(f"/api/sections/{section['section_id']}/resolve", json={"accept": False}, headers=H)
     assert r.status_code == 409
 
@@ -394,6 +394,7 @@ def test_reanalyse(client, tmp_path):
     assert r.status_code == 200
     [report] = r.json()
     assert report["error"] is None and report["sections"][0]["status"] == "ok"
+    assert report["sections"][0]["orphaned_overrides"] == 0
 
 
 # --- Statique --------------------------------------------------------------------------------

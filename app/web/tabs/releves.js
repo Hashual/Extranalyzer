@@ -13,6 +13,11 @@ const STATUS = {
 };
 
 let lastReports = null;      // résultat de la dernière ré-analyse, affiché une fois après le rafraîchissement
+let lastNotice = null;       // avertissement d'une action (conflit tranché), affiché une fois
+
+function orphanedNote(n) {
+  return n > 0 ? `${n} reclassement(s) manuel(s) sans opération correspondante (à refaire)` : "";
+}
 
 function account(s) {
   return `${s.account_label} ••${s.number_tail}`;
@@ -34,7 +39,9 @@ function conflictActions(s, ctx, error) {
     button.disabled = true;
     error.textContent = "";
     try {
-      await ctx.api.post(`/sections/${s.id}/resolve`, { accept });
+      const result = await ctx.api.post(`/sections/${s.id}/resolve`, { accept });
+      const note = orphanedNote(result.orphaned_overrides);
+      if (note) lastNotice = `${account(s)} au ${formatDate(s.statement_date)} : ${note}`;
       await ctx.refresh();
     } catch (e) {
       error.textContent = `Action impossible : ${e.message}`;
@@ -83,8 +90,9 @@ function reportsCard(reports, documents) {
     if (r.error) lines.push(`${name} : ${r.error}`);
     for (const s of r.sections) {
       const status = STATUS[s.status] || s.status;
-      const gap = s.status === "error" ? ` (écart ${money(s.gap)})` : "";
-      lines.push(`${name} — ••${s.number_tail} au ${formatDate(s.statement_date)} : ${status}${gap}`);
+      const gap = s.status === "error" ? ` (${s.message || `écart ${money(s.gap)}`})` : "";
+      const orphaned = s.orphaned_overrides > 0 ? ` — ${orphanedNote(s.orphaned_overrides)}` : "";
+      lines.push(`${name} — ••${s.number_tail} au ${formatDate(s.statement_date)} : ${status}${gap}${orphaned}`);
     }
   }
   const close = el("button", { type: "button", className: "link", text: "Masquer" });
@@ -119,8 +127,11 @@ function toolbar(ctx) {
 export async function render(container, ctx) {
   const { documents } = await ctx.api.get("/tabs/releves/list");
   const reports = lastReports;
+  const notice = lastNotice;
   lastReports = null;
+  lastNotice = null;
   const nodes = [toolbar(ctx)];
+  if (notice) nodes.push(el("p", { className: "error", attrs: { role: "status" }, text: notice }));
   if (reports) nodes.push(reportsCard(reports, documents));
   if (documents.length) nodes.push(...documents.map((d) => documentCard(d, ctx)));
   else nodes.push(emptyNote("Aucun relevé importé. Utilisez « Déposer un relevé »."));
