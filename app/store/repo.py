@@ -102,14 +102,19 @@ def find_document_section(conn: sqlite3.Connection, document_id: int, account_id
     ).fetchone()
 
 
-def delete_section_transactions(conn: sqlite3.Connection, section_id: int) -> None:
-    """Supprime les transactions de la section (les liens de virement interne vers elles sont levés)."""
+def delete_section_transactions(conn: sqlite3.Connection, section_id: int) -> list[int]:
+    """Supprime les transactions de la section ; renvoie les ids des anciennes jambes miroir (hors section)
+    dont le lien vers elles est levé : leur catégorie copiée est à recalculer par l'appelant."""
+    unmirrored = [r[0] for r in conn.execute(
+        "SELECT id FROM transactions WHERE section_id IS NOT ? "
+        "AND mirror_of IN (SELECT id FROM transactions WHERE section_id = ?)", (section_id, section_id))]
     conn.execute(
         "UPDATE transactions SET mirror_of = NULL "
         "WHERE mirror_of IN (SELECT id FROM transactions WHERE section_id = ?)",
         (section_id,),
     )
     conn.execute("DELETE FROM transactions WHERE section_id = ?", (section_id,))
+    return unmirrored
 
 
 def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],

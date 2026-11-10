@@ -434,3 +434,28 @@ def test_section_message_cleared_when_reanalysed_ok(tmp_path, conn, pdf_dir):
     conn.commit()
     reanalyse_all(conn, pdf_dir, PARSERS, Recorder())
     assert [r[2] for r in conn.execute("SELECT status, gap_cents, message FROM sections ORDER BY id")] == [None, None]
+
+
+def _cc_transfer(amount):
+    closing = f"{100 - int(amount)},00"
+    return FSection(CC, OPEN, ("CREDITEUR", "10/04/2024", closing), [
+        FTx("15/03/2024", "15/03/2024", ["VIR VERS LIVRET TEST"], debit=f"{amount},00")])
+
+
+def test_former_mirror_is_reclassified_when_its_source_is_replaced(tmp_path, conn, pdf_dir):
+    from app.classify.pipeline import on_new_transactions
+    from app.classify.rules import create_rule
+    savings = conn.execute("INSERT INTO categories(name, kind) VALUES ('Épargne', 'savings')").lastrowid
+    create_rule(conn, "VIR VERS LIVRET", "contains", savings)
+    conn.commit()
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_transfer("20"), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, on_new_transactions)
+    livret = "SELECT category_id, rule_id, mirror_of IS NOT NULL FROM transactions WHERE label = 'VIR EPARGNE TEST'"
+    assert conn.execute(livret).fetchone() == (savings, None, 1)        # miroir : catégorie de sa source
+
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_transfer("30")]), "b.pdf", pdf_dir, PARSERS,
+                        on_new_transactions)
+    resolve_conflict(conn, report.sections[0].section_id, True, on_new_transactions, pdf_dir=pdf_dir,
+                     parsers=PARSERS)
+    # la nouvelle source (30 €) ne s'apparie plus : l'ancien miroir est reclassé par les règles
+    assert conn.execute(livret).fetchone() == (None, None, 0)

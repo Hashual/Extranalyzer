@@ -123,13 +123,17 @@ def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, 
 
 
 def _insert_transactions(conn: sqlite3.Connection, section_id: int, account_id: int,
-                         keyed: list[_KeyedTx], on_new_transactions: OnNewTransactions) -> None:
+                         keyed: list[_KeyedTx], on_new_transactions: OnNewTransactions,
+                         unmirrored: list[int] = ()) -> None:
+    """Insère les transactions puis les classe, avec les anciennes jambes miroir `unmirrored` (leur
+    source vient d'être supprimée : elles sont reclassées ou ré-appariées au lieu de garder une
+    catégorie copiée périmée)."""
     ids = [repo.insert_transaction(conn, section_id, account_id, k.key, k.tx.op_date.isoformat(),
                                    k.tx.value_date.isoformat(), k.tx.label, k.label_norm,
                                    to_cents(k.tx.amount))
            for k in keyed]
-    if ids:
-        on_new_transactions(conn, ids)
+    if ids or unmirrored:
+        on_new_transactions(conn, ids + list(unmirrored))
 
 
 def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
@@ -214,11 +218,12 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
         if message is not None:
             repo.update_section(conn, section_id, opening, closing, 0, "error", digest, message)
             return
+        unmirrored: list[int] = []
         if old is not None:
             repo.set_section_status(conn, old[0], "superseded")
-            repo.delete_section_transactions(conn, old[0])
+            unmirrored = repo.delete_section_transactions(conn, old[0])
         repo.update_section(conn, section_id, opening, closing, 0, "ok", digest)
-        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
+        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
@@ -242,8 +247,9 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
                 message = f"{message} ; {KEPT_OLD_VERSION}"
             return _report(section, "error", gap, section_id, message), True
         status = "ok"
-        repo.delete_section_transactions(conn, section_id)
+        unmirrored = repo.delete_section_transactions(conn, section_id)
     else:                                # error ou conflict : réévaluée comme à l'import
+        unmirrored = []
         status = _status_for(conn, account_id, statement_date, gap, digest, exclude_id=section_id)
         message = _collision_message(conn, keyed, section_id) if status == "ok" else None
         if message is not None:
@@ -251,7 +257,7 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),
                         to_cents(gap), status, digest, message)
     if status == "ok":
-        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
+        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
     return _report(section, status, gap, section_id, message), False
 
 
