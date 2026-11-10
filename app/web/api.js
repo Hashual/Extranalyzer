@@ -25,6 +25,7 @@ function buildUrl(path, params) {
 }
 
 async function handle(response, path) {
+  if (response.status === 204) return null;
   if (response.ok) return response.json();
   let message = response.statusText;
   try {
@@ -43,16 +44,27 @@ export const api = {
     return handle(response, path);
   },
 
-  async post(path, body) {
-    const headers = { "X-Extranalyzer": "1" };
-    let payload = body;
-    if (!(body instanceof FormData)) {
-      headers["Content-Type"] = "application/json";
-      payload = JSON.stringify(body ?? {});
-    }
-    const response = await fetch(buildUrl(path), {
-      method: "POST", headers, body: payload, credentials: "same-origin",
-    });
-    return handle(response, path);
+  /** `path` peut porter une chaîne de requête (ex. "/x?start=…"). */
+  post(path, body) {
+    return send("POST", path, body);
+  },
+
+  patch(path, body) {
+    return send("PATCH", path, body);
+  },
+
+  delete(path) {
+    return send("DELETE", path);
   },
 };
+
+async function send(method, path, body) {
+  const headers = { "X-Extranalyzer": "1" };
+  let payload = body;
+  if (!(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    payload = JSON.stringify(body ?? {});
+  }
+  const response = await fetch(buildUrl(path), { method, headers, body: payload, credentials: "same-origin" });
+  return handle(response, path);
+}
