@@ -182,7 +182,7 @@ def test_columns_from_debit_euros_credit_euros():
 
 
 @pytest.mark.parametrize("columns_offset", [-5, 0, 5])
-def test_columns_line_separate_from_account_header(tmp_path, columns_offset):
+def test_columns_line_position(tmp_path, columns_offset):
     sections = _two_accounts()
     sections[0].txs = _many_txs(20)
     doc = _parse(tmp_path, sections, rows_per_page=12, columns_offset=columns_offset)
@@ -273,3 +273,88 @@ def test_can_parse_rejects_title_without_columns(tmp_path):
     c.showPage()
     c.save()
     assert CreditMutuelParser().can_parse(pdf) is False
+
+
+# --- Géométrie réelle (fix 2) -------------------------------------------------------------------
+
+def _page_lines(pdf_path):
+    import pdfplumber
+    from app.importer.creditmutuel import _group_lines
+    with pdfplumber.open(pdf_path) as pdf:
+        return [_group_lines(page.extract_words()) for page in pdf.pages]
+
+
+def _word(lines, text):
+    return next((line, w) for line in lines for w in line.words if w["text"] == text)
+
+
+def test_fixture_reproduces_measured_layout(tmp_path):
+    """Garde-fou du générateur : la géométrie par défaut est celle mesurée sur les relevés."""
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [FSection(
+        CC, OPEN, ("CREDITEUR", "10/04/2024", "97,50"),
+        [FTx("11/03/2024", "12/03/2024", ["PRLV TEST"], debit="2,50")])])
+    page = _page_lines(pdf)[0]
+    titles, date_title = _word(page, "Date")
+    assert {"Débit", "EUROS", "Crédit", "Opération"} <= set(titles.texts)        # même ligne
+    tx_line = next(line for line in page if "12/03/2024" in line.texts)       # ligne de transaction
+    tx_date = next(w for w in tx_line.words if w["text"] == "11/03/2024")
+    assert 8 <= date_title["x0"] - tx_date["x0"] <= 11                           # dates à gauche
+    assert tx_line.words[0]["x1"] <= 14                                          # réf. en marge
+    header, _ = _word(page, "N°")
+    assert "Débit" not in header.texts
+    closing = next(line for line in page if "10/04/2024" in line.texts)
+    assert closing.texts[:3] == ["R1", "Réf", ":"] and "SOLDE" in closing.texts
+    page_line, _ = _word(page, "Page")
+    assert len(page_line.texts) > 2                                              # Page N pas seul
+    assert any("Crédit" in line.texts and line.top > page_line.top for line in page)
+    footer, _ = _word(page, "Banque")
+    assert footer.words[1]["x0"] == 48 and footer.top - tx_line.top >= 50
+
+
+def test_second_section_starts_mid_page_two(tmp_path):
+    sections = _two_accounts()
+    sections[0].txs = _many_txs(14)
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", sections)
+    pages = _page_lines(pdf)
+    assert len(pages) == 2
+    header, _ = _word(pages[1], "00000000002")
+    assert 150 < header.top < 600                                                # milieu de page
+    doc = CreditMutuelParser().parse(pdf)
+    assert [s.account_number for s in doc.sections] == ["00000000001", "00000000002"]
+    assert [len(s.transactions) for s in doc.sections] == [14, 1]
+    assert doc.sections[1].transactions[0].label == "VIR EPARGNE TEST"
+    assert (doc.sections[1].opening, doc.sections[1].closing) == (Decimal("500.00"), Decimal("520.00"))
+
+
+def test_closing_balance_with_ref_prefix(tmp_path):
+    doc = _parse(tmp_path, [FSection(CC, OPEN, ("DEBITEUR", "10/04/2024", "12,34"), [
+        FTx("11/03/2024", "11/03/2024", ["PRLV TEST"], debit="112,34")])])
+    s = doc.sections[0]
+    assert s.closing == Decimal("-12.34")
+    assert [t.label for t in s.transactions] == ["PRLV TEST"]
+
+
+def test_page_number_sharing_its_line(tmp_path):
+    doc = _parse(tmp_path, [FSection(CC, ("CREDITEUR", "11/03/2024", "1.830,00"), ("CREDITEUR", "10/04/2024", "0,00"),
+                                     _many_txs(60))], rows_per_page=25, footer_lines=[])
+    labels = [t.label for t in doc.sections[0].transactions]
+    assert labels == [f"PAIEMENT CB {i:03d} MAGASIN TEST" for i in range(60)]
+
+
+def test_amount_like_token_inside_label(tmp_path):
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [FSection(
+        CC, OPEN, ("CREDITEUR", "10/04/2024", "80,01"),
+        [FTx("11/03/2024", "11/03/2024", ["PAIEMENT CB 1234567 19,99 VILLE TEST"], debit="19,99")])])
+    _, token = _word(_page_lines(pdf)[0], "19,99")
+    assert 236 <= token["x0"] <= 256
+    [tx] = CreditMutuelParser().parse(pdf).sections[0].transactions
+    assert (tx.label, tx.amount) == ("PAIEMENT CB 1234567 19,99 VILLE TEST", Decimal("-19.99"))
+
+
+def test_pages_after_first_are_shifted(tmp_path):
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [FSection(
+        CC, ("CREDITEUR", "11/03/2024", "1.830,00"), ("CREDITEUR", "10/04/2024", "0,00"), _many_txs(60))])
+    pages = _page_lines(pdf)
+    x = [_word(p, "Opération")[1]["x0"] for p in pages[:2]]
+    assert x[1] - x[0] == 10
+    assert len(CreditMutuelParser().parse(pdf).sections[0].transactions) == 60

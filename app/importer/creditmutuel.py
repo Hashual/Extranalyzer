@@ -17,7 +17,7 @@ from app.model import ParsedDocument, ParsedSection, ParsedTransaction, ParseErr
 TITLE = "RELEVE ET INFORMATIONS BANCAIRES"
 LINE_TOLERANCE = 2          # pt : mots d'une même ligne visuelle (écart de `top`)
 AMOUNT_ZONE_MARGIN = 40     # pt : zone des montants = x0 >= Débit.x0 - 40
-DATE_COLUMN_MARGIN = 5      # pt : mots ignorés à gauche de la colonne date - 5
+MARGIN_BOUND = 20           # pt : mots en marge = x1 < (mot « Date » des titres).x0 - 20
 MAX_CONTINUATION_GAP = 24   # pt : écart vertical maximal entre deux lignes d'une même transaction
 
 _DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}")
@@ -27,11 +27,10 @@ _MONTHS = {
 }
 _STATEMENT_DATE_RE = re.compile(r"\b(\d{1,2}) (" + "|".join(_MONTHS) + r") (\d{4})\b",
                                 re.IGNORECASE)
-_HEADER_RE = re.compile(r"^(?P<label>.+?) N° (?P<number>\d+) en euros")
-_BALANCE_RE = re.compile(r"\bSOLDE (CREDITEUR|DEBITEUR) AU\b")
+_BALANCE_RE = re.compile(r"\bSOLDE (CREDITEUR|DEBITEUR) AU \d{2}/\d{2}/\d{4}\b")
 _BALANCE_KINDS = {"CREDITEUR": 1, "DEBITEUR": -1}
 OTHER_ACCOUNTS = "SITUATION DE VOS AUTRES COMPTES"
-_PAGE_NUMBER_RE = re.compile(r"Page \d+")
+_PAGE_NUMBER_RE = re.compile(r"\bPage \d+\b")   # n'importe où sur la ligne
 # Mentions de bas de page : garde secondaire (la garde principale est MAX_CONTINUATION_GAP).
 _FOOTER_TEXT_RE = re.compile(r"^(Sous réserve|Information sur la protection|CAISSE DE CREDIT MUTUEL"
                              r"|Médiateur|\(GE\)|\(GD\)|Remarque|www\.)", re.IGNORECASE)
@@ -74,21 +73,26 @@ def _is_titles_line(texts: list[str]) -> bool:
 
 @dataclass
 class _Page:
-    """Lignes d'une page, sans les mots situés à gauche de la colonne date (références en marge)."""
+    """Lignes d'une page, sans les références techniques en marge.
+
+    Les dates des transactions commencent ~10 pt à GAUCHE du mot « Date » des titres : seuls les
+    mots qui se terminent avant `Date.x0 - MARGIN_BOUND` sont écartés. `raw_lines` garde tout.
+    """
 
     width: float
     lines: list[_Line]
+    raw_lines: list[_Line]
 
     @classmethod
     def from_words(cls, width: float, words: list[Word]) -> "_Page":
         lines = _group_lines(words)
         titles = next((line for line in lines if _is_titles_line(line.texts)), None)
         if titles is None:
-            return cls(width, lines)
-        bound = next(w for w in titles.words if w["text"] == "Date")["x0"] - DATE_COLUMN_MARGIN
-        visible = [_Line(line.top, [w for w in line.words if w["x0"] >= bound], line.raw_text)
+            return cls(width, lines, lines)
+        bound = next(w for w in titles.words if w["text"] == "Date")["x0"] - MARGIN_BOUND
+        visible = [_Line(line.top, [w for w in line.words if w["x1"] >= bound], line.raw_text)
                    for line in lines]
-        return cls(width, [line for line in visible if line.words])
+        return cls(width, [line for line in visible if line.words], lines)
 
 
 def _is_date(text: str) -> bool:
@@ -170,9 +174,12 @@ def _columns(line: _Line, page_width: float) -> _Columns | None:
 
 
 def _account_header(line: _Line) -> tuple[str, str] | None:
-    """En-tête de compte `<intitulé> N° <numéro> en euros` : (intitulé, numéro)."""
-    m = _HEADER_RE.match(line.text)
-    return (m["label"], m["number"]) if m else None
+    """En-tête de compte `<intitulé> N° <numéro> en euros …` : (intitulé, numéro)."""
+    t = line.texts
+    for i in range(1, len(t) - 3):
+        if t[i] == "N°" and t[i + 1].isdigit() and t[i + 2:i + 4] == ["en", "euros"]:
+            return " ".join(t[:i]), t[i + 1]
+    return None
 
 
 def _is_tx_start(texts: list[str]) -> bool:
@@ -184,15 +191,15 @@ def _is_footer_text(line: _Line) -> bool:
     return bool(_FOOTER_TEXT_RE.match(line.text) or _FOOTER_TEXT_RE.match(line.raw_text))
 
 
-def _statement_date(pages: list[_Page]) -> date:
-    for page in pages:
-        for line in page.lines:
-            m = _STATEMENT_DATE_RE.search(line.text)
-            if m:
-                try:
-                    return date(int(m[3]), _MONTHS[m[2].lower()], int(m[1]))
-                except ValueError as exc:
-                    raise ParseError(f"date du relevé invalide : {m[0]!r}") from exc
+def _statement_date(first_page: _Page) -> date:
+    """Première date `<j> <mois> <aaaa>` de la page 1, marge comprise."""
+    for line in first_page.raw_lines:
+        m = _STATEMENT_DATE_RE.search(line.text)
+        if m:
+            try:
+                return date(int(m[3]), _MONTHS[m[2].lower()], int(m[1]))
+            except ValueError as exc:
+                raise ParseError(f"date du relevé invalide : {m[0]!r}") from exc
     raise ParseError("date du relevé introuvable")
 
 
@@ -219,7 +226,7 @@ class CreditMutuelParser:
         if not pages:
             raise ParseError("PDF sans page")
 
-        statement_date = _statement_date(pages)
+        statement_date = _statement_date(pages[0])
         sections = self._read_sections(pages)
         if not sections:
             raise ParseError("aucune section de compte trouvée")
@@ -248,7 +255,7 @@ class CreditMutuelParser:
                         section.end_tx()
                     reading = False
                     continue
-                if _PAGE_NUMBER_RE.fullmatch(text):
+                if _PAGE_NUMBER_RE.search(text):
                     reading = False
                     continue
                 line_cols, header = _columns(line, page.width), _account_header(line)
