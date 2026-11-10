@@ -41,17 +41,3 @@ def scope(start: date = Query(), end: date = Query(), accounts: str | None = Que
     compare = None if cstart is None else _period(cstart, cend, "période de comparaison")
     return Scope(_period(start, end, "période"), compare, _accounts(accounts))
 
-
-def scope_where(s: Scope, *, include_mirrors: bool = False) -> tuple[str, list]:
-    """Clause WHERE sur `transactions t JOIN accounts a`, avec les mêmes règles que les calculs
-    d'analyse (account_ids None -> comptes courants). Jambes miroir exclues sauf `include_mirrors`."""
-    clause = "t.op_date BETWEEN ? AND ?"
-    params: list = [s.period.start.isoformat(), s.period.end.isoformat()]
-    if not include_mirrors:
-        clause += " AND t.mirror_of IS NULL"
-    if s.account_ids is None:
-        clause += " AND a.kind = 'checking'"
-    else:
-        clause += f" AND t.account_id IN ({','.join('?' * len(s.account_ids))})"
-        params += s.account_ids
-    return clause, params

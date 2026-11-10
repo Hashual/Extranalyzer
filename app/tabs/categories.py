@@ -7,21 +7,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.analytics.periods import month_keys
-from app.analytics.totals import by_category, totals
+from app.analytics.totals import SIGNED_AMOUNT, by_category, scope_clause, totals
 from app.importer.amounts import from_cents
-from app.main import get_conn
-from app.tabs._params import Scope, scope, scope_where
-from app.tabs._transactions import ROW_SELECT, ReclassBody, reclassify, row_to_dict
+from app.deps import get_conn
+from app.tabs._params import Scope, scope
+from app.tabs._transactions import ROW_FROM, ROW_SELECT, ReclassBody, reclassify, row_to_dict
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable
 
 KINDS = ("expense", "income", "savings")
-# Montant d'une opération vu depuis sa catégorie (même convention que app.analytics.totals).
-SIGNED = {
-    "expense": "-t.amount_cents",
-    "income": "t.amount_cents",
-    "savings": "CASE WHEN a.kind = 'savings' THEN t.amount_cents ELSE -t.amount_cents END",
-}
+DETAIL_TX_LIMIT = 100        # transactions les plus récentes ; la suite est dans l'onglet Transactions
 ZERO = Decimal("0.00")
 
 router = APIRouter()
@@ -61,22 +56,24 @@ def detail(category_id: int, conn: Conn, s: Annotated[Scope, Depends(scope)]):
         children = [{"id": cid, "name": n, "amount": amt}
                     for cid, n, amt in by_category(conn, s.period, s.account_ids, kind, "child", category_id)]
 
-    where, params = scope_where(s)
+    where, params = scope_clause(s.period, s.account_ids)
     where += " AND (t.category_id = ? OR c.parent_id = ?)"
     params += [category_id, category_id]
     per_month = dict(conn.execute(
-        f"""SELECT substr(t.op_date, 1, 7), SUM({SIGNED[kind]})
+        f"""SELECT substr(t.op_date, 1, 7), SUM({SIGNED_AMOUNT[kind]})
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN categories c ON c.id = t.category_id
             WHERE {where} GROUP BY 1""", params).fetchall())
     monthly = [{"month": m, "amount": from_cents(per_month.get(m, 0))} for m in month_keys(s.period)]
-    transactions = conn.execute(f"{ROW_SELECT} WHERE {where} ORDER BY t.op_date DESC, t.id DESC",
-                                params).fetchall()
+    transactions = conn.execute(f"{ROW_SELECT} WHERE {where} ORDER BY t.op_date DESC, t.id DESC LIMIT ?",
+                                params + [DETAIL_TX_LIMIT]).fetchall()
+    transactions_total = conn.execute(f"SELECT COUNT(*) {ROW_FROM} WHERE {where}", params).fetchone()[0]
     return to_jsonable({
         "id": category_id, "name": name, "parent_id": parent_id, "kind": kind,
         "amount": from_cents(sum(per_month.values())),
         "children": children, "monthly": monthly,
         "transactions": [row_to_dict(r) for r in transactions],
+        "transactions_total": transactions_total,
     })
 
 

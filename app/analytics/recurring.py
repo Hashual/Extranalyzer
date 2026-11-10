@@ -1,6 +1,7 @@
 import sqlite3
 
 from app.analytics.periods import Period
+from app.analytics.totals import scope_clause
 from app.importer.amounts import from_cents
 
 _MIN_MONTHS = 3
@@ -31,21 +32,15 @@ def recurring(
 ) -> list[dict]:
     if account_ids is not None and not account_ids:
         return []
-    sql = """
+    where, params = scope_clause(p, account_ids)
+    sql = f"""
         SELECT t.label_norm, substr(t.op_date, 1, 7), -SUM(t.amount_cents)
         FROM transactions t
         JOIN accounts a ON a.id = t.account_id
         LEFT JOIN categories c ON c.id = t.category_id
-        WHERE t.mirror_of IS NULL AND t.amount_cents < 0
-          AND t.op_date BETWEEN ? AND ?
+        WHERE {where} AND t.amount_cents < 0
           AND (c.kind IS NULL OR c.kind != 'savings')
     """
-    params: list = [p.start.isoformat(), p.end.isoformat()]
-    if account_ids is None:
-        sql += " AND a.kind = 'checking'"
-    else:
-        sql += f" AND t.account_id IN ({','.join('?' * len(account_ids))})"
-        params += list(account_ids)
     sql += " GROUP BY 1, 2 ORDER BY 1, 2"
 
     by_label: dict[str, list[tuple[str, int]]] = {}

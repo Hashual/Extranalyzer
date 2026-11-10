@@ -1,7 +1,7 @@
 """Onglet « Épargne » : versements, retraits et solde net par destination, et cumul mensuel.
 
-Convention de signe identique à `totals.savings_net` : côté compte courant −montant, côté compte
-épargne +montant ; jambes miroir exclues.
+Convention de signe et périmètre : ceux de `app.analytics.totals` (SIGNED_AMOUNT, scope_clause) ;
+jambes miroir exclues.
 """
 import sqlite3
 from typing import Annotated
@@ -9,13 +9,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.analytics.periods import month_keys
+from app.analytics.totals import SIGNED_AMOUNT, scope_clause
+from app.deps import get_conn
 from app.importer.amounts import from_cents
-from app.main import get_conn
-from app.tabs._params import Scope, scope, scope_where
+from app.tabs._params import Scope, scope
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable
 
-SIGNED = "CASE WHEN a.kind = 'savings' THEN t.amount_cents ELSE -t.amount_cents END"
+SIGNED = SIGNED_AMOUNT["savings"]
 
 router = APIRouter()
 
@@ -27,7 +28,7 @@ def _flows(deposits: int, withdrawals: int) -> dict:
 
 @router.get("/summary")
 def summary(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated[Scope, Depends(scope)]):
-    where, params = scope_where(s)
+    where, params = scope_clause(s.period, s.account_ids)
     flows = {cid: (dep, wd) for cid, dep, wd in conn.execute(
         f"""SELECT t.category_id,
                    COALESCE(SUM(CASE WHEN {SIGNED} > 0 THEN {SIGNED} END), 0),

@@ -1,12 +1,12 @@
 // Onglet « Épargne » : versements, retraits et net par destination, et cumul mensuel de l'épargne nette.
 import { cssVar, mountChart } from "../charts.js";
-import { amount, el, emptyNote, formatMonth, money, scopeParams, section } from "../ui.js";
+import { amount, el, emptyNote, formatMonth, hasTab, money, scopeParams, section } from "../ui.js";
 
 export const id = "epargne";
 export const title = "Épargne";
 
 function tiles(total) {
-  return el("div", { className: "tiles tiles-3" },
+  return el("div", { className: "tiles" },
     [["Versements", total.deposits], ["Retraits", total.withdrawals], ["Épargne nette", total.net]].map(
       ([label, value]) => el("div", { className: "tile" },
         el("p", { className: "tile-label", text: label }),
@@ -18,8 +18,10 @@ function destinationsTable(ctx, destinations) {
     ["Destination", "Versements", "Retraits", "Net"].map((h, i) =>
       el("th", { scope: "col", className: i ? "num" : "", text: h }))));
   const body = el("tbody", {}, destinations.map((d) => el("tr", {},
-    el("td", {}, el("button", { type: "button", className: "link", text: d.name,
-                                on: { click: () => ctx.navigate("categories", { id: d.id }) } })),
+    el("td", {}, hasTab(ctx, "categories")
+      ? el("button", { type: "button", className: "link", text: d.name,
+                       on: { click: () => ctx.navigate("categories", { id: d.id }) } })
+      : d.name),
     el("td", { className: "num", text: money(d.deposits) }),
     el("td", { className: "num", text: money(d.withdrawals) }),
     el("td", { className: "num" }, amount(d.net)))));
@@ -36,7 +38,7 @@ export async function render(container, ctx) {
     section("Épargne nette cumulée", chartHost),
     section("Par destination", data.destinations.length ? destinationsTable(ctx, data.destinations)
       : emptyNote("Aucune catégorie d'épargne définie.")),
-    active.length ? "" : emptyNote("Aucun mouvement d'épargne sur la période (comptes sélectionnés)."));
+    ...(active.length ? [] : [emptyNote("Aucun mouvement d'épargne sur la période (comptes sélectionnés).")]));
 
   mountChart(chartHost, {
     data: {

@@ -1,7 +1,7 @@
 // Onglet « Vue d'ensemble » : tuiles de totaux, répartition des dépenses, évolution mensuelle,
 // plus grosses hausses et dépenses récurrentes.
 import { cssVar, mountChart, palette } from "../charts.js";
-import { el, emptyNote, formatMonth, money, percent, scopeParams, section } from "../ui.js";
+import { el, emptyNote, formatMonth, hasTab, money, percent, scopeParams, section } from "../ui.js";
 
 export const id = "overview";
 export const title = "Vue d'ensemble";
@@ -37,10 +37,16 @@ function tiles(data) {
   }));
 }
 
-function openCategory(ctx, category) {
-  if (category.id === null) ctx.navigate("transactions", { category: "none" });
-  else ctx.navigate("categories", { id: category.id });
+/** Lien d'une catégorie (Catégories, ou Transactions « à classer ») ; null si l'onglet est désactivé. */
+function categoryLink(ctx, category) {
+  if (category.id === null) {
+    return hasTab(ctx, "transactions") ? () => ctx.navigate("transactions", { category: "none" }) : null;
+  }
+  return hasTab(ctx, "categories") ? () => ctx.navigate("categories", { id: category.id }) : null;
 }
+
+/** Montant affiché dans un graphique : jamais négatif (remboursements supérieurs aux dépenses). */
+const plotted = (value) => Math.max(Number(value), 0);
 
 /** Couleur stable par nom de catégorie (« À classer » en gris), partagée par les trois graphiques. */
 function colorMap(names) {
@@ -51,12 +57,14 @@ function colorMap(names) {
 }
 
 function categoryBars(ctx, categories, colorOf) {
-  const max = Math.max(...categories.map((c) => Number(c.amount)), 0);
+  const max = Math.max(...categories.map((c) => plotted(c.amount)), 0);
   return el("ul", { className: "bars" }, categories.map((c) => {
     const fill = el("span", { className: "bar-fill" });
-    fill.style.width = `${max > 0 ? (Number(c.amount) / max) * 100 : 0}%`;
+    fill.style.width = `${max > 0 ? (plotted(c.amount) / max) * 100 : 0}%`;
     fill.style.background = colorOf(c.name);
-    return el("li", {}, el("button", { type: "button", className: "bar-row-button", on: { click: () => openCategory(ctx, c) } },
+    const open = categoryLink(ctx, c);
+    return el("li", {}, el("button", { type: "button", className: "bar-row-button", disabled: !open,
+                                       on: { click: () => open && open() } },
       el("span", { className: "bar-name", text: c.name }),
       el("span", { className: "bar-track" }, fill),
       el("span", { className: "bar-amount", text: money(c.amount) })));
@@ -69,7 +77,7 @@ function pieChart(ctx, host, categories, colorOf) {
     type: "doughnut",
     data: {
       labels: categories.map((c) => c.name),
-      datasets: [{ data: categories.map((c) => Number(c.amount)), backgroundColor: colors,
+      datasets: [{ data: categories.map((c) => plotted(c.amount)), backgroundColor: colors,
                    borderColor: cssVar("--surface") }],
     },
     options: {
@@ -78,7 +86,8 @@ function pieChart(ctx, host, categories, colorOf) {
         tooltip: { callbacks: { label: (item) => `${item.label} : ${money(item.raw)}` } },
       },
       onClick: (_event, elements) => {
-        if (elements.length) openCategory(ctx, categories[elements[0].index]);
+        const open = elements.length ? categoryLink(ctx, categories[elements[0].index]) : null;
+        if (open) open();
       },
     },
   });

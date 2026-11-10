@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from app.analytics.periods import previous_period
 from app.analytics.recurring import recurring
 from app.analytics.totals import by_category, monthly_series, top_increases, totals
-from app.main import get_conn
+from app.deps import get_conn
 from app.tabs._params import Scope, scope
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable

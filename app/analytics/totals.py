@@ -8,8 +8,13 @@ from app.importer.amounts import from_cents
 
 UNCLASSIFIED = "À classer"
 
-# Montant signé d'épargne : +montant sur un compte épargne, −montant ailleurs.
-_SAVINGS_SIGNED = "CASE WHEN a.kind = 'savings' THEN t.amount_cents ELSE -t.amount_cents END"
+# Montant (en centimes) d'une opération vu depuis une catégorie de ce `kind`, sur
+# `transactions t JOIN accounts a`. Épargne : +montant sur un compte épargne, −montant ailleurs.
+SIGNED_AMOUNT = {
+    "expense": "-t.amount_cents",
+    "income": "t.amount_cents",
+    "savings": "CASE WHEN a.kind = 'savings' THEN t.amount_cents ELSE -t.amount_cents END",
+}
 
 
 @dataclass
@@ -22,10 +27,13 @@ class Totals:
     unclassified_credits: Decimal
 
 
-def _scope(p: Period, account_ids: list[int] | None) -> tuple[str, list]:
-    """Clause WHERE commune ; account_ids=None -> comptes courants, [] -> rien."""
-    clause = "t.mirror_of IS NULL AND t.op_date BETWEEN ? AND ?"
+def scope_clause(p: Period, account_ids: list[int] | None, include_mirrors: bool = False) -> tuple[str, list]:
+    """Clause WHERE commune sur `transactions t JOIN accounts a` : période, comptes
+    (None -> comptes courants, [] -> rien) et, sauf `include_mirrors`, sans jambes miroir."""
+    clause = "t.op_date BETWEEN ? AND ?"
     params: list = [p.start.isoformat(), p.end.isoformat()]
+    if not include_mirrors:
+        clause += " AND t.mirror_of IS NULL"
     if account_ids is None:
         clause += " AND a.kind = 'checking'"
     else:
@@ -38,13 +46,13 @@ def totals(conn: sqlite3.Connection, p: Period, account_ids: list[int] | None) -
     if account_ids is not None and not account_ids:
         z = from_cents(0)
         return Totals(z, z, z, z, z, z)
-    where, params = _scope(p, account_ids)
+    where, params = scope_clause(p, account_ids)
     row = conn.execute(
         f"""
         SELECT
           COALESCE(SUM(CASE WHEN c.kind = 'expense' THEN -t.amount_cents END), 0),
           COALESCE(SUM(CASE WHEN c.kind = 'income' THEN t.amount_cents END), 0),
-          COALESCE(SUM(CASE WHEN c.kind = 'savings' THEN {_SAVINGS_SIGNED} END), 0),
+          COALESCE(SUM(CASE WHEN c.kind = 'savings' THEN {SIGNED_AMOUNT['savings']} END), 0),
           COALESCE(SUM(CASE WHEN t.category_id IS NULL AND t.amount_cents < 0
                             THEN -t.amount_cents END), 0),
           COALESCE(SUM(CASE WHEN t.category_id IS NULL AND t.amount_cents > 0
@@ -79,12 +87,8 @@ def by_category(
 ) -> list[tuple[int | None, str, Decimal]]:
     if account_ids is not None and not account_ids:
         return []
-    where, params = _scope(p, account_ids)
-    amount = {
-        "expense": "-t.amount_cents",
-        "income": "t.amount_cents",
-        "savings": _SAVINGS_SIGNED,
-    }[kind]
+    where, params = scope_clause(p, account_ids)
+    amount = SIGNED_AMOUNT[kind]
     if level == "parent":
         key, name = "COALESCE(c.parent_id, c.id)", "COALESCE(pc.name, c.name)"
     else:

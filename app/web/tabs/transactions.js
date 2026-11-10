@@ -78,5 +78,5 @@ export async function render(container, ctx) {
     data.items.length
       ? transactionsTable(data.items, { categories: meta.categories, accounts: meta.accounts, reclass })
       : emptyNote("Aucune opération ne correspond."),
-    data.pages > 1 ? pager(data, apply) : "");
+    ...(data.pages > 1 ? [pager(data, apply)] : []));
 }

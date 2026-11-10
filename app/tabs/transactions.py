@@ -4,8 +4,9 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.main import get_conn
-from app.tabs._params import Scope, scope, scope_where
+from app.analytics.totals import scope_clause
+from app.deps import get_conn
+from app.tabs._params import Scope, scope
 from app.tabs._transactions import ROW_FROM, ROW_SELECT, ReclassBody, reclassify, row_to_dict
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable
@@ -37,7 +38,7 @@ def _category_filter(raw: str | None) -> tuple[str, list]:
 def list_transactions(conn: Conn, s: Annotated[Scope, Depends(scope)], q: str = "", category: str | None = None,
                       sort: Literal["date_desc", "date_asc", "amount_asc", "amount_desc"] = "date_desc",
                       page: Annotated[int, Query(ge=1, le=1_000_000)] = 1):
-    where, params = scope_where(s, include_mirrors=True)
+    where, params = scope_clause(s.period, s.account_ids, include_mirrors=True)
     extra, extra_params = _category_filter(category)
     where += extra
     params += extra_params

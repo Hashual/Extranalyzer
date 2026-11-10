@@ -6,7 +6,7 @@ import logging
 import re
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -22,6 +22,7 @@ from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, loa
 from app.classify.pipeline import on_new_transactions
 from app.classify.seed import load_seed
 from app.config import Settings, load_settings
+from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
 from app.importer.service import ImportReport, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
@@ -55,16 +56,6 @@ class LoginBody(BaseModel):
 
 class ResolveBody(BaseModel):
     accept: bool
-
-
-def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
-    """Dépendance : une connexion par requête (ouverte/fermée par FastAPI, éventuellement dans
-    des threads différents de celui de la route, d'où `check_same_thread=False`)."""
-    conn = connect(request.app.state.db_path, check_same_thread=False)
-    try:
-        yield conn
-    finally:
-        conn.close()
 
 
 def _safe_filename(name: str | None) -> str:

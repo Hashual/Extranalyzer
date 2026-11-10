@@ -1,7 +1,7 @@
 // Onglet « Catégories » : liste des catégories à gauche, détail à droite (sous-catégories, évolution
 // mensuelle, transactions avec reclassement sur place). La catégorie affichée est le paramètre `id`.
 import { cssVar, mountChart } from "../charts.js";
-import { el, emptyNote, formatMonth, money, scopeParams, section, transactionsTable } from "../ui.js";
+import { el, emptyNote, formatMonth, hasTab, money, scopeParams, section, transactionsTable } from "../ui.js";
 
 export const id = "categories";
 export const title = "Catégories";
@@ -37,7 +37,7 @@ function sidebar(ctx, tree, selectedId) {
     nav.append(list);
   }
   const { debits, credits } = tree.unclassified;
-  if (Number(debits) || Number(credits)) {
+  if ((Number(debits) || Number(credits)) && hasTab(ctx, "transactions")) {
     nav.append(el("h3", { text: "À classer" }), el("button", {
       type: "button",
       className: "cat-link root",
@@ -74,7 +74,7 @@ async function detailPanel(ctx, categoryId, meta) {
     const max = Math.max(...data.children.map((c) => Number(c.amount)), 0);
     panel.append(section("Sous-catégories", el("ul", { className: "bars" }, data.children.map((c) => {
       const fill = el("span", { className: "bar-fill" });
-      fill.style.width = `${max > 0 ? (Math.max(Number(c.amount), 0) / max) * 100 : 0}%`;
+      fill.style.width = `${max > 0 ? (Math.max(Number(c.amount), 0) / max) * 100 : 0}%`;   // jamais négatif
       fill.style.background = cssVar("--accent");
       const isSelf = c.id === data.id;
       return el("li", {}, el("button", {
@@ -92,9 +92,19 @@ async function detailPanel(ctx, categoryId, meta) {
     await ctx.api.post(`/tabs/categories/transactions/${tx.id}/category`, { category_id: newCategoryId });
     await ctx.refresh();
   };
-  panel.append(section(`Transactions (${data.transactions.length})`, data.transactions.length
-    ? transactionsTable(data.transactions, { categories: meta.categories, accounts: meta.accounts, reclass })
-    : emptyNote("Aucune transaction sur la période.")));
+  const shown = data.transactions.length;
+  const txSection = section(shown < data.transactions_total
+    ? `Transactions (${shown} sur ${data.transactions_total}, les plus récentes)`
+    : `Transactions (${shown})`,
+  shown ? transactionsTable(data.transactions, { categories: meta.categories, accounts: meta.accounts, reclass })
+    : emptyNote("Aucune transaction sur la période."));
+  if (shown < data.transactions_total && hasTab(ctx, "transactions")) {
+    txSection.append(el("button", {
+      type: "button", className: "link", text: "Voir toutes les transactions de cette catégorie",
+      on: { click: () => ctx.navigate("transactions", { category: String(data.id) }) },
+    }));
+  }
+  panel.append(txSection);
 
   return { panel, draw: () => mountChart(chartHost, {
     type: "bar",

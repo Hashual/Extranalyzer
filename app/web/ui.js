@@ -50,6 +50,11 @@ export function amount(value, tag = "span") {
   return el(tag, { className: `amount ${n < 0 ? "neg" : n > 0 ? "pos" : ""}`.trim(), text: money(value) });
 }
 
+/** Vrai si l'onglet `tabId` est activé (les liens vers un onglet désactivé sont masqués). */
+export function hasTab(ctx, tabId) {
+  return ctx.enabledTabs.includes(tabId);
+}
+
 /** Paramètres de requête communs (période, comparaison, comptes) tirés du contexte de l'onglet. */
 export function scopeParams(ctx) {
   const params = { start: ctx.period.from, end: ctx.period.to };

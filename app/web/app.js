@@ -196,12 +196,12 @@ function renderBar(route) {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = account.id;
-    box.checked = !route.acc.length || route.acc.includes(account.id);
+    // Sans sélection explicite : vue par défaut de l'API = comptes courants.
+    box.checked = route.acc.length ? route.acc.includes(account.id) : account.kind === "checking";
     label.append(box, ` ${account.label} ••${account.number_tail}`);
     list.append(label);
   }
-  $("accounts").querySelector("summary").textContent =
-    route.acc.length ? `${route.acc.length} compte(s)` : "Tous les comptes";
+  $("accounts").querySelector("summary").textContent = accountsLabel(route.acc);
 
   const count = state.meta?.unclassified_count ?? 0;
   const badge = $("unclassified");
@@ -212,6 +212,17 @@ function renderBar(route) {
   for (const button of $("tabs").querySelectorAll("button")) {
     button.setAttribute("aria-current", button.dataset.tab === route.tab ? "page" : "false");
   }
+}
+
+function accountsLabel(selected) {
+  const accounts = state.meta?.accounts || [];
+  if (!selected.length) return "Comptes courants";
+  if (accounts.length > 1 && selected.length === accounts.length) return "Tous les comptes";
+  if (selected.length === 1) {
+    const account = accounts.find((a) => a.id === selected[0]);
+    if (account) return `${account.label} ••${account.number_tail}`;
+  }
+  return `${selected.length} comptes`;
 }
 
 function updateRoute(changes) {
@@ -244,9 +255,10 @@ function setupBar() {
   $("compare").addEventListener("change", (event) => updateRoute({ cmp: event.target.value }));
 
   $("accounts-list").addEventListener("change", () => {
-    const boxes = [...$("accounts-list").querySelectorAll("input")];
-    const checked = boxes.filter((b) => b.checked).map((b) => Number(b.value));
-    updateRoute({ acc: checked.length === boxes.length ? [] : checked });
+    // Sélection explicite, même si tout est coché (sinon retour à la vue « comptes courants »).
+    const checked = [...$("accounts-list").querySelectorAll("input")].filter((b) => b.checked)
+      .map((b) => Number(b.value));
+    updateRoute({ acc: checked });
   });
 
   $("unclassified").addEventListener("click", () => navigate("a_classer"));
@@ -334,7 +346,8 @@ async function renderCurrent() {
   const ctx = {
     period,
     compare: comparePeriod(period, route.cmp),
-    accountIds: route.acc,          // vide = tous les comptes
+    accountIds: route.acc,          // vide = vue par défaut (comptes courants)
+    enabledTabs: state.tabs.map((t) => t.id),
     params: route.params,
     api,
     navigate,

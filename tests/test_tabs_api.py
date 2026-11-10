@@ -1,4 +1,7 @@
 """API des onglets Vue d'ensemble, Catégories, Transactions et Épargne (données fictives, insérées en SQL)."""
+import subprocess
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -105,6 +108,17 @@ def test_overview_summary_totals(env):
     assert s["recurring"] == []
 
 
+def test_overview_recurring_over_three_months(env):
+    client, conn, cat, _ = env
+    for i, (day, cents) in enumerate([("2024-11-03", -1999), ("2024-12-03", -1999), ("2025-01-03", -2049)]):
+        conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents) "
+                     "VALUES (1, ?, ?, 'PRLV ABO THETA', 'prlv abo theta', ?)", (f"r{i}", day, cents))
+    conn.commit()
+    s = get(client, "/overview/summary", start="2024-11-01", end="2025-01-31")
+    assert s["recurring"] == [{"label_norm": "prlv abo theta", "avg_amount": "20.16",
+                               "months": ["2024-11", "2024-12", "2025-01"]}]
+
+
 def test_overview_with_comparison_and_accounts(env):
     client = env[0]
     s = get(client, "/overview/summary", **JAN, **DEC)
@@ -157,7 +171,24 @@ def test_category_reclassify_in_place(env):
     r = client.post(f"/api/tabs/categories/transactions/{ids['unknown']}/category",
                     json={"category_id": cat["Loisirs"]}, headers=H)
     assert r.status_code == 200
-    assert r.json()["category_name"] == "Loisirs"
+    assert (r.json()["category_name"], r.json()["manual"]) == ("Loisirs", True)
+    tx_key = conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (ids["unknown"],)).fetchone()[0]
+    assert conn.execute("SELECT category_id FROM manual_overrides WHERE tx_key = ?",
+                        (tx_key,)).fetchone() == (cat["Loisirs"],)
+    assert get(client, f"/categories/{cat['Loisirs']}", **JAN)["amount"] == "25.00"
+
+
+def test_category_detail_lists_the_100_most_recent_transactions(env):
+    client, conn, cat, ids = env
+    conn.executemany(
+        "INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, category_id) "
+        "VALUES (1, ?, '2025-01-02', 'CB MARCHE BETA', 'cb marche beta', -100, ?)",
+        [(f"c{i}", cat["Courses"]) for i in range(105)])
+    conn.commit()
+    d = get(client, f"/categories/{cat['Courses']}", **JAN)
+    assert d["transactions_total"] == 106 and len(d["transactions"]) == 100
+    assert d["transactions"][0]["id"] == ids["courses"]          # le plus récent d'abord
+    assert d["amount"] == "225.00"                                # le total couvre tout, pas seulement la page
 
 
 # --- Transactions ------------------------------------------------------------------------------
@@ -259,3 +290,12 @@ def test_epargne_summary(env):
                             {"month": "2025-01", "net": "254.50", "net_cumulative": "354.50"}]
     checking = get(client, "/epargne/summary", **JAN)
     assert checking["total"]["net"] == "250.00"
+
+
+# --- Modules -----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("module", ["overview", "categories", "transactions", "epargne"])
+def test_tab_module_imports_alone_without_app_main(module):
+    code = (f"import sys, app.tabs.{module} as m; "
+            f"assert m.TAB.id == {module!r}; assert 'app.main' not in sys.modules")
+    subprocess.run([sys.executable, "-c", code], check=True)
