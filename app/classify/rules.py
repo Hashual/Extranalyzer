@@ -153,9 +153,11 @@ def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
 
 
 def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> None:
-    row = conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+    row = conn.execute("SELECT tx_key, mirror_of FROM transactions WHERE id = ?", (tx_id,)).fetchone()
     if row is None:
         raise ValueError(f"transaction {tx_id} introuvable")
+    if row[1] is not None:       # jambe miroir : le changement porte sur la jambe source
+        return set_manual_category(conn, row[1], category_id)
     tx_key = row[0]
     if category_id is None:
         conn.execute("DELETE FROM manual_overrides WHERE tx_key = ?", (tx_key,))

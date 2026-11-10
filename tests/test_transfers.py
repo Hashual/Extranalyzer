@@ -72,6 +72,8 @@ def test_equal_gap_takes_smallest_id(conn):
 def test_gap_limits(conn):
     add_tx(conn, 1, "2024-03-01", -100)
     add_tx(conn, 2, "2024-03-09", 100)
+    add_tx(conn, 1, "2024-04-01", -300)
+    add_tx(conn, 2, "2024-04-07", 300)                 # 6 jours
     assert pair_internal_transfers(conn) == 0
     ok = add_tx(conn, 1, "2024-03-20", -200)
     inn = add_tx(conn, 2, "2024-03-25", 200)
@@ -140,3 +142,27 @@ def test_pipeline(conn):
     inn = add_tx(conn, 2, "2024-03-13", 100, "VIR RECU")
     on_new_transactions(conn, [out, inn])
     assert row(conn, inn) == (out, 1) and row(conn, out) == (None, 1)
+
+
+def test_apply_rules_never_touches_mirror_directly(conn):
+    out = add_tx(conn, 1, "2024-03-12", -100, "AAA")
+    inn = add_tx(conn, 2, "2024-03-12", 100, "ZZZ")
+    conn.execute("UPDATE transactions SET mirror_of = ?, category_id = 1 WHERE id = ?", (out, inn))
+    conn.execute("UPDATE transactions SET category_id = 1 WHERE id = ?", (out,))
+    conn.execute("INSERT INTO rules(pattern, match, category_id, priority) VALUES ('ZZZ', 'contains', 2, 10)")
+    apply_rules(conn, [inn])
+    assert row(conn, inn)[1] == 1
+
+
+def test_manual_category_on_mirror_redirects_to_source(conn):
+    out = add_tx(conn, 1, "2024-03-12", -100)
+    inn = add_tx(conn, 2, "2024-03-12", 100)
+    conn.execute("UPDATE transactions SET mirror_of = ?, category_id = 1 WHERE id = ?", (out, inn))
+    set_manual_category(conn, inn, 2)
+    flags = lambda i: conn.execute("SELECT manual, category_id FROM transactions WHERE id = ?", (i,)).fetchone()
+    assert flags(out) == (1, 2) and flags(inn) == (0, 2)
+    assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 1
+    assert conn.execute("SELECT tx_key FROM manual_overrides").fetchone()[0] ==         conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (out,)).fetchone()[0]
+    set_manual_category(conn, inn, None)
+    assert flags(out) == (0, None) and flags(inn) == (0, None)
+    assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 0
