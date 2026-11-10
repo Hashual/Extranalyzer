@@ -7,6 +7,7 @@ from app.analytics.periods import Period, clip_month, month_keys
 from app.importer.amounts import from_cents
 
 UNCLASSIFIED = "À classer"
+INTERNAL_TRANSFERS = "Virements internes (non classés)"
 
 # Montant (en centimes) d'une opération vu depuis une catégorie de ce `kind`, sur
 # `transactions t JOIN accounts a`. Épargne : +montant sur un compte épargne, −montant ailleurs.
@@ -15,6 +16,22 @@ SIGNED_AMOUNT = {
     "income": "t.amount_cents",
     "savings": "CASE WHEN a.kind = 'savings' THEN t.amount_cents ELSE -t.amount_cents END",
 }
+
+# Source non classée d'un virement interne apparié (une jambe miroir la désigne) : c'est un flux
+# d'épargne, pas une dépense ni un revenu, même tant que l'utilisateur n'a pas choisi sa destination.
+PAIRED_UNCLASSIFIED = ("(t.category_id IS NULL AND t.mirror_of IS NULL AND EXISTS "
+                       "(SELECT 1 FROM transactions m WHERE m.mirror_of = t.id))")
+
+# `kind` effectif d'une opération, sur `transactions t LEFT JOIN categories c` : celui de sa catégorie,
+# 'savings' pour un virement interne apparié non classé, NULL pour les autres opérations à classer.
+# Toute analyse par nature (totaux, répartition, épargne, récurrents) passe par lui.
+EFFECTIVE_KIND = f"CASE WHEN c.kind IS NOT NULL THEN c.kind WHEN {PAIRED_UNCLASSIFIED} THEN 'savings' END"
+
+ANALYSIS_FROM = """
+    FROM transactions t
+    JOIN accounts a ON a.id = t.account_id
+    LEFT JOIN categories c ON c.id = t.category_id
+"""
 
 
 @dataclass
@@ -54,19 +71,16 @@ def totals(conn: sqlite3.Connection, p: Period, account_ids: list[int] | None) -
         z = from_cents(0)
         return Totals(z, z, z, z, z, z)
     where, params = scope_clause(p, account_ids)
+    ek = f"({EFFECTIVE_KIND})"
     row = conn.execute(
         f"""
         SELECT
-          COALESCE(SUM(CASE WHEN c.kind = 'expense' THEN -t.amount_cents END), 0),
-          COALESCE(SUM(CASE WHEN c.kind = 'income' THEN t.amount_cents END), 0),
-          COALESCE(SUM(CASE WHEN c.kind = 'savings' THEN {SIGNED_AMOUNT['savings']} END), 0),
-          COALESCE(SUM(CASE WHEN t.category_id IS NULL AND t.amount_cents < 0
-                            THEN -t.amount_cents END), 0),
-          COALESCE(SUM(CASE WHEN t.category_id IS NULL AND t.amount_cents > 0
-                            THEN t.amount_cents END), 0)
-        FROM transactions t
-        JOIN accounts a ON a.id = t.account_id
-        LEFT JOIN categories c ON c.id = t.category_id
+          COALESCE(SUM(CASE WHEN {ek} = 'expense' THEN {SIGNED_AMOUNT['expense']} END), 0),
+          COALESCE(SUM(CASE WHEN {ek} = 'income' THEN {SIGNED_AMOUNT['income']} END), 0),
+          COALESCE(SUM(CASE WHEN {ek} = 'savings' THEN {SIGNED_AMOUNT['savings']} END), 0),
+          COALESCE(SUM(CASE WHEN {ek} IS NULL AND t.amount_cents < 0 THEN -t.amount_cents END), 0),
+          COALESCE(SUM(CASE WHEN {ek} IS NULL AND t.amount_cents > 0 THEN t.amount_cents END), 0)
+        {ANALYSIS_FROM}
         WHERE {where}
         """,
         params,
@@ -120,19 +134,21 @@ def by_category(
          from_cents(cents))
         for cid, n, cents in rows
     ]
-    # Opérations non classées : visibles dans la vue racine uniquement.
-    if kind in ("expense", "income") and parent_id is None:
-        sign = "amount_cents < 0" if kind == "expense" else "amount_cents > 0"
+    # Opérations sans catégorie de ce `kind` effectif : une ligne sans id, dans la vue racine uniquement.
+    if parent_id is None:
+        pseudo = {"expense": (UNCLASSIFIED, "IS NULL AND t.amount_cents < 0"),
+                  "income": (UNCLASSIFIED, "IS NULL AND t.amount_cents > 0"),
+                  "savings": (INTERNAL_TRANSFERS, "= 'savings'")}
+        label, condition = pseudo[kind]
         cents = conn.execute(
             f"""
-            SELECT COALESCE(SUM({amount}), 0)
-            FROM transactions t JOIN accounts a ON a.id = t.account_id
-            WHERE {where} AND t.category_id IS NULL AND t.{sign}
+            SELECT COALESCE(SUM({amount}), 0) {ANALYSIS_FROM}
+            WHERE {where} AND t.category_id IS NULL AND ({EFFECTIVE_KIND}) {condition}
             """,
             params,
         ).fetchone()[0]
         if cents:
-            result.append((None, UNCLASSIFIED, from_cents(cents)))
+            result.append((None, label, from_cents(cents)))
     result.sort(key=lambda r: (-r[2], r[1]))
     return result
 

@@ -293,6 +293,23 @@ def test_epargne_summary(env):
     assert checking["total"]["net"] == "250.00"
 
 
+def test_paired_unclassified_transfer_is_savings_in_overview_and_epargne(env):
+    client, conn, _, _ = env
+    src = _add_unknown(conn, "p1", "2025-01-26", -7000, "VIR VERS LIVRET")
+    conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, mirror_of) "
+                 "VALUES (2, 'p2', '2025-01-26', 'VIR DEPUIS CC', 'vir depuis cc', 7000, ?)", (src,))
+    conn.commit()
+    totals = get(client, "/overview/summary", **JAN)["totals"]
+    assert totals["unclassified_debits"] == "25.00" and totals["savings_net"] == "320.00"
+    s = get(client, "/epargne/summary", **JAN)
+    internal = next(d for d in s["destinations"] if d["id"] is None)
+    assert internal == {"id": None, "name": "Virements internes (non classés)",
+                        "deposits": "70.00", "withdrawals": "0.00", "net": "70.00"}
+    assert s["total"]["net"] == "320.00" == s["monthly"][0]["net"]
+    labels = [g["label_norm"] for g in get(client, "/a_classer/list", **JAN)["groups"]]
+    assert "vir vers livret" in labels                           # toujours à classer (destination à choisir)
+
+
 # --- À classer ---------------------------------------------------------------------------------
 
 def _unclassified_count(client):

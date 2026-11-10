@@ -192,3 +192,38 @@ def test_unclassified_count_all_accounts_all_dates_without_mirrors(conn):
     tx(conn, 2, "2024-06-01", 1000, None, mirror=src)          # jambe miroir : suit sa source
     tx(conn, 2, "2026-03-01", 300, None)                       # livret, hors de toute période affichée
     assert unclassified_count(conn) == 2
+
+
+INTERNAL = "Virements internes (non classés)"
+
+
+def test_paired_unclassified_deposit_counts_as_savings(conn):
+    tx(conn, 1, "2025-01-05", 150000, 1)
+    src = tx(conn, 1, "2025-01-15", -10000, None, label="VIR LIVRET")       # appariée, non classée
+    tx(conn, 2, "2025-01-15", 10000, None, label="VIR LIVRET", mirror=src)
+    t = totals(conn, P, None)
+    assert (t.expenses, t.unclassified_debits, t.savings_net) == (Decimal("0"), Decimal("0"), Decimal("100"))
+    assert t.balance == Decimal("1400")
+    assert totals(conn, P, [1, 2]).savings_net == Decimal("100")
+    assert by_category(conn, P, None, "expense", "parent") == []
+    assert by_category(conn, P, None, "savings", "parent") == [(None, INTERNAL, Decimal("100.00"))]
+    [month] = monthly_series(conn, P, None)
+    assert (month["expenses"], month["savings_net"], month["by_category"]) == (Decimal("0"), Decimal("100"), {})
+
+
+def test_paired_unclassified_withdrawal_counts_as_negative_savings(conn):
+    src = tx(conn, 1, "2025-01-20", 5000, None, label="VIR DEPUIS LIVRET")
+    tx(conn, 2, "2025-01-20", -5000, None, label="VIR DEPUIS LIVRET", mirror=src)
+    t = totals(conn, P, None)
+    assert (t.income, t.unclassified_credits, t.savings_net) == (Decimal("0"), Decimal("0"), Decimal("-50"))
+    assert by_category(conn, P, None, "income", "parent") == []
+    assert by_category(conn, P, None, "savings", "parent") == [(None, INTERNAL, Decimal("-50.00"))]
+
+
+def test_paired_unclassified_ignored_by_top_increases_and_recurring(conn):
+    for m in ("01", "02", "03"):
+        src = tx(conn, 1, f"2025-{m}-15", -10000, None, label="VIR LIVRET")
+        tx(conn, 2, f"2025-{m}-15", 10000, None, label="VIR LIVRET", mirror=src)
+    q1 = Period(date(2025, 1, 1), date(2025, 3, 31))
+    assert recurring(conn, q1, None) == []
+    assert top_increases(conn, P, Period(date(2024, 12, 1), date(2024, 12, 31)), None) == []

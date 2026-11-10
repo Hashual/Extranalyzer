@@ -18,7 +18,7 @@ function destinationsTable(ctx, destinations) {
     ["Destination", "Versements", "Retraits", "Net"].map((h, i) =>
       el("th", { scope: "col", className: i ? "num" : "", text: h }))));
   const body = el("tbody", {}, destinations.map((d) => el("tr", {},
-    el("td", {}, hasTab(ctx, "categories")
+    el("td", {}, hasTab(ctx, "categories") && d.id !== null
       ? el("button", { type: "button", className: "link", text: d.name,
                        on: { click: () => ctx.navigate("categories", { id: d.id }) } })
       : d.name),

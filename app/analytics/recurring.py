@@ -1,7 +1,7 @@
 import sqlite3
 
 from app.analytics.periods import Period
-from app.analytics.totals import scope_clause
+from app.analytics.totals import ANALYSIS_FROM, EFFECTIVE_KIND, scope_clause
 from app.importer.amounts import from_cents
 
 _MIN_MONTHS = 3
@@ -35,11 +35,9 @@ def recurring(
     where, params = scope_clause(p, account_ids)
     sql = f"""
         SELECT t.label_norm, substr(t.op_date, 1, 7), -SUM(t.amount_cents)
-        FROM transactions t
-        JOIN accounts a ON a.id = t.account_id
-        LEFT JOIN categories c ON c.id = t.category_id
+        {ANALYSIS_FROM}
         WHERE {where} AND t.amount_cents < 0
-          AND (c.kind IS NULL OR c.kind != 'savings')
+          AND ({EFFECTIVE_KIND}) IS NOT 'savings'
     """
     sql += " GROUP BY 1, 2 ORDER BY 1, 2"
 

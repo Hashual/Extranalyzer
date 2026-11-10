@@ -1,7 +1,8 @@
 """Onglet « Épargne » : versements, retraits et solde net par destination, et cumul mensuel.
 
-Convention de signe et périmètre : ceux de `app.analytics.totals` (SIGNED_AMOUNT, scope_clause) ;
-jambes miroir exclues.
+Convention de signe, nature et périmètre : ceux de `app.analytics.totals` (SIGNED_AMOUNT, EFFECTIVE_KIND,
+scope_clause) ; jambes miroir exclues. Les virements internes appariés encore non classés forment une
+destination sans id.
 """
 import sqlite3
 from typing import Annotated
@@ -9,7 +10,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from app.analytics.periods import month_keys
-from app.analytics.totals import SIGNED_AMOUNT, scope_clause
+from app.analytics.totals import ANALYSIS_FROM, EFFECTIVE_KIND, INTERNAL_TRANSFERS, SIGNED_AMOUNT, scope_clause
 from app.deps import get_conn
 from app.importer.amounts import from_cents
 from app.tabs._params import Scope, scope
@@ -17,6 +18,7 @@ from app.tabs.registry import Tab
 from app.web_json import to_jsonable
 
 SIGNED = SIGNED_AMOUNT["savings"]
+IS_SAVINGS = f"({EFFECTIVE_KIND}) = 'savings'"
 
 router = APIRouter()
 
@@ -33,9 +35,8 @@ def summary(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated
         f"""SELECT t.category_id,
                    COALESCE(SUM(CASE WHEN {SIGNED} > 0 THEN {SIGNED} END), 0),
                    COALESCE(SUM(CASE WHEN {SIGNED} < 0 THEN -({SIGNED}) END), 0)
-            FROM transactions t JOIN accounts a ON a.id = t.account_id
-            JOIN categories c ON c.id = t.category_id
-            WHERE {where} AND c.kind = 'savings' GROUP BY 1""", params)}
+            {ANALYSIS_FROM}
+            WHERE {where} AND {IS_SAVINGS} GROUP BY 1""", params)}
     # Destinations : sous-catégories des racines « épargne », plus une racine si des opérations y sont
     # classées directement.
     categories = conn.execute(
@@ -47,13 +48,14 @@ def summary(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated
             continue
         label = name if parent_name is not None else f"{name} (sans destination)"
         destinations.append({"id": cid, "name": label, **_flows(*flows.get(cid, (0, 0)))})
+    if None in flows:
+        destinations.append({"id": None, "name": INTERNAL_TRANSFERS, **_flows(*flows[None])})
     destinations.sort(key=lambda d: (-d["net"], d["name"]))
 
     per_month = dict(conn.execute(
         f"""SELECT substr(t.op_date, 1, 7), SUM({SIGNED})
-            FROM transactions t JOIN accounts a ON a.id = t.account_id
-            JOIN categories c ON c.id = t.category_id
-            WHERE {where} AND c.kind = 'savings' GROUP BY 1""", params).fetchall())
+            {ANALYSIS_FROM}
+            WHERE {where} AND {IS_SAVINGS} GROUP BY 1""", params).fetchall())
     monthly, cumulative = [], 0
     for month in month_keys(s.period):
         cumulative += per_month.get(month, 0)
