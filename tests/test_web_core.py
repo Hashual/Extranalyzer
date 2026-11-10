@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import types
 
@@ -404,6 +405,7 @@ def test_static_shell_is_served(settings):
     r = c.get("/")
     assert r.status_code == 200 and "/static/app.js" in r.text
     assert "/static/vendor/chart.umd.min.js" in r.text
+    assert re.search(r"<input id=.upload-input.[^>]* multiple[ >]", r.text)     # dépôt de plusieurs relevés
     for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js",
                  "/static/vendor/chart.umd.min.js"):
         assert c.get(path).status_code == 200, path

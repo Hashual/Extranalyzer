@@ -182,6 +182,58 @@ function reportLines(report) {
   return { kind: failed ? "warning" : "success", lines: lines.length ? lines : ["Aucune section trouvée."] };
 }
 
+/** Résumé d'un dépôt de plusieurs fichiers : compteurs, puis le détail des seuls fichiers à revoir. */
+function summaryLines(results) {
+  const count = { ok: 0, duplicates: 0, failed: 0, errors: 0, conflicts: 0 };
+  const details = [];
+  for (const { name, report, error } of results) {
+    if (error) {
+      count.failed += 1;
+      details.push(`${name} : import échoué (${error})`);
+      continue;
+    }
+    if (report.duplicate_file) count.duplicates += 1;
+    else if (report.error && !report.sections.length) count.failed += 1;
+    else count.ok += 1;
+    count.errors += report.sections.filter((s) => s.status === "error").length;
+    count.conflicts += report.sections.filter((s) => s.status === "conflict").length;
+    const { kind, lines } = reportLines(report);
+    if (kind === "warning" || kind === "error") details.push(...lines.map((line) => `${name} — ${line}`));
+  }
+  const lines = [
+    `${results.length} fichiers : ${count.ok} importé(s), ${count.duplicates} déjà importé(s), ${count.failed} en échec`,
+    `Sections en erreur : ${count.errors} · conflits à trancher (onglet Relevés) : ${count.conflicts}`,
+    ...details,
+  ];
+  const problems = count.failed + count.errors + count.conflicts;
+  return { kind: problems ? "warning" : "success", lines };
+}
+
+/** Dépose les fichiers un par un (une écriture lourde à la fois côté serveur), puis rafraîchit une fois. */
+async function uploadFiles(files) {
+  const results = [];
+  for (const [index, file] of files.entries()) {
+    const progress = files.length > 1 ? ` (${index + 1}/${files.length})` : "";
+    const dismiss = toast(`Import de ${file.name} en cours…${progress}`, "info", 0);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      results.push({ name: file.name, report: await api.post("/upload", form) });
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) return;     // session expirée : écran de connexion
+      results.push({ name: file.name, error: error.message });
+    } finally {
+      dismiss();
+    }
+  }
+  const single = results.length === 1 && results[0].report;
+  const { kind, lines } = single ? reportLines(results[0].report)
+    : results.length === 1 ? { kind: "error", lines: [`Import échoué : ${results[0].error}`] }
+    : summaryLines(results);
+  toast(lines, kind, kind === "success" ? 8000 : 0);
+  await refresh();
+}
+
 // --- Barre commune -----------------------------------------------------------------------------
 
 function renderBar(route) {
@@ -261,24 +313,25 @@ function setupBar() {
     updateRoute({ acc: checked });
   });
 
-  $("unclassified").addEventListener("click", () => navigate("a_classer"));
+  // La pastille compte toutes les opérations à classer : elle ouvre l'onglet sur toute la plage de
+  // données et tous les comptes (sélection explicite), pour montrer exactement cette population.
+  $("unclassified").addEventListener("click", () => {
+    if (!state.tabs.some((t) => t.id === "a_classer")) return;
+    const range = state.meta?.data_range;
+    const everything = range?.min && range?.max ? { from: range.min, to: range.max } : {};
+    const acc = (state.meta?.accounts || []).map((a) => a.id);
+    go({ ...readRoute(), ...everything, acc, tab: "a_classer", params: {} });
+  });
 
   $("upload-input").addEventListener("change", async (event) => {
     const input = event.target;
-    const file = input.files[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append("file", file);
-    const dismiss = toast(`Import de ${file.name} en cours…`, "info", 0);
+    const files = [...input.files];
+    input.value = "";
+    if (!files.length) return;
     try {
-      const { kind, lines } = reportLines(await api.post("/upload", form));
-      toast(lines, kind, kind === "success" ? 8000 : 0);
-      await refresh();
+      await uploadFiles(files);
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 401)) toast(`Import échoué : ${error.message}`, "error", 0);
-    } finally {
-      dismiss();
-      input.value = "";
     }
   });
 
