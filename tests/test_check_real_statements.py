@@ -74,6 +74,40 @@ def test_unparseable_pdf_counts_import_error_with_masked_kind(tmp_path, capsys):
     assert script.main([str(folder)]) == 1
     out = _out(capsys)
     assert "Erreurs d'import : 1" in out and "bad" not in out
+    assert "  type d'erreur : " in out
+    kind = re.search(r"type d'erreur : (.*) x1", out).group(1)
+    assert kind in (*script.KINDS, "autre")
+
+
+def test_error_kind_is_allowlisted():
+    assert script._kind("PDF illisible : secret 123") == "PDF illisible"
+    assert script._kind("ligne de solde sans montant : 'X 99'") == "ligne de solde sans montant"
+    assert script._kind("autre chose SECRET") == "autre"
+
+
+def test_empty_folder_exits_one(tmp_path, capsys):
+    assert script.main([str(tmp_path)]) == 1
+    assert "Fichiers PDF : 0" in _out(capsys)
+
+
+def test_library_logs_and_warnings_never_reach_output(tmp_path, capsys, monkeypatch):
+    import logging
+    import warnings
+    folder = tmp_path / "rel"
+    folder.mkdir()
+    (folder / "A.PDF").write_bytes(b"%PDF-1.4 x")
+
+    def noisy(*args, **kwargs):
+        logging.getLogger("pdfminer").warning("SECRET 123")
+        warnings.warn("SECRET 123")
+        print("SECRET 123", file=__import__("sys").stderr)
+        raise ValueError("SECRET")
+
+    monkeypatch.setattr(script, "import_pdf", noisy)
+    assert script.main([str(folder)]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "" and "SECRET" not in captured.out
+    assert "Fichiers PDF : 1" in captured.out and "ValueError" in captured.out
 
 
 def test_usage_error(capsys):

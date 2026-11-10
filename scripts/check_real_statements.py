@@ -2,11 +2,14 @@
 
 Usage : python scripts/check_real_statements.py <dossier>
 Aucun libellé, montant, date, nom de fichier ni numéro de compte n'est affiché ; les messages d'erreur
-sont masqués (chiffres remplacés par '#') et tronqués.
+sont ramenés à un type fixe (liste blanche).
 """
-import re
+import contextlib
+import io
+import logging
 import sys
 import tempfile
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -22,11 +25,14 @@ from app.store.db import connect  # noqa: E402
 
 SEED = ROOT / "app" / "classify" / "rules.seed.toml"
 STATUSES = ("ok", "error", "superseded", "conflict")
-MAX_KIND = 40
+KINDS = ("ligne de solde sans montant", "date du relevé introuvable", "PDF illisible",
+         "soldes introuvables", "transaction sans montant", "en-tête de compte/colonnes introuvables",
+         "aucune section")
 
 
-def _mask(text: str) -> str:
-    return re.sub(r"\d", "#", text)[:MAX_KIND]
+def _kind(message: str) -> str:
+    """Type d'erreur parmi une liste fixe (jamais le texte du message, qui peut citer le contenu)."""
+    return next((k for k in KINDS if message.startswith(k)), "autre")
 
 
 def _scalar(conn, sql: str) -> int:
@@ -34,7 +40,7 @@ def _scalar(conn, sql: str) -> int:
 
 
 def collect(folder: Path) -> tuple[dict[str, int], Counter]:
-    pdfs = sorted(p for p in folder.glob("*.pdf") if p.is_file())
+    pdfs = sorted(p for p in folder.glob("*.pdf") if p.is_file() and p.suffix.lower() == ".pdf")
     counts = {"pdf": len(pdfs), "duplicates": 0, "import_errors": 0, "info_lines": 0}
     kinds: Counter = Counter()
     with tempfile.TemporaryDirectory() as tmp:
@@ -53,7 +59,7 @@ def collect(folder: Path) -> tuple[dict[str, int], Counter]:
                     counts["duplicates"] += 1
                 elif report.error:
                     counts["import_errors"] += 1
-                    kinds[_mask(report.error)] += 1
+                    kinds[_kind(report.error)] += 1
                 counts["info_lines"] += sum(s.info_lines for s in report.sections)
             counts["documents"] = _scalar(conn, "SELECT COUNT(*) FROM documents")
             for status in STATUSES:
@@ -74,7 +80,13 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1 or not Path(args[0]).is_dir():
         print("Usage : python scripts/check_real_statements.py <dossier>")
         return 2
-    counts, kinds = collect(Path(args[0]))
+    logging.disable(logging.CRITICAL)
+    try:
+        with warnings.catch_warnings(), contextlib.redirect_stderr(io.StringIO()):
+            warnings.simplefilter("ignore")
+            counts, kinds = collect(Path(args[0]))
+    finally:
+        logging.disable(logging.NOTSET)
     lines = [
         ("Fichiers PDF", counts["pdf"]),
         ("Fichiers en double", counts["duplicates"]),
@@ -93,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{label} : {value}")
     for kind, n in sorted(kinds.items()):
         print(f"  type d'erreur : {kind} x{n}")
-    return 0 if counts["error"] == counts["conflict"] == counts["import_errors"] == 0 else 1
+    clean = counts["error"] == counts["conflict"] == counts["import_errors"] == 0
+    return 0 if clean and counts["pdf"] > 0 else 1
 
 
 if __name__ == "__main__":
