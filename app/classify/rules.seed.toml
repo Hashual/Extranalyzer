@@ -1,0 +1,72 @@
+# Arbre de catégories proposé et règles génériques (aucune donnée personnelle).
+# Un enfant hérite du `kind` de sa racine.
+
+[[category]]
+name = "Courses"
+kind = "expense"
+
+[[category]]
+name = "Restauration"
+kind = "expense"
+
+[[category]]
+name = "Transport"
+kind = "expense"
+children = ["Carburant", "Train", "Covoiturage", "Péage/Parking"]
+
+[[category]]
+name = "Logement"
+kind = "expense"
+
+[[category]]
+name = "Factures & abonnements"
+kind = "expense"
+children = ["Téléphonie/Internet", "Streaming", "Énergie"]
+
+[[category]]
+name = "Santé"
+kind = "expense"
+
+[[category]]
+name = "Loisirs"
+kind = "expense"
+
+[[category]]
+name = "Shopping"
+kind = "expense"
+
+[[category]]
+name = "Cadeaux"
+kind = "expense"
+
+[[category]]
+name = "Frais bancaires"
+kind = "expense"
+
+[[category]]
+name = "Impôts & taxes"
+kind = "expense"
+
+[[category]]
+name = "Divers"
+kind = "expense"
+
+[[category]]
+name = "Revenus"
+kind = "income"
+children = ["Salaire", "Remboursements de proches", "Autres revenus"]
+
+[[category]]
+name = "Épargne"
+kind = "savings"
+children = ["Livret Bleu", "Livret Jeune", "CEL", "Kraken", "Intérêts"]
+
+[[rule]]
+pattern = "INTERETS"
+match = "contains"
+category = "Épargne/Intérêts"
+
+[[rule]]
+pattern = "F COTIS"
+match = "contains"
+category = "Frais bancaires"
