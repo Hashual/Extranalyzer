@@ -130,8 +130,7 @@ class _TxBuilder:
     last_top: float          # ordonnée de la dernière ligne rattachée à la transaction
 
     def build(self) -> ParsedTransaction:
-        if self.amount is None:
-            raise ParseError(f"transaction sans montant : {' '.join(self.label)!r}")
+        assert self.amount is not None
         return ParsedTransaction(self.op_date, self.value_date, " ".join(self.label), self.amount)
 
 
@@ -142,6 +141,7 @@ class _SectionBuilder:
     opening: Decimal | None = None
     closing: Decimal | None = None
     transactions: list[ParsedTransaction] = field(default_factory=list)
+    info_lines: int = 0
     current: _TxBuilder | None = None
 
     @property
@@ -149,16 +149,23 @@ class _SectionBuilder:
         return self.closing is not None
 
     def end_tx(self) -> None:
-        if self.current is not None:
+        """Clôt la transaction en cours. Sans montant (ni sur sa ligne ni sur ses continuations),
+        c'est une entrée d'information (ex. avis de changement de taux) : comptée, pas émise. Une
+        vraie transaction dont le montant serait perdu déséquilibre la section (réconciliation)."""
+        if self.current is None:
+            return
+        if self.current.amount is None:
+            self.info_lines += 1
+        else:
             self.transactions.append(self.current.build())
-            self.current = None
+        self.current = None
 
     def build(self, statement_date: date) -> ParsedSection:
         self.end_tx()
         if self.opening is None or self.closing is None:
             raise ParseError(f"soldes introuvables pour le compte {self.account_number}")
         return ParsedSection(self.account_label, self.account_number, statement_date,
-                             self.opening, self.closing, self.transactions)
+                             self.opening, self.closing, self.transactions, self.info_lines)
 
 
 def _columns(line: _Line, page_width: float) -> _Columns | None:
@@ -293,6 +300,10 @@ class CreditMutuelParser:
         if balance:
             section.end_tx()
             self._read_balance(balance[1], label, amounts, section)
+        elif (section.opening is None and texts[0] == "SOLDE"
+              and not any(cols.in_amount_zone(w) for w in words)):
+            # Premier relevé du compte : « SOLDE NUL » sans date ni montant → ouverture à 0.
+            section.opening = Decimal("0.00")
         elif _is_tx_start(texts):
             section.end_tx()
             section.current = _TxBuilder(_to_date(texts[0]), _to_date(texts[1]), label[2:],

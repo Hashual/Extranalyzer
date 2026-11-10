@@ -67,6 +67,8 @@ BELOW_LINES = ("Banque TEST : Crédit et services fictifs", "Mentions fictives n
 
 @dataclass
 class FTx:
+    """Transaction ; sans `debit` ni `credit`, c'est une entrée d'information sans montant."""
+
     op: str
     val: str
     label: list[str]              # 1re ligne + continuations
@@ -78,8 +80,8 @@ class FTx:
 @dataclass
 class FSection:
     header: str                   # ex. "C/C EUROCOMPTE TEST N° 00000000001 en euros (GD)"
-    opening: tuple[str, str, str]  # ("CREDITEUR"|"DEBITEUR", "11/03/2024", "271,50")
-    closing: tuple[str, str, str]
+    opening: tuple[str, str | None, str | None]  # ("CREDITEUR"|"DEBITEUR", "11/03/2024", "271,50")
+    closing: tuple[str, str | None, str | None]  # ("NUL", None, None) : « SOLDE NUL » seul
     txs: list[FTx]
     repeat_header: str | None = None   # intitulé répété sur les pages suivantes (défaut : header)
 
@@ -203,12 +205,15 @@ class _Writer:
 HEADER_BLOCK_H = HOLDER_GAP + TITLES_GAP + LINE_H + 1
 
 
-def _balance_row(w: _Writer, balance: tuple[str, str, str], closing: bool) -> None:
+def _balance_row(w: _Writer, balance: tuple[str, str | None, str | None], closing: bool) -> None:
+    """Ligne de solde ; sans date ni montant (`day`/`amount` None), seul « SOLDE <kind> » est écrit."""
     kind, day, amount = balance
     if closing:
         w.text(REF_X, w.top, CLOSING_REF)
-    w.text(SOLDE_X, w.top, f"{w.layout.balance_prefix} SOLDE {kind} AU {day}".strip())
-    w.amount("debit" if kind == "DEBITEUR" else "credit", amount)
+    text = f"SOLDE {kind}" if day is None else f"SOLDE {kind} AU {day}"
+    w.text(SOLDE_X, w.top, f"{w.layout.balance_prefix} {text}".strip())
+    if amount is not None:
+        w.amount("debit" if kind == "DEBITEUR" else "credit", amount)
     w.row_done(long_ref=not closing)
 
 

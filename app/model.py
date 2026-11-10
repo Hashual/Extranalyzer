@@ -19,6 +19,7 @@ class ParsedSection:
     opening: Decimal  # signé (DEBITEUR -> négatif)
     closing: Decimal  # signé (DEBITEUR -> négatif)
     transactions: list[ParsedTransaction]
+    info_lines: int = 0  # entrées datées sans montant (avis d'information), ignorées
 
 
 @dataclass

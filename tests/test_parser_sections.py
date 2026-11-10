@@ -358,3 +358,41 @@ def test_pages_after_first_are_shifted(tmp_path):
     x = [_word(p, "Opération")[1]["x0"] for p in pages[:2]]
     assert x[1] - x[0] == 10
     assert len(CreditMutuelParser().parse(pdf).sections[0].transactions) == 60
+
+
+# --- Cas rares des relevés réels (fix 3) --------------------------------------------------------
+
+def test_dated_information_entry_without_amount_is_skipped(tmp_path):
+    doc = _parse(tmp_path, [FSection(CC, OPEN, ("CREDITEUR", "10/04/2024", "97,50"), [
+        FTx("11/03/2024", "11/03/2024", ["PRLV TEST"], debit="2,50"),
+        FTx("12/03/2024", "12/03/2024", ["INFORMATION TAUX FICTIF MODIFIE", "NOUVEAU TAUX AU 01/04/2024"]),
+        FTx("13/03/2024", "13/03/2024", ["VIR SEPA X", "MOTIF Y"], credit="30,00", amount_line=1),
+        FTx("14/03/2024", "14/03/2024", ["RETRAIT DAB TEST"], debit="30,00")])])
+    s = doc.sections[0]
+    assert s.info_lines == 1
+    assert [(t.label, t.amount) for t in s.transactions] == [
+        ("PRLV TEST", Decimal("-2.50")), ("VIR SEPA X MOTIF Y", Decimal("30.00")),
+        ("RETRAIT DAB TEST", Decimal("-30.00"))]
+
+
+def test_info_lines_default_zero(tmp_path):
+    doc = _parse(tmp_path, _two_accounts())
+    assert [s.info_lines for s in doc.sections] == [0, 0]
+
+
+def test_opening_without_date_nor_amount_is_zero(tmp_path):
+    doc = _parse(tmp_path, [FSection(CC, ("NUL", None, None), ("CREDITEUR", "10/04/2024", "70,00"), [
+        FTx("11/03/2024", "11/03/2024", ["VIR DE M TEST"], credit="100,00"),
+        FTx("12/03/2024", "12/03/2024", ["PRLV TEST"], debit="30,00")])],
+        other_accounts=[("00000000003 LIVRET TEST", "+1.674,99")])
+    s = doc.sections[0]
+    assert s.opening == Decimal("0.00")
+    assert s.closing == Decimal("70.00")
+    assert s.opening + sum(t.amount for t in s.transactions) == s.closing
+
+
+def test_closing_without_date_nor_amount_is_not_a_balance(tmp_path):
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [FSection(
+        CC, OPEN, ("NUL", None, None), [FTx("11/03/2024", "11/03/2024", ["PRLV TEST"], debit="2,50")])])
+    with pytest.raises(ParseError, match="soldes introuvables"):
+        CreditMutuelParser().parse(pdf)
