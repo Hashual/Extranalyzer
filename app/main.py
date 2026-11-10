@@ -220,6 +220,10 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
         api.include_router(tab.router, prefix=f"/tabs/{tab.id}")
     app.include_router(api)
 
+    @app.get("/healthz", include_in_schema=False)
+    def healthz():
+        return {"ok": True}
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(WEB_DIR / "index.html")

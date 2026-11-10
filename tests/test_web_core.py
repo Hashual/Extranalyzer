@@ -200,6 +200,16 @@ def test_security_headers(client):
     assert "no-store" not in client.get("/static/app.js").headers.get("cache-control", "")
 
 
+def test_healthz_is_public_and_carries_security_headers(settings):
+    anonymous = _client(settings)          # sans session ni en-tête CSRF
+    r = anonymous.get("/healthz")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["referrer-policy"] == "no-referrer"
+    assert "content-security-policy" in r.headers
+
+
 def test_post_without_custom_header_forbidden(client):
     assert client.post("/api/logout").status_code == 403
     assert client.post("/api/reanalyse").status_code == 403
