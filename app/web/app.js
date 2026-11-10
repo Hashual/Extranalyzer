@@ -175,7 +175,7 @@ function reportLines(report) {
   if (report.duplicate_file) return { kind: "info", lines: ["Ce relevé a déjà été importé."] };
   const lines = report.sections.map((s) => {
     const describe = SECTION_STATUS[s.status] || (() => s.status);
-    return `Compte ••${s.account_number.slice(-4)} au ${formatDate(s.statement_date)} : ${describe(s)}`;
+    return `Compte ••${s.number_tail} au ${formatDate(s.statement_date)} : ${describe(s)}`;
   });
   if (report.error) lines.push(report.error);
   const failed = report.error || report.sections.some((s) => s.status === "error" || s.status === "conflict");

@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 from app.auth import RateLimiter, hash_password, verify_password
 from app.config import ConfigError, Settings, load_settings
 from app.main import create_app
+from app.store.db import connect
 from app.tabs import ENABLED_TABS, load_tabs
 from app.tabs.registry import Tab
+from app.web_json import mask_numbers
 from pdfgen import FSection, FTx, make_statement
 
 PASSWORD = "mot-de-passe-test"
@@ -94,8 +96,18 @@ def test_load_settings_from_env(tmp_path, monkeypatch):
     assert s.max_upload_mb == 20 and verify_password("depuis-env", s.password_hash)
 
 
+def test_load_settings_rejects_both_password_sources(tmp_path, monkeypatch):
+    secret = tmp_path / "pw.txt"
+    secret.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("EXTRANALYZER_PASSWORD", "x")
+    monkeypatch.setenv("EXTRANALYZER_PASSWORD_FILE", str(secret))
+    with pytest.raises(ConfigError):
+        load_settings()
+
+
 def test_load_settings_default_data_dir(monkeypatch):
     monkeypatch.delenv("EXTRANALYZER_DATA_DIR", raising=False)
+    monkeypatch.delenv("EXTRANALYZER_MAX_UPLOAD_MB", raising=False)
     monkeypatch.delenv("EXTRANALYZER_PASSWORD_FILE", raising=False)
     monkeypatch.setenv("EXTRANALYZER_PASSWORD", "x")
     assert str(load_settings().data_dir).replace("\\", "/") == "/data"
@@ -161,9 +173,38 @@ def test_session_survives_restart_with_same_secret(settings):
     assert c2.get("/api/tabs").status_code == 200
 
 
+def test_short_or_empty_secret_key_fails_closed(settings):
+    settings.data_dir.mkdir(parents=True)
+    key = settings.data_dir / "secret.key"
+    key.write_bytes(b"")
+    with pytest.raises(RuntimeError, match="secret.key"):
+        create_app(settings)
+    key.write_bytes(b"x" * 31)
+    with pytest.raises(RuntimeError, match="secret.key"):
+        create_app(settings)
+
+
+def test_secret_key_created_without_leftover_temp_file(settings):
+    _client(settings)
+    assert sorted(p.name for p in settings.data_dir.iterdir() if "secret" in p.name) == ["secret.key"]
+
+
+def test_security_headers(client):
+    for path in ("/", "/static/app.js", "/api/tabs"):
+        r = client.get(path)
+        assert r.headers["content-security-policy"] ==             "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["referrer-policy"] == "no-referrer"
+    assert client.get("/api/tabs").headers["cache-control"] == "no-store"
+    assert client.post("/api/logout").headers["cache-control"] == "no-store"      # réponse 403 du garde
+    assert "no-store" not in client.get("/static/app.js").headers.get("cache-control", "")
+
+
 def test_post_without_custom_header_forbidden(client):
     assert client.post("/api/logout").status_code == 403
     assert client.post("/api/reanalyse").status_code == 403
+    assert client.post("/api/upload", files={"file": ("a.pdf", b"%PDF-1")}).status_code == 403
+    assert client.post("/api/sections/1/resolve", json={"accept": False}).status_code == 403
     assert client.post("/api/login", json={"password": PASSWORD}).status_code == 403
     assert client.get("/api/tabs").status_code == 200      # la session reste valide
 
@@ -222,6 +263,7 @@ def test_upload_synthetic_pdf_then_meta(client, tmp_path):
     assert report["error"] is None and report["duplicate_file"] is False
     [section] = report["sections"]
     assert section["status"] == "ok" and section["tx_count"] == 3
+    assert section["number_tail"] == "0001" and "account_number" not in section
     assert section["gap"] == "0.00" and section["statement_date"] == "2024-04-10"
 
     meta = client.get("/api/meta").json()
@@ -235,6 +277,22 @@ def test_upload_synthetic_pdf_then_meta(client, tmp_path):
 
     again = client.post("/api/upload", files=files, headers=H).json()
     assert again["duplicate_file"] is True
+
+
+def test_meta_attaches_deeper_categories_to_their_root(client, settings):
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    with conn:
+        root = conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES ('Racine test', NULL, "
+                            "'expense')").lastrowid
+        child = conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES ('Enfant', ?, 'expense')",
+                             (root,)).lastrowid
+        grandchild = conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES ('Petit-enfant', ?, "
+                                  "'expense')", (child,)).lastrowid
+    conn.close()
+    r = client.get("/api/meta")
+    assert r.status_code == 200
+    [node] = [c for c in r.json()["categories"] if c["id"] == root]
+    assert {c["id"] for c in node["children"]} == {child, grandchild}
 
 
 def test_meta_empty_database(client):
@@ -260,6 +318,35 @@ def test_upload_over_limit(client):
     r = client.post("/api/upload", files={"file": ("big.pdf", way_over, "application/pdf")}, headers=H)
     assert r.status_code == 413
     assert client.get("/api/meta").status_code == 200
+
+
+def test_upload_without_content_length(client):
+    r = client.post("/api/upload", content=iter([b"%PDF-1"]), headers={**H, "Content-Type": "multipart/form-data"})
+    assert r.status_code == 411
+
+
+def test_resolve_unknown_section(client):
+    r = client.post("/api/sections/9999/resolve", json={"accept": True}, headers=H)
+    assert r.status_code == 404
+
+
+def test_account_numbers_masked_in_messages(client, tmp_path):
+    client.post("/api/upload", files={"file": ("a.pdf", _pdf(tmp_path, "a.pdf", [_cc_section()]))}, headers=H)
+    # même opérations, autre date de relevé : collision d'identité → message citant le compte
+    other = make_statement(tmp_path / "c.pdf", "10 mai 2024", [FSection(
+        CC, ("CREDITEUR", "11/03/2024", "100,00"), ("CREDITEUR", "10/05/2024", "1.087,50"),
+        _cc_section().txs)]).read_bytes()
+    report = client.post("/api/upload", files={"file": ("c.pdf", other)}, headers=H)
+    assert "00000000001" not in report.text
+    section = report.json()["sections"][0]
+    assert section["status"] == "error" and "0001" in section["message"]
+
+    r = client.post(f"/api/sections/{section['section_id']}/resolve", json={"accept": True}, headers=H)
+    assert r.status_code == 409
+
+
+def test_mask_numbers():
+    assert mask_numbers("compte 00000000001 au 2024-04-10, écart 1.087,50") ==         "compte ••0001 au 2024-04-10, écart 1.087,50"
 
 
 def test_resolve_conflict_accept(client, tmp_path):

@@ -27,7 +27,7 @@ from app.importer.service import ImportReport, import_pdf, reanalyse_all, resolv
 from app.model import ParseError
 from app.store.db import connect
 from app.tabs import ENABLED_TABS, load_tabs
-from app.web_json import to_jsonable
+from app.web_json import mask_numbers, report_to_json
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +36,17 @@ PARSERS = [CreditMutuelParser()]
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 CSRF_HEADER = "x-extranalyzer"
 MULTIPART_OVERHEAD = 64 * 1024     # marge d'en-têtes multipart tolérée au-delà de la taille maximale
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
 
 T = TypeVar("T")
+
+
+class UnknownSection(LookupError):
+    pass
 
 
 class LoginBody(BaseModel):
@@ -63,11 +72,11 @@ def _safe_filename(name: str | None) -> str:
     return base[:255] or "releve.pdf"
 
 
-def _content_length(request: Request) -> int:
+def _content_length(request: Request) -> int | None:
     try:
-        return int(request.headers.get("content-length", "0"))
-    except ValueError:
-        return 0
+        return int(request.headers["content-length"])
+    except (KeyError, ValueError):
+        return None
 
 
 def _init_storage(settings: Settings) -> None:
@@ -85,15 +94,21 @@ def _meta(conn: sqlite3.Connection) -> dict:
     accounts = [{"id": i, "label": label, "kind": kind, "number_tail": number[-4:]}
                 for i, label, kind, number in
                 conn.execute("SELECT id, label, kind, number FROM accounts ORDER BY id")]
-    roots: dict[int, dict] = {}
-    children: list[tuple] = []
-    for i, name, parent_id, kind in conn.execute("SELECT id, name, parent_id, kind FROM categories ORDER BY id"):
+    rows = conn.execute("SELECT id, name, parent_id, kind FROM categories ORDER BY id").fetchall()
+    parents = {i: parent_id for i, _, parent_id, _ in rows}
+    roots = {i: {"id": i, "name": name, "kind": kind, "children": []}
+             for i, name, parent_id, kind in rows if parent_id is None}
+    for i, name, parent_id, _ in rows:
         if parent_id is None:
-            roots[i] = {"id": i, "name": name, "kind": kind, "children": []}
+            continue
+        root, seen = parent_id, {i}
+        while parents.get(root) is not None and root not in seen:   # remonte jusqu'à la racine
+            seen.add(root)
+            root = parents[root]
+        if root in roots:
+            roots[root]["children"].append({"id": i, "name": name})
         else:
-            children.append((i, name, parent_id))
-    for i, name, parent_id in children:
-        roots[parent_id]["children"].append({"id": i, "name": name})
+            log.warning("catégorie %s ignorée : aucune racine (parent absent ou cycle)", i)
     unclassified = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL").fetchone()[0]
     low, high = conn.execute("SELECT MIN(op_date), MAX(op_date) FROM transactions").fetchone()
@@ -121,18 +136,30 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db_path = db_path
 
-    @app.middleware("http")
-    async def guard(request: Request, call_next):
+    def api_guard(request: Request) -> JSONResponse | None:
+        """Refus éventuel d'une requête /api avant routage (CSRF, session, taille du dépôt)."""
         path = request.url.path
-        if path == "/api" or path.startswith("/api/"):
-            if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != "1":
-                return JSONResponse({"detail": "en-tête X-Extranalyzer manquant"}, status_code=403)
-            if path != "/api/login" and not sessions.valid(request.cookies.get(SESSION_COOKIE)):
-                return JSONResponse({"detail": "authentification requise"}, status_code=401)
-            if path == "/api/upload" and _content_length(request) > max_bytes + MULTIPART_OVERHEAD:
+        if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != "1":
+            return JSONResponse({"detail": "en-tête X-Extranalyzer manquant"}, status_code=403)
+        if path != "/api/login" and not sessions.valid(request.cookies.get(SESSION_COOKIE)):
+            return JSONResponse({"detail": "authentification requise"}, status_code=401)
+        if path == "/api/upload" and request.method == "POST":
+            length = _content_length(request)
+            if length is None:
+                return JSONResponse({"detail": "en-tête Content-Length requis"}, status_code=411)
+            if length > max_bytes + MULTIPART_OVERHEAD:
                 return JSONResponse({"detail": f"fichier trop volumineux (maximum {settings.max_upload_mb} Mo)"},
                                     status_code=413)
-        return await call_next(request)
+        return None
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        is_api = request.url.path == "/api" or request.url.path.startswith("/api/")
+        response = (api_guard(request) if is_api else None) or await call_next(request)
+        response.headers.update(SECURITY_HEADERS)
+        if is_api:
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     api = APIRouter(prefix="/api")
 
@@ -167,7 +194,6 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
         except Exception as exc:     # fichier hostile ou inattendu : rapport d'erreur, le serveur continue
             log.error("échec de l'import d'un relevé (%s)", type(exc).__name__)
             return ImportReport(None, False, [], "échec de l'analyse du relevé")
-
     @api.post("/upload")
     async def upload(file: Annotated[UploadFile, File()]):
         data = await file.read(max_bytes + 1)
@@ -177,22 +203,27 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
             report = ImportReport(None, False, [], "le fichier n'est pas un PDF")
         else:
             report = await run_in_threadpool(_import, data, _safe_filename(file.filename))
-        return to_jsonable(report)
+        return report_to_json(report)
 
     @api.post("/sections/{section_id}/resolve")
     def resolve(section_id: int, body: ResolveBody):
         def run(conn: sqlite3.Connection) -> str:
+            if conn.execute("SELECT 1 FROM sections WHERE id = ?", (section_id,)).fetchone() is None:
+                raise UnknownSection
             resolve_conflict(conn, section_id, body.accept, on_new_transactions, pdf_dir=pdf_dir, parsers=PARSERS)
             return conn.execute("SELECT status FROM sections WHERE id = ?", (section_id,)).fetchone()[0]
         try:
             status = write(run)
+        except UnknownSection:
+            raise HTTPException(404, f"section {section_id} introuvable") from None
         except (ValueError, ParseError) as exc:
-            raise HTTPException(409, str(exc)) from None
+            raise HTTPException(409, mask_numbers(str(exc))) from None
         return {"id": section_id, "status": status}
 
     @api.post("/reanalyse")
     def reanalyse():
-        return to_jsonable(write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, on_new_transactions)))
+        reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, on_new_transactions))
+        return [report_to_json(r) for r in reports]
 
     for tab in tabs:
         api.include_router(tab.router, prefix=f"/tabs/{tab.id}")

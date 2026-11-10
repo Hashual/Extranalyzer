@@ -31,15 +31,37 @@ def verify_password(password: str, stored: bytes) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def load_or_create_secret(path: Path) -> bytes:
-    """Clé de signature des sessions, créée en 0600 si absente (au mieux sous Windows)."""
+SECRET_LEN = 32
+
+
+def _write_secret_atomically(path: Path) -> None:
+    """Écrit une clé neuve dans un fichier temporaire 0600, la synchronise puis la met en place."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-    except FileExistsError:
-        return path.read_bytes()
-    with os.fdopen(fd, "wb") as f:
-        f.write(secrets.token_bytes(32))
-    return path.read_bytes()
+        with os.fdopen(fd, "wb") as f:
+            f.write(secrets.token_bytes(SECRET_LEN))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def load_or_create_secret(path: Path) -> bytes:
+    """Clé de signature des sessions, créée en 0600 si absente (au mieux sous Windows).
+
+    Échoue fermé : une clé existante de moins de 32 octets (vide, tronquée) arrête le démarrage
+    plutôt que de signer des sessions falsifiables.
+    """
+    if not path.exists():
+        _write_secret_atomically(path)
+    secret = path.read_bytes()
+    if len(secret) < SECRET_LEN:
+        raise RuntimeError(f"{path.name} invalide ({len(secret)} octets, {SECRET_LEN} minimum) : "
+                           f"supprimer le fichier pour en générer un nouveau")
+    return secret
 
 
 class Sessions:
