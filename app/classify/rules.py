@@ -66,7 +66,8 @@ def _in_clause(ids: list[int]) -> str:
 
 
 def _non_manual_rows(conn: sqlite3.Connection, tx_ids: list[int] | None) -> list[tuple]:
-    sql = "SELECT id, label_norm, amount_cents, account_id FROM transactions WHERE manual = 0"
+    sql = ("SELECT id, label_norm, amount_cents, account_id FROM transactions "
+           "WHERE manual = 0 AND mirror_of IS NULL")      # la jambe miroir suit sa source
     if tx_ids is None:
         return conn.execute(sql).fetchall()
     rows = []
@@ -76,11 +77,24 @@ def _non_manual_rows(conn: sqlite3.Connection, tx_ids: list[int] | None) -> list
     return rows
 
 
+def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) -> None:
+    """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None)."""
+    sql = ("UPDATE transactions SET category_id = (SELECT s.category_id FROM transactions s "
+           "WHERE s.id = transactions.mirror_of), rule_id = NULL WHERE mirror_of ")
+    if source_ids is None:
+        conn.execute(sql + "IS NOT NULL")
+        return
+    for start in range(0, len(source_ids), 500):
+        chunk = source_ids[start:start + 500]
+        conn.execute(sql + f"IN ({_in_clause(chunk)})", chunk)
+
+
 def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> int:
     """Reclasse les transactions non manuelles (toutes si `tx_ids` est None) ; renvoie le nombre classées."""
     rules = _rules_by_precedence(conn)
     classified = 0
-    for tx_id, label_norm, amount_cents, account_id in _non_manual_rows(conn, tx_ids):
+    rows = _non_manual_rows(conn, tx_ids)
+    for tx_id, label_norm, amount_cents, account_id in rows:
         winner = next((r for r in rules if _matches(r, label_norm, amount_cents, account_id)), None)
         if winner is None:
             conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL WHERE id = ?", (tx_id,))
@@ -88,6 +102,7 @@ def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> in
             conn.execute("UPDATE transactions SET category_id = ?, rule_id = ? WHERE id = ?",
                          (winner.category_id, winner.id, tx_id))
             classified += 1
+    sync_mirrors(conn, None if tx_ids is None else [r[0] for r in rows])
     return classified
 
 
@@ -152,3 +167,4 @@ def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int |
                  "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
     conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL WHERE id = ?",
                  (category_id, tx_id))
+    sync_mirrors(conn, [tx_id])
