@@ -3,7 +3,6 @@ import sqlite3
 from app.analytics.periods import Period
 from app.importer.amounts import from_cents
 
-_TOLERANCE = 0.10
 _MIN_MONTHS = 3
 
 
@@ -12,14 +11,15 @@ def _ordinal(month: str) -> int:
 
 
 def _stable(amounts: list[int]) -> bool:
-    avg = sum(amounts) / len(amounts)
-    return all(abs(a - avg) <= avg * _TOLERANCE for a in amounts)
+    n, total = len(amounts), sum(amounts)
+    # |a - total/n| <= 10 % de total/n, en entiers : 10 * |a*n - total| <= total
+    return all(10 * abs(a * n - total) <= total for a in amounts)
 
 
 def _best_window(months: list[tuple[str, int]]) -> list[tuple[str, int]] | None:
-    """Plus longue fenêtre de mois consécutifs (>=3) dont les montants sont à ±10 %."""
+    """Plus longue fenêtre (>=3 mois consécutifs) stable à ±10 % ; à taille égale, la plus récente."""
     for size in range(len(months), _MIN_MONTHS - 1, -1):
-        for i in range(len(months) - size + 1):
+        for i in range(len(months) - size, -1, -1):
             window = months[i : i + size]
             if _stable([c for _, c in window]):
                 return window
@@ -46,7 +46,7 @@ def recurring(
     else:
         sql += f" AND t.account_id IN ({','.join('?' * len(account_ids))})"
         params += list(account_ids)
-    sql += " GROUP BY 1, 2 HAVING SUM(t.amount_cents) < 0 ORDER BY 1, 2"
+    sql += " GROUP BY 1, 2 ORDER BY 1, 2"
 
     by_label: dict[str, list[tuple[str, int]]] = {}
     for label, month, cents in conn.execute(sql, params):
@@ -66,10 +66,11 @@ def recurring(
         best = None
         for r in runs:
             w = _best_window(r) if len(r) >= _MIN_MONTHS else None
-            if w and (best is None or len(w) > len(best)):
+            if w and (best is None or len(w) >= len(best)):
                 best = w
         if best:
-            avg = round(sum(c for _, c in best) / len(best))
+            total, k = sum(c for _, c in best), len(best)
+            avg = (2 * total + k) // (2 * k)  # arrondi au centime, sans flottant
             found.append(
                 {"label_norm": label, "avg_amount": from_cents(avg), "months": [m for m, _ in best]}
             )

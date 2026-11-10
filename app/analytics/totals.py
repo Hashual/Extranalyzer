@@ -91,7 +91,7 @@ def by_category(
         key, name = "c.id", "c.name"
     extra, extra_params = "", []
     if parent_id is not None:
-        extra, extra_params = " AND c.parent_id = ?", [parent_id]
+        extra, extra_params = " AND (c.parent_id = ? OR c.id = ?)", [parent_id, parent_id]
     rows = conn.execute(
         f"""
         SELECT {key}, {name}, SUM({amount})
@@ -104,7 +104,11 @@ def by_category(
         """,
         params + [kind] + extra_params,
     ).fetchall()
-    result = [(cid, n, from_cents(cents)) for cid, n, cents in rows]
+    result = [
+        (cid, f"{n} (sans sous-catégorie)" if parent_id is not None and cid == parent_id else n,
+         from_cents(cents))
+        for cid, n, cents in rows
+    ]
     # Opérations non classées : visibles dans la vue racine uniquement.
     if kind in ("expense", "income") and parent_id is None:
         sign = "amount_cents < 0" if kind == "expense" else "amount_cents > 0"
@@ -129,16 +133,17 @@ def monthly_series(
     for key in month_keys(p):
         mp = clip_month(p, key)
         t = totals(conn, mp, account_ids)
+        cats = {
+            cid: (name, amt)
+            for cid, name, amt in by_category(conn, mp, account_ids, "expense", "parent")
+        }
         series.append(
             {
                 "month": key,
                 "expenses": t.expenses,
                 "income": t.income,
                 "savings_net": t.savings_net,
-                "by_category": {
-                    name: amt
-                    for _, name, amt in by_category(conn, mp, account_ids, "expense", "parent")
-                },
+                "by_category": {name: amt for name, amt in cats.values()},
             }
         )
     return series
@@ -151,9 +156,16 @@ def top_increases(
     account_ids: list[int] | None,
     n: int = 5,
 ) -> list[tuple[str, Decimal]]:
-    now = {name: amt for _, name, amt in by_category(conn, cur, account_ids, "expense", "parent")}
-    before = {name: amt for _, name, amt in by_category(conn, ref, account_ids, "expense", "parent")}
-    diffs = [(name, amt - before.get(name, Decimal("0.00"))) for name, amt in now.items()]
+    def rows(period: Period) -> dict[int, tuple[str, Decimal]]:
+        return {
+            cid: (name, amt)
+            for cid, name, amt in by_category(conn, period, account_ids, "expense", "parent")
+            if cid is not None  # « À classer » n'est pas une catégorie comparable
+        }
+
+    now, before = rows(cur), rows(ref)
+    zero = Decimal("0.00")
+    diffs = [(name, amt - before.get(cid, (name, zero))[1]) for cid, (name, amt) in now.items()]
     diffs = [d for d in diffs if d[1] > 0]
     diffs.sort(key=lambda d: (-d[1], d[0]))
     return diffs[:n]
