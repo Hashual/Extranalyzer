@@ -14,6 +14,9 @@ PAGE_W, PAGE_H = 595, 842
 FONT, SIZE = "Helvetica", 9
 TITLE_SIZE = 11
 LINE_H = 12
+MARGIN_REF_X = 10      # référence technique en marge, à gauche de la colonne date
+MARGIN_REF_SIZE = 4
+MARGIN_REF = "KV.0000.000"
 
 DATE_X = 40            # colonne « Date » (date d'opération)
 VALUE_DATE_X = 95      # colonne « Date valeur »
@@ -47,13 +50,15 @@ class FSection:
     opening: tuple[str, str, str]  # ("CREDITEUR"|"DEBITEUR", "11/03/2024", "271,50")
     closing: tuple[str, str, str]
     txs: list[FTx]
+    repeat_header: str | None = None   # intitulé répété sur les pages suivantes (défaut : header)
 
 
 class _Writer:
-    def __init__(self, path: Path, x_shift: float, amounts_drawn_last: bool):
+    def __init__(self, path: Path, x_shift: float, amounts_drawn_last: bool, margin_refs: bool):
         self.c = canvas.Canvas(str(path), pagesize=(PAGE_W, PAGE_H))
         self.x_shift = x_shift
         self.amounts_drawn_last = amounts_drawn_last
+        self.margin_refs = margin_refs
         self.page = 1
         self.top = TABLE_TOP
         self.rows = 0               # lignes de tableau sur la page courante
@@ -82,6 +87,8 @@ class _Writer:
         self.c.drawRightString(right, self._y(top), s)
 
     def next_line(self, table_row: bool = True) -> None:
+        if table_row and self.margin_refs:
+            self.text(MARGIN_REF_X, self.top, MARGIN_REF, size=MARGIN_REF_SIZE)
         self.top += LINE_H
         if table_row:
             self.rows += 1
@@ -101,10 +108,11 @@ class _Writer:
         self.top = TABLE_TOP
         self.rows = 0
 
-    def section_header(self, header: str) -> None:
+    def section_header(self, header: str, columns: bool = True) -> None:
         self.text(DATE_X, self.top, header)
-        self.text(DEBIT_HDR_X + self.x_shift, self.top, "Débit EUROS")
-        self.text(CREDIT_HDR_X + self.x_shift, self.top, "Crédit EUROS")
+        if columns:
+            self.text(DEBIT_HDR_X + self.x_shift, self.top, "Débit EUROS")
+            self.text(CREDIT_HDR_X + self.x_shift, self.top, "Crédit EUROS")
         self.next_line(table_row=False)
         self.text(DATE_X, self.top, "Date")
         self.text(VALUE_DATE_X, self.top, "Date valeur")
@@ -116,9 +124,9 @@ class _Writer:
         self.c.save()
 
 
-def _balance_row(w: _Writer, balance: tuple[str, str, str]) -> None:
+def _balance_row(w: _Writer, balance: tuple[str, str, str], prefix: str) -> None:
     kind, day, amount = balance
-    w.text(LABEL_X, w.top, f"SOLDE {kind} AU {day}")
+    w.text(LABEL_X, w.top, f"{prefix} SOLDE {kind} AU {day}".strip())
     w.amount("debit" if kind == "DEBITEUR" else "credit", amount)
     w.next_line()
 
@@ -139,7 +147,8 @@ def _tx_rows(w: _Writer, tx: FTx) -> None:
 
 def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
                    other_accounts: list[tuple[str, str]] = (), rows_per_page: int = 25,
-                   x_shift: float = 0, amounts_drawn_last: bool = True) -> Path:
+                   x_shift: float = 0, amounts_drawn_last: bool = True, repeat_columns: bool = True,
+                   margin_refs: bool = False, balance_prefix: str = "") -> Path:
     """Dessine un relevé synthétique.
 
     - Page 1 : titre « RELEVE ET INFORMATIONS BANCAIRES » et `statement_date`.
@@ -151,9 +160,16 @@ def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
     - Pied de page `Page N` sur chaque page.
     - `x_shift` décale les colonnes Débit/Crédit (en-têtes et montants).
     - `amounts_drawn_last` : les montants sont écrits dans le flux après tous les libellés de la page.
+    - `repeat_columns=False` : l'en-tête répété sur une nouvelle page n'a pas `Débit`/`Crédit`.
+    - `margin_refs` : référence technique (`KV.0000.000`) en marge gauche de chaque ligne de tableau.
+    - `balance_prefix` : mot(s) écrit(s) avant `SOLDE …` sur les lignes de solde.
     """
+    for section in sections:
+        for tx in section.txs:
+            assert tx.label, f"FTx sans libellé : {tx!r}"
+            assert 0 <= tx.amount_line < len(tx.label), f"amount_line hors libellé : {tx!r}"
     path = Path(path)
-    w = _Writer(path, x_shift, amounts_drawn_last)
+    w = _Writer(path, x_shift, amounts_drawn_last, margin_refs)
     w.text(DATE_X, TITLE_TOP, "RELEVE ET INFORMATIONS BANCAIRES", size=TITLE_SIZE)
     w.text(400, DATE_TOP, statement_date)
 
@@ -167,11 +183,11 @@ def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
             size = len(item.label) if isinstance(item, FTx) else 1
             if not w.fits(size, rows_per_page):
                 w.end_page()
-                w.section_header(section.header)
+                w.section_header(section.repeat_header or section.header, columns=repeat_columns)
             if isinstance(item, FTx):
                 _tx_rows(w, item)
             else:
-                _balance_row(w, item)
+                _balance_row(w, item, balance_prefix)
 
     if other_accounts:
         w.top += SECTION_GAP

@@ -24,7 +24,12 @@ _MONTHS = {
     "janvier": 1, "février": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6, "juillet": 7,
     "août": 8, "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12,
 }
+_STATEMENT_DATE_RE = re.compile(r"\b(\d{1,2}) (" + "|".join(_MONTHS) + r") (\d{4})\b")
+_HEADER_RE = re.compile(r"^(?P<label>.+?) N° (?P<number>\d+) en euros")
+_BALANCE_RE = re.compile(r"\bSOLDE (CREDITEUR|DEBITEUR) AU\b")
 _BALANCE_KINDS = {"CREDITEUR": 1, "DEBITEUR": -1}
+OTHER_ACCOUNTS = "SITUATION DE VOS AUTRES COMPTES"
+_FOOTER_RE = re.compile(r"Page \d+")
 
 Word = dict  # mot pdfplumber : clés text, x0, x1, top, ...
 
@@ -37,6 +42,10 @@ class _Line:
     @property
     def texts(self) -> list[str]:
         return [w["text"] for w in self.words]
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.texts)
 
 
 def _group_lines(words: list[Word]) -> list[_Line]:
@@ -115,35 +124,45 @@ class _SectionBuilder:
         return ParsedSection(self.account_label, self.account_number, statement_date,
                              self.opening, self.closing, self.transactions)
 
+    @property
+    def closed(self) -> bool:
+        return self.closing is not None
 
-def _section_header(line: _Line) -> tuple[_Columns, str, str] | None:
-    """Ligne d'en-tête de compte : intitulé, `N° <numéro>`, puis `Débit EUROS Crédit EUROS`."""
+
+def _columns(line: _Line) -> _Columns | None:
+    """Colonnes de montants, repérées par les seuls mots `Débit` et `Crédit` de la ligne."""
     by_text = {w["text"]: w for w in line.words}
     debit, credit = by_text.get("Débit"), by_text.get("Crédit")
     if debit is None or credit is None:
         return None
-    cols = _Columns(debit["x0"], credit["x0"])
-    texts = [w["text"] for w in line.words if not cols.in_amount_zone(w)]
-    if "N°" not in texts:
-        return None
-    i = texts.index("N°")
-    if i + 1 >= len(texts):
-        return None
-    return cols, " ".join(texts[:i]), texts[i + 1]
+    return _Columns(debit["x0"], credit["x0"])
+
+
+def _account_header(line: _Line) -> tuple[str, str] | None:
+    """En-tête de compte `<intitulé> N° <numéro> en euros` : (intitulé, numéro)."""
+    m = _HEADER_RE.match(line.text)
+    return (m["label"], m["number"]) if m else None
+
+
+def _is_tx_start(texts: list[str]) -> bool:
+    """Première ligne d'une transaction : date d'opération puis date de valeur."""
+    return len(texts) >= 2 and _is_date(texts[0]) and _is_date(texts[1])
 
 
 def _is_titles_line(texts: list[str]) -> bool:
     return bool(texts) and texts[0] == "Date" and "Opération" in texts
 
 
-def _statement_date(lines: list[_Line]) -> date | None:
-    for line in lines:
-        t = line.texts
-        for i in range(len(t) - 2):
-            month = _MONTHS.get(t[i + 1].lower())
-            if month and t[i].isdigit() and re.fullmatch(r"\d{4}", t[i + 2]):
-                return date(int(t[i + 2]), month, int(t[i]))
-    return None
+def _statement_date(pages: list[list[_Line]]) -> date:
+    for lines in pages:
+        for line in lines:
+            m = _STATEMENT_DATE_RE.search(line.text)
+            if m:
+                try:
+                    return date(int(m[3]), _MONTHS[m[2]], int(m[1]))
+                except ValueError as exc:
+                    raise ParseError(f"date du relevé invalide : {m[0]!r}") from exc
+    raise ParseError("date du relevé introuvable")
 
 
 class CreditMutuelParser:
@@ -169,30 +188,54 @@ class CreditMutuelParser:
         if not pages:
             raise ParseError("PDF sans page")
 
-        statement_date = _statement_date(pages[0])
-        if statement_date is None:
-            raise ParseError("date du relevé introuvable")
-
+        statement_date = _statement_date(pages)
         sections = self._read_sections(pages)
         if not sections:
             raise ParseError("aucune section de compte trouvée")
         return ParsedDocument(statement_date, [s.build(statement_date) for s in sections])
 
     def _read_sections(self, pages: list[list[_Line]]) -> list[_SectionBuilder]:
+        """Découpe le document en sections de compte.
+
+        Les lignes ne sont rattachées à la section courante que pendant la lecture (`reading`) :
+        elle reprend à chaque en-tête de compte (nouveau ou répété) et s'interrompt au changement
+        de page, au pied de page `Page N` et au bloc `SITUATION DE VOS AUTRES COMPTES`. Après le
+        solde de clôture, plus rien n'est rattaché à la section.
+        """
         sections: list[_SectionBuilder] = []
         section: _SectionBuilder | None = None
         for lines in pages:
             cols: _Columns | None = None   # colonnes repérées page par page
+            reading = False                # reprend après l'en-tête de compte répété
             for line in lines:
-                header = _section_header(line)
-                if header is not None:
-                    cols, label, number = header
+                text = line.text
+                if OTHER_ACCOUNTS in text:
                     if section is not None:
                         section.end_tx()
-                    section = _SectionBuilder(label, number)
-                    sections.append(section)
+                    reading = False
                     continue
-                if section is None or cols is None:
+                if _FOOTER_RE.fullmatch(text):
+                    reading = False
+                    continue
+                line_cols, header = _columns(line), _account_header(line)
+                if line_cols is not None:
+                    cols = line_cols
+                if header is not None:
+                    label, number = header
+                    if section is None or section.account_number != number:
+                        if section is not None:
+                            section.end_tx()
+                        section = _SectionBuilder(label, number)
+                        sections.append(section)
+                if header is not None or line_cols is not None:
+                    reading = True     # en-tête sans intitulé reconnu : section en cours
+                    continue
+                if not reading or section is None or section.closed:
+                    continue
+                if cols is None:
+                    if _is_tx_start(line.texts):
+                        raise ParseError("colonnes Débit/Crédit introuvables sur une page du "
+                                         f"compte {section.account_number}")
                     continue
                 self._read_line(line, cols, section)
         return sections
@@ -208,10 +251,11 @@ class CreditMutuelParser:
         amounts = [w for w in words if cols.is_zone_amount(w)]
         label = [w["text"] for w in words if not cols.is_zone_amount(w)]
 
-        if texts[0] == "SOLDE":
+        balance = _BALANCE_RE.search(" ".join(label))
+        if balance:
             section.end_tx()
-            self._read_balance(texts, amounts, cols, section)
-        elif len(texts) >= 2 and _is_date(texts[0]) and _is_date(texts[1]):
+            self._read_balance(balance[1], label, amounts, section)
+        elif _is_tx_start(texts):
             section.end_tx()
             section.current = _TxBuilder(_to_date(texts[0]), _to_date(texts[1]), label[2:],
                                          cols.signed(amounts[0]) if amounts else None)
@@ -223,11 +267,11 @@ class CreditMutuelParser:
             section.end_tx()
 
     @staticmethod
-    def _read_balance(texts: list[str], amounts: list[Word], cols: _Columns,
+    def _read_balance(kind: str, label: list[str], amounts: list[Word],
                       section: _SectionBuilder) -> None:
-        if len(texts) < 2 or texts[1] not in _BALANCE_KINDS or not amounts:
-            raise ParseError(f"ligne de solde illisible : {' '.join(texts)!r}")
-        value = parse_amount(amounts[0]["text"]) * _BALANCE_KINDS[texts[1]]
+        if not amounts:
+            raise ParseError(f"ligne de solde sans montant : {' '.join(label)!r}")
+        value = parse_amount(amounts[0]["text"]) * _BALANCE_KINDS[kind]
         if section.opening is None:
             section.opening = value
         else:
