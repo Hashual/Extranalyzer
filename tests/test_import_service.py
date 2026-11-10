@@ -397,3 +397,40 @@ def test_reanalyse_reports_ok_section_no_longer_found(tmp_path, conn, pdf_dir):
     assert missing.statement_date == date(2024, 4, 10) and missing.gap == Decimal("0.00")
     assert _statuses(conn) == ["ok", "ok"]
     assert conn.execute(livret_rows).fetchall() == before
+
+
+def _section_row(conn, section_id):
+    return conn.execute("SELECT status, gap_cents, message FROM sections WHERE id = ?", (section_id,)).fetchone()
+
+
+def test_import_collision_message_is_stored(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    data = make_statement(tmp_path / "b.pdf", "10 mai 2024", [_cc_section()]).read_bytes()
+    [cc] = import_pdf(conn, data, "b.pdf", pdf_dir, PARSERS, Recorder()).sections
+    assert _section_row(conn, cc.section_id) == ("error", 0, cc.message)
+    assert "00000000001" in cc.message
+
+
+def test_collision_on_conflict_acceptance_stores_reason(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")]),
+                        "b.pdf", pdf_dir, PARSERS, Recorder())
+    conflict = report.sections[0].section_id
+    # un autre relevé (autre date) contient déjà le virement de la nouvelle version
+    other = FSection(CC, OPEN, ("CREDITEUR", "10/05/2024", "1.200,00"), [
+        FTx("12/03/2024", "12/03/2024", ["VIR DE M TEST"], credit="1.100,00")])
+    data = make_statement(tmp_path / "c.pdf", "10 mai 2024", [other]).read_bytes()
+    assert import_pdf(conn, data, "c.pdf", pdf_dir, PARSERS, Recorder()).sections[0].status == "ok"
+
+    resolve_conflict(conn, conflict, True, Recorder(), pdf_dir=pdf_dir, parsers=PARSERS)
+    assert _section_row(conn, conflict) == (
+        "error", 0, "opérations déjà importées avec le relevé du compte 00000000001 au 2024-05-10")
+
+
+def test_section_message_cleared_when_reanalysed_ok(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               [_BrokenParser()], Recorder())
+    conn.execute("UPDATE sections SET message = 'ancien motif'")
+    conn.commit()
+    reanalyse_all(conn, pdf_dir, PARSERS, Recorder())
+    assert [r[2] for r in conn.execute("SELECT status, gap_cents, message FROM sections ORDER BY id")] == [None, None]

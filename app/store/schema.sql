@@ -27,7 +27,8 @@ CREATE TABLE sections (
     closing_cents INTEGER,
     gap_cents INTEGER NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('ok','error','conflict','superseded')),
-    content_hash TEXT NOT NULL
+    content_hash TEXT NOT NULL,
+    message TEXT
 );
 
 CREATE TABLE categories (
@@ -79,6 +80,6 @@ CREATE INDEX idx_transactions_section_id ON transactions(section_id);
 CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
 CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 COMMIT;

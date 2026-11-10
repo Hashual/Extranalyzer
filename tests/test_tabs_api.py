@@ -437,6 +437,16 @@ def test_releves_list(env):
     assert (error["status"], error["gap"], error["message"]) == ("error", "-12.34", "écart de -12,34 €")
 
 
+def test_releves_shows_stored_section_message(env):
+    client, conn, _, ids = env
+    _statements(conn, ids)
+    conn.execute("UPDATE sections SET message = 'opérations déjà importées avec le relevé du compte "
+                 "00012345678901 au 2025-01-31' WHERE id = 20")
+    conn.commit()
+    error = client.get("/api/tabs/releves/list").json()["documents"][0]["sections"][0]
+    assert error["message"] == "opérations déjà importées avec le relevé du compte ••8901 au 2025-01-31"
+
+
 def test_releves_conflict_is_resolved_by_the_core_route(env):
     client, conn, _, ids = env
     _statements(conn, ids)

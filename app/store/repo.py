@@ -48,22 +48,23 @@ def set_document_parser(conn: sqlite3.Connection, document_id: int, parser: str)
 
 def insert_section(conn: sqlite3.Connection, document_id: int, account_id: int, statement_date: str,
                    opening_cents: int, closing_cents: int, gap_cents: int, status: str,
-                   content_hash: str) -> int:
+                   content_hash: str, message: str | None = None) -> int:
     cur = conn.execute(
         "INSERT INTO sections(document_id, account_id, statement_date, opening_cents, closing_cents, "
-        "gap_cents, status, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "gap_cents, status, content_hash, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (document_id, account_id, statement_date, opening_cents, closing_cents, gap_cents, status,
-         content_hash),
+         content_hash, message),
     )
     return cur.lastrowid
 
 
 def update_section(conn: sqlite3.Connection, section_id: int, opening_cents: int, closing_cents: int,
-                   gap_cents: int, status: str, content_hash: str) -> None:
+                   gap_cents: int, status: str, content_hash: str, message: str | None = None) -> None:
+    """Met à jour la section ; `message` (motif d'erreur hors écart) remplace le précédent."""
     conn.execute(
         "UPDATE sections SET opening_cents = ?, closing_cents = ?, gap_cents = ?, status = ?, "
-        "content_hash = ? WHERE id = ?",
-        (opening_cents, closing_cents, gap_cents, status, content_hash, section_id),
+        "content_hash = ?, message = ? WHERE id = ?",
+        (opening_cents, closing_cents, gap_cents, status, content_hash, message, section_id),
     )
 
 

@@ -144,7 +144,7 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
         status = "error"
     section_id = repo.insert_section(conn, document_id, account_id, statement_date,
                                      to_cents(section.opening), to_cents(section.closing), to_cents(gap),
-                                     status, digest)
+                                     status, digest, message)
     if status == "ok":
         _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
     return _report(section, status, gap, section_id, message)
@@ -210,8 +210,9 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
             repo.update_section(conn, section_id, opening, closing, 0, "superseded", digest)
             return
         keyed = _keyed(section)
-        if _collision_message(conn, keyed, None if old is None else old[0]) is not None:
-            repo.update_section(conn, section_id, opening, closing, 0, "error", digest)
+        message = _collision_message(conn, keyed, None if old is None else old[0])
+        if message is not None:
+            repo.update_section(conn, section_id, opening, closing, 0, "error", digest, message)
             return
         if old is not None:
             repo.set_section_status(conn, old[0], "superseded")
@@ -248,7 +249,7 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
         if message is not None:
             status = "error"
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),
-                        to_cents(gap), status, digest)
+                        to_cents(gap), status, digest, message)
     if status == "ok":
         _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
     return _report(section, status, gap, section_id, message), False

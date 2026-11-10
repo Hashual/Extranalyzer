@@ -16,23 +16,26 @@ from app.web_json import mask_numbers, to_jsonable
 router = APIRouter()
 
 
-def _gap_message(status: str, gap_cents: int) -> str | None:
+def _error_message(status: str, gap_cents: int, message: str | None) -> str | None:
+    """Motif d'une section en erreur : celui enregistré (ex. collision d'identités), sinon l'écart."""
     if status != "error":
         return None
+    if message:
+        return mask_numbers(message)
     return f"écart de {from_cents(gap_cents):.2f} €".replace(".", ",")
 
 
 @router.get("/list")
 def list_documents(conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
     sections: dict[int, list[dict]] = {}
-    for sid, doc_id, label, number, statement_date, status, gap_cents, tx_count in conn.execute(
-            """SELECT s.id, s.document_id, a.label, a.number, s.statement_date, s.status, s.gap_cents,
+    for sid, doc_id, label, number, statement_date, status, gap_cents, message, tx_count in conn.execute(
+            """SELECT s.id, s.document_id, a.label, a.number, s.statement_date, s.status, s.gap_cents, s.message,
                       (SELECT COUNT(*) FROM transactions t WHERE t.section_id = s.id)
                FROM sections s JOIN accounts a ON a.id = s.account_id ORDER BY s.id"""):
         sections.setdefault(doc_id, []).append({
             "id": sid, "account_label": mask_numbers(label), "number_tail": number[-4:],
             "statement_date": statement_date, "status": status, "gap": from_cents(gap_cents),
-            "tx_count": tx_count, "message": _gap_message(status, gap_cents)})
+            "tx_count": tx_count, "message": _error_message(status, gap_cents, message)})
     documents = [{"id": doc_id, "filename": mask_numbers(filename), "statement_date": statement_date,
                   "imported_at": imported_at, "sections": sections.get(doc_id, [])}
                  for doc_id, filename, statement_date, imported_at in conn.execute(
