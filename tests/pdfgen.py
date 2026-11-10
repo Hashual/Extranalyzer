@@ -53,19 +53,36 @@ class FSection:
     repeat_header: str | None = None   # intitulé répété sur les pages suivantes (défaut : header)
 
 
+
+@dataclass
+class _Layout:
+    """Options de mise en page de `make_statement` (voir sa docstring)."""
+
+    x_shift: float = 0
+    amounts_drawn_last: bool = True
+    repeat_columns: bool = True
+    columns_offset: float = 5
+    margin_refs: bool = False
+    balance_prefix: str = ""
+    footer_lines: tuple[str, ...] = ()
+    footer_gap: float = 36
+
+
 class _Writer:
-    def __init__(self, path: Path, x_shift: float, amounts_drawn_last: bool, margin_refs: bool):
+    def __init__(self, path: Path, layout: _Layout):
         self.c = canvas.Canvas(str(path), pagesize=(PAGE_W, PAGE_H))
-        self.x_shift = x_shift
-        self.amounts_drawn_last = amounts_drawn_last
-        self.margin_refs = margin_refs
+        self.layout = layout
         self.page = 1
         self.top = TABLE_TOP
         self.rows = 0               # lignes de tableau sur la page courante
         self.pending_amounts: list[tuple[float, float, str]] = []
-        debit_x1 = DEBIT_HDR_X + x_shift + stringWidth("Débit", FONT, SIZE)
+        debit_x1 = DEBIT_HDR_X + layout.x_shift + stringWidth("Débit", FONT, SIZE)
         self.debit_right = debit_x1 + DEBIT_RIGHT_OFFSET
         self.credit_right = debit_x1 + CREDIT_RIGHT_OFFSET
+        # Le pied de page (lignes + `Page N`) doit tenir sous la dernière ligne du tableau.
+        n_footer = len(layout.footer_lines)
+        self.max_top = MAX_TOP if not n_footer else min(
+            MAX_TOP, FOOTER_TOP - layout.footer_gap - LINE_H * (n_footer - 1))
 
     @staticmethod
     def _y(top: float, size: float = SIZE) -> float:
@@ -75,9 +92,13 @@ class _Writer:
         self.c.setFont(FONT, size)
         self.c.drawString(x, self._y(top, size), s)
 
+    def margin_ref(self, top: float) -> None:
+        if self.layout.margin_refs:
+            self.text(MARGIN_REF_X, top, MARGIN_REF, size=MARGIN_REF_SIZE)
+
     def amount(self, column: str, s: str) -> None:
         right = self.debit_right if column == "debit" else self.credit_right
-        if self.amounts_drawn_last:
+        if self.layout.amounts_drawn_last:
             self.pending_amounts.append((right, self.top, s))
         else:
             self._draw_amount(right, self.top, s)
@@ -87,8 +108,7 @@ class _Writer:
         self.c.drawRightString(right, self._y(top), s)
 
     def next_line(self, table_row: bool = True) -> None:
-        if table_row and self.margin_refs:
-            self.text(MARGIN_REF_X, self.top, MARGIN_REF, size=MARGIN_REF_SIZE)
+        self.margin_ref(self.top)
         self.top += LINE_H
         if table_row:
             self.rows += 1
@@ -96,13 +116,19 @@ class _Writer:
     def fits(self, n_rows: int, rows_per_page: int) -> bool:
         if self.rows == 0:
             return True
-        return self.rows + n_rows <= rows_per_page and self.top + n_rows * LINE_H <= MAX_TOP
+        return self.rows + n_rows <= rows_per_page and self.top + n_rows * LINE_H <= self.max_top
 
     def end_page(self) -> None:
         for right, top, s in self.pending_amounts:
             self._draw_amount(right, top, s)
         self.pending_amounts.clear()
+        top = self.top - LINE_H + self.layout.footer_gap    # sous la dernière ligne écrite
+        for line in self.layout.footer_lines:
+            self.text(DATE_X, top, line)
+            self.margin_ref(top)
+            top += LINE_H
         self.text(280, FOOTER_TOP, f"Page {self.page}")
+        self.margin_ref(FOOTER_TOP)
         self.c.showPage()
         self.page += 1
         self.top = TABLE_TOP
@@ -111,8 +137,11 @@ class _Writer:
     def section_header(self, header: str, columns: bool = True) -> None:
         self.text(DATE_X, self.top, header)
         if columns:
-            self.text(DEBIT_HDR_X + self.x_shift, self.top, "Débit EUROS")
-            self.text(CREDIT_HDR_X + self.x_shift, self.top, "Crédit EUROS")
+            cols_top = self.top + self.layout.columns_offset
+            self.text(DEBIT_HDR_X + self.layout.x_shift, cols_top, "Débit EUROS")
+            self.text(CREDIT_HDR_X + self.layout.x_shift, cols_top, "Crédit EUROS")
+            if self.layout.columns_offset:
+                self.margin_ref(cols_top)
         self.next_line(table_row=False)
         self.text(DATE_X, self.top, "Date")
         self.text(VALUE_DATE_X, self.top, "Date valeur")
@@ -124,9 +153,9 @@ class _Writer:
         self.c.save()
 
 
-def _balance_row(w: _Writer, balance: tuple[str, str, str], prefix: str) -> None:
+def _balance_row(w: _Writer, balance: tuple[str, str, str]) -> None:
     kind, day, amount = balance
-    w.text(LABEL_X, w.top, f"{prefix} SOLDE {kind} AU {day}".strip())
+    w.text(LABEL_X, w.top, f"{w.layout.balance_prefix} SOLDE {kind} AU {day}".strip())
     w.amount("debit" if kind == "DEBITEUR" else "credit", amount)
     w.next_line()
 
@@ -148,20 +177,26 @@ def _tx_rows(w: _Writer, tx: FTx) -> None:
 def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
                    other_accounts: list[tuple[str, str]] = (), rows_per_page: int = 25,
                    x_shift: float = 0, amounts_drawn_last: bool = True, repeat_columns: bool = True,
-                   margin_refs: bool = False, balance_prefix: str = "") -> Path:
+                   columns_offset: float = 5, margin_refs: bool = False, balance_prefix: str = "",
+                   footer_lines: list[str] = (), footer_gap: float = 36) -> Path:
     """Dessine un relevé synthétique.
 
     - Page 1 : titre « RELEVE ET INFORMATIONS BANCAIRES » et `statement_date`.
-    - Par section : en-tête de compte (+ `Débit EUROS` / `Crédit EUROS`), ligne de titres, solde
+    - Par section : en-tête de compte, `Débit EUROS` / `Crédit EUROS`, ligne de titres, solde
       d'ouverture, transactions, solde de clôture.
     - Saut de page dès que `rows_per_page` lignes de tableau seraient dépassées (une transaction
       multi-ligne n'est jamais coupée) ; l'en-tête de compte et les titres sont répétés.
     - Puis le bloc `SITUATION DE VOS AUTRES COMPTES` (`other_accounts` : (libellé, montant crédit)).
-    - Pied de page `Page N` sur chaque page.
+    - Pied de page sur chaque page : `footer_lines` (mentions, à `footer_gap` pt sous la dernière
+      ligne écrite, colonne date) puis `Page N`.
     - `x_shift` décale les colonnes Débit/Crédit (en-têtes et montants).
+    - `columns_offset` : écart vertical (pt) entre l'intitulé du compte et `Débit EUROS Crédit
+      EUROS` ; comme sur les relevés réels, ils sont par défaut sur deux lignes pdfplumber
+      distinctes (0 = même ligne).
     - `amounts_drawn_last` : les montants sont écrits dans le flux après tous les libellés de la page.
     - `repeat_columns=False` : l'en-tête répété sur une nouvelle page n'a pas `Débit`/`Crédit`.
-    - `margin_refs` : référence technique (`KV.0000.000`) en marge gauche de chaque ligne de tableau.
+    - `margin_refs` : référence technique (`KV.0000.000`) en marge gauche de chaque ligne (en-tête,
+      colonnes, titres, tableau, pied de page).
     - `balance_prefix` : mot(s) écrit(s) avant `SOLDE …` sur les lignes de solde.
     """
     for section in sections:
@@ -169,7 +204,8 @@ def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
             assert tx.label, f"FTx sans libellé : {tx!r}"
             assert 0 <= tx.amount_line < len(tx.label), f"amount_line hors libellé : {tx!r}"
     path = Path(path)
-    w = _Writer(path, x_shift, amounts_drawn_last, margin_refs)
+    w = _Writer(path, _Layout(x_shift, amounts_drawn_last, repeat_columns, columns_offset,
+                              margin_refs, balance_prefix, tuple(footer_lines), footer_gap))
     w.text(DATE_X, TITLE_TOP, "RELEVE ET INFORMATIONS BANCAIRES", size=TITLE_SIZE)
     w.text(400, DATE_TOP, statement_date)
 
@@ -187,7 +223,7 @@ def make_statement(path: Path, statement_date: str, sections: list[FSection], *,
             if isinstance(item, FTx):
                 _tx_rows(w, item)
             else:
-                _balance_row(w, item, balance_prefix)
+                _balance_row(w, item)
 
     if other_accounts:
         w.top += SECTION_GAP

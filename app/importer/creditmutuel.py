@@ -15,21 +15,26 @@ from app.importer.amounts import is_amount, parse_amount
 from app.model import ParsedDocument, ParsedSection, ParsedTransaction, ParseError
 
 TITLE = "RELEVE ET INFORMATIONS BANCAIRES"
-LINE_TOLERANCE = 2         # pt : mots d'une même ligne visuelle (écart de `top`)
-AMOUNT_ZONE_MARGIN = 40    # pt : zone des montants = x0 >= Débit.x0 - 40
-DATE_COLUMN_MARGIN = 5     # pt : mots ignorés à gauche de la colonne date - 5
+LINE_TOLERANCE = 2          # pt : mots d'une même ligne visuelle (écart de `top`)
+AMOUNT_ZONE_MARGIN = 40     # pt : zone des montants = x0 >= Débit.x0 - 40
+DATE_COLUMN_MARGIN = 5      # pt : mots ignorés à gauche de la colonne date - 5
+MAX_CONTINUATION_GAP = 24   # pt : écart vertical maximal entre deux lignes d'une même transaction
 
 _DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}")
 _MONTHS = {
     "janvier": 1, "février": 2, "mars": 3, "avril": 4, "mai": 5, "juin": 6, "juillet": 7,
     "août": 8, "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12,
 }
-_STATEMENT_DATE_RE = re.compile(r"\b(\d{1,2}) (" + "|".join(_MONTHS) + r") (\d{4})\b")
+_STATEMENT_DATE_RE = re.compile(r"\b(\d{1,2}) (" + "|".join(_MONTHS) + r") (\d{4})\b",
+                                re.IGNORECASE)
 _HEADER_RE = re.compile(r"^(?P<label>.+?) N° (?P<number>\d+) en euros")
 _BALANCE_RE = re.compile(r"\bSOLDE (CREDITEUR|DEBITEUR) AU\b")
 _BALANCE_KINDS = {"CREDITEUR": 1, "DEBITEUR": -1}
 OTHER_ACCOUNTS = "SITUATION DE VOS AUTRES COMPTES"
-_FOOTER_RE = re.compile(r"Page \d+")
+_PAGE_NUMBER_RE = re.compile(r"Page \d+")
+# Mentions de bas de page : garde secondaire (la garde principale est MAX_CONTINUATION_GAP).
+_FOOTER_TEXT_RE = re.compile(r"^(Sous réserve|Information sur la protection|CAISSE DE CREDIT MUTUEL"
+                             r"|Médiateur|\(GE\)|\(GD\)|Remarque|www\.)", re.IGNORECASE)
 
 Word = dict  # mot pdfplumber : clés text, x0, x1, top, ...
 
@@ -38,6 +43,7 @@ Word = dict  # mot pdfplumber : clés text, x0, x1, top, ...
 class _Line:
     top: float
     words: list[Word]
+    raw_text: str = ""   # texte complet, avant filtrage de la marge
 
     @property
     def texts(self) -> list[str]:
@@ -57,7 +63,32 @@ def _group_lines(words: list[Word]) -> list[_Line]:
             lines.append(_Line(w["top"], [w]))
     for line in lines:
         line.words.sort(key=lambda w: w["x0"])
+        line.raw_text = line.text
     return lines
+
+
+def _is_titles_line(texts: list[str]) -> bool:
+    """Ligne de titres « Date  Date valeur  Opération » (une référence peut la précéder)."""
+    return "Date" in texts and "Opération" in texts
+
+
+@dataclass
+class _Page:
+    """Lignes d'une page, sans les mots situés à gauche de la colonne date (références en marge)."""
+
+    width: float
+    lines: list[_Line]
+
+    @classmethod
+    def from_words(cls, width: float, words: list[Word]) -> "_Page":
+        lines = _group_lines(words)
+        titles = next((line for line in lines if _is_titles_line(line.texts)), None)
+        if titles is None:
+            return cls(width, lines)
+        bound = next(w for w in titles.words if w["text"] == "Date")["x0"] - DATE_COLUMN_MARGIN
+        visible = [_Line(line.top, [w for w in line.words if w["x0"] >= bound], line.raw_text)
+                   for line in lines]
+        return cls(width, [line for line in visible if line.words])
 
 
 def _is_date(text: str) -> bool:
@@ -70,11 +101,10 @@ def _to_date(text: str) -> date:
 
 @dataclass
 class _Columns:
-    """Géométrie du tableau, repérée à partir des mots d'en-tête de la page."""
+    """Colonnes de montants de la page, repérées sur `Débit EUROS Crédit EUROS`."""
 
     debit_x0: float
     credit_x0: float
-    date_x0: float | None = None   # connu après la ligne « Date Date valeur Opération »
 
     def in_amount_zone(self, w: Word) -> bool:
         return w["x0"] >= self.debit_x0 - AMOUNT_ZONE_MARGIN
@@ -86,16 +116,14 @@ class _Columns:
         value = parse_amount(w["text"])
         return -value if w["x1"] < self.credit_x0 else value
 
-    def in_bounds(self, w: Word) -> bool:
-        return self.date_x0 is None or w["x0"] >= self.date_x0 - DATE_COLUMN_MARGIN
-
 
 @dataclass
 class _TxBuilder:
     op_date: date
     value_date: date
     label: list[str]
-    amount: Decimal | None = None
+    amount: Decimal | None
+    last_top: float          # ordonnée de la dernière ligne rattachée à la transaction
 
     def build(self) -> ParsedTransaction:
         if self.amount is None:
@@ -112,6 +140,10 @@ class _SectionBuilder:
     transactions: list[ParsedTransaction] = field(default_factory=list)
     current: _TxBuilder | None = None
 
+    @property
+    def closed(self) -> bool:
+        return self.closing is not None
+
     def end_tx(self) -> None:
         if self.current is not None:
             self.transactions.append(self.current.build())
@@ -124,16 +156,15 @@ class _SectionBuilder:
         return ParsedSection(self.account_label, self.account_number, statement_date,
                              self.opening, self.closing, self.transactions)
 
-    @property
-    def closed(self) -> bool:
-        return self.closing is not None
 
-
-def _columns(line: _Line) -> _Columns | None:
-    """Colonnes de montants, repérées par les seuls mots `Débit` et `Crédit` de la ligne."""
-    by_text = {w["text"]: w for w in line.words}
-    debit, credit = by_text.get("Débit"), by_text.get("Crédit")
+def _columns(line: _Line, page_width: float) -> _Columns | None:
+    """`Débit EUROS` puis `Crédit EUROS`, dans cet ordre, dans la moitié droite de la page."""
+    pairs = list(zip(line.words, line.words[1:]))
+    debit = next((w for w, nxt in pairs if w["text"] == "Débit" and nxt["text"] == "EUROS"), None)
+    credit = next((w for w, nxt in pairs if w["text"] == "Crédit" and nxt["text"] == "EUROS"), None)
     if debit is None or credit is None:
+        return None
+    if not page_width / 2 <= debit["x0"] < credit["x0"]:
         return None
     return _Columns(debit["x0"], credit["x0"])
 
@@ -149,17 +180,17 @@ def _is_tx_start(texts: list[str]) -> bool:
     return len(texts) >= 2 and _is_date(texts[0]) and _is_date(texts[1])
 
 
-def _is_titles_line(texts: list[str]) -> bool:
-    return bool(texts) and texts[0] == "Date" and "Opération" in texts
+def _is_footer_text(line: _Line) -> bool:
+    return bool(_FOOTER_TEXT_RE.match(line.text) or _FOOTER_TEXT_RE.match(line.raw_text))
 
 
-def _statement_date(pages: list[list[_Line]]) -> date:
-    for lines in pages:
-        for line in lines:
+def _statement_date(pages: list[_Page]) -> date:
+    for page in pages:
+        for line in page.lines:
             m = _STATEMENT_DATE_RE.search(line.text)
             if m:
                 try:
-                    return date(int(m[3]), _MONTHS[m[2]], int(m[1]))
+                    return date(int(m[3]), _MONTHS[m[2].lower()], int(m[1]))
                 except ValueError as exc:
                     raise ParseError(f"date du relevé invalide : {m[0]!r}") from exc
     raise ParseError("date du relevé introuvable")
@@ -182,7 +213,7 @@ class CreditMutuelParser:
     def parse(self, pdf_path: Path) -> ParsedDocument:
         try:
             with pdfplumber.open(pdf_path) as pdf:
-                pages = [_group_lines(page.extract_words()) for page in pdf.pages]
+                pages = [_Page.from_words(p.width, p.extract_words()) for p in pdf.pages]
         except Exception as exc:
             raise ParseError(f"PDF illisible : {exc}") from exc
         if not pages:
@@ -194,30 +225,33 @@ class CreditMutuelParser:
             raise ParseError("aucune section de compte trouvée")
         return ParsedDocument(statement_date, [s.build(statement_date) for s in sections])
 
-    def _read_sections(self, pages: list[list[_Line]]) -> list[_SectionBuilder]:
+    def _read_sections(self, pages: list[_Page]) -> list[_SectionBuilder]:
         """Découpe le document en sections de compte.
 
         Les lignes ne sont rattachées à la section courante que pendant la lecture (`reading`) :
-        elle reprend à chaque en-tête de compte (nouveau ou répété) et s'interrompt au changement
-        de page, au pied de page `Page N` et au bloc `SITUATION DE VOS AUTRES COMPTES`. Après le
-        solde de clôture, plus rien n'est rattaché à la section.
+        elle reprend à chaque en-tête de compte (nouveau ou répété) ou ligne `Débit EUROS Crédit
+        EUROS`, et s'interrompt au changement de page, au pied de page `Page N` et au bloc
+        `SITUATION DE VOS AUTRES COMPTES`. Après le solde de clôture, plus rien n'est rattaché à
+        la section. Une transaction ne se poursuit pas sur la page suivante.
         """
         sections: list[_SectionBuilder] = []
         section: _SectionBuilder | None = None
-        for lines in pages:
+        for page in pages:
+            if section is not None:
+                section.end_tx()
             cols: _Columns | None = None   # colonnes repérées page par page
             reading = False                # reprend après l'en-tête de compte répété
-            for line in lines:
+            for line in page.lines:
                 text = line.text
                 if OTHER_ACCOUNTS in text:
                     if section is not None:
                         section.end_tx()
                     reading = False
                     continue
-                if _FOOTER_RE.fullmatch(text):
+                if _PAGE_NUMBER_RE.fullmatch(text):
                     reading = False
                     continue
-                line_cols, header = _columns(line), _account_header(line)
+                line_cols, header = _columns(line, page.width), _account_header(line)
                 if line_cols is not None:
                     cols = line_cols
                 if header is not None:
@@ -228,28 +262,25 @@ class CreditMutuelParser:
                         section = _SectionBuilder(label, number)
                         sections.append(section)
                 if header is not None or line_cols is not None:
-                    reading = True     # en-tête sans intitulé reconnu : section en cours
+                    reading = True     # colonnes sans intitulé reconnu : section en cours
                     continue
-                if not reading or section is None or section.closed:
+                if section is None or section.closed:
                     continue
-                if cols is None:
+                if not reading or cols is None:
                     if _is_tx_start(line.texts):
-                        raise ParseError("colonnes Débit/Crédit introuvables sur une page du "
+                        raise ParseError("en-tête de compte/colonnes introuvables sur une page du "
                                          f"compte {section.account_number}")
                     continue
                 self._read_line(line, cols, section)
         return sections
 
     def _read_line(self, line: _Line, cols: _Columns, section: _SectionBuilder) -> None:
-        words = [w for w in line.words if cols.in_bounds(w)]
-        texts = [w["text"] for w in words]
-        if not words:
-            return
+        words, texts = line.words, line.texts
         if _is_titles_line(texts):
-            cols.date_x0 = words[0]["x0"]
             return
         amounts = [w for w in words if cols.is_zone_amount(w)]
         label = [w["text"] for w in words if not cols.is_zone_amount(w)]
+        current = section.current
 
         balance = _BALANCE_RE.search(" ".join(label))
         if balance:
@@ -258,12 +289,15 @@ class CreditMutuelParser:
         elif _is_tx_start(texts):
             section.end_tx()
             section.current = _TxBuilder(_to_date(texts[0]), _to_date(texts[1]), label[2:],
-                                         cols.signed(amounts[0]) if amounts else None)
-        elif section.current is not None and any(not cols.in_amount_zone(w) for w in words):
-            section.current.label.extend(label)
-            if section.current.amount is None and amounts:
-                section.current.amount = cols.signed(amounts[0])
-        else:
+                                         cols.signed(amounts[0]) if amounts else None, line.top)
+        elif (current is not None and any(not cols.in_amount_zone(w) for w in words)
+              and line.top - current.last_top <= MAX_CONTINUATION_GAP
+              and not _is_footer_text(line)):
+            current.label.extend(label)
+            current.last_top = line.top
+            if current.amount is None and amounts:
+                current.amount = cols.signed(amounts[0])
+        else:   # fin du libellé : ligne éloignée, mention de bas de page ou montant isolé
             section.end_tx()
 
     @staticmethod

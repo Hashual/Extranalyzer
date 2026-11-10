@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from reportlab.pdfgen import canvas
 
-from app.importer.creditmutuel import CreditMutuelParser
+from app.importer.creditmutuel import CreditMutuelParser, _columns, _Line
 from app.model import ParseError
 from pdfgen import FSection, FTx, make_statement
 
@@ -144,8 +144,51 @@ def test_transaction_lines_without_columns_raise(tmp_path):
                        _many_txs(60))
     pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [section], rows_per_page=25,
                          repeat_columns=False)
-    with pytest.raises(ParseError, match="Débit/Crédit"):
+    with pytest.raises(ParseError, match="en-tête de compte/colonnes introuvables"):
         CreditMutuelParser().parse(pdf)
+
+
+def test_page_without_header_nor_columns_raises(tmp_path):
+    """Page d'une section ouverte sans en-tête reconnu ni colonnes : erreur, pas de perte."""
+    section = FSection(CC, ("CREDITEUR", "11/03/2024", "1.830,00"), ("CREDITEUR", "10/04/2024", "0,00"),
+                       _many_txs(60), repeat_header="SUITE DU RELEVE")
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [section], rows_per_page=25,
+                         repeat_columns=False)
+    with pytest.raises(ParseError, match="en-tête de compte/colonnes introuvables sur une page du "
+                                         "compte 00000000001"):
+        CreditMutuelParser().parse(pdf)
+
+
+def _words(*specs):
+    """Mots synthétiques (texte, x0) sur une même ligne, largeur 5 pt par caractère."""
+    return _Line(100, [{"text": t, "x0": x, "x1": x + 5 * len(t), "top": 100} for t, x in specs])
+
+
+@pytest.mark.parametrize("line", [
+    _words(("Caisse", 320), ("de", 360), ("Crédit", 380), ("Mutuel", 420), ("débit", 460), ("Débit", 500)),
+    _words(("Crédit", 400), ("Mutuel", 440), ("Débit", 480), ("différé", 520)),
+    _words(("Débit", 100), ("EUROS", 130), ("Crédit", 170), ("EUROS", 205)),          # moitié gauche
+    _words(("Crédit", 409), ("EUROS", 440), ("Débit", 480), ("EUROS", 515)),          # ordre inversé
+    _words(("Débit", 409), ("EUROS", 440), ("Crédit", 480), ("Mutuel", 515)),         # sans EUROS
+])
+def test_boilerplate_does_not_install_columns(line):
+    assert _columns(line, 595) is None
+
+
+def test_columns_from_debit_euros_credit_euros():
+    cols = _columns(_words(("KV.0000.000", 10), ("Débit", 409), ("EUROS", 440), ("Crédit", 480),
+                           ("EUROS", 515)), 595)
+    assert (cols.debit_x0, cols.credit_x0) == (409, 480)
+
+
+@pytest.mark.parametrize("columns_offset", [-5, 0, 5])
+def test_columns_line_separate_from_account_header(tmp_path, columns_offset):
+    sections = _two_accounts()
+    sections[0].txs = _many_txs(20)
+    doc = _parse(tmp_path, sections, rows_per_page=12, columns_offset=columns_offset)
+    assert [(s.account_label, s.account_number) for s in doc.sections] == [
+        ("C/C EUROCOMPTE TEST", "00000000001"), ("LIVRET BLEU TEST", "00000000002")]
+    assert [len(s.transactions) for s in doc.sections] == [20, 1]
 
 
 # --- Date du relevé (addendum 1) ----------------------------------------------------------------
@@ -158,6 +201,17 @@ def test_statement_date_formats(tmp_path, text, expected):
     assert CreditMutuelParser().parse(pdf).statement_date == expected
 
 
+def test_uppercase_statement_date(tmp_path):
+    pdf = make_statement(tmp_path / "s.pdf", "10 AVRIL 2024", [FSection(CC, OPEN, OPEN, [])])
+    assert CreditMutuelParser().parse(pdf).statement_date == date(2024, 4, 10)
+
+
+def test_later_uppercase_month_does_not_override_statement_date(tmp_path):
+    pdf = make_statement(tmp_path / "s.pdf", "10 avril 2024", [FSection(CC, OPEN, OPEN, [])],
+                         other_accounts=[("LIVRET TEST AU 5 MARS 2024", "1,00")])
+    assert CreditMutuelParser().parse(pdf).statement_date == date(2024, 4, 10)
+
+
 def test_impossible_statement_date_raises_parse_error(tmp_path):
     pdf = make_statement(tmp_path / "s.pdf", "31 avril 2024", [FSection(CC, OPEN, OPEN, [])])
     with pytest.raises(ParseError, match="date du relevé"):
@@ -166,12 +220,36 @@ def test_impossible_statement_date_raises_parse_error(tmp_path):
 
 # --- Références techniques en marge (addendum 4) -------------------------------------------------
 
-def test_margin_refs_never_in_labels(tmp_path):
-    doc = _parse(tmp_path, _two_accounts(), margin_refs=True)
+@pytest.mark.parametrize("columns_offset", [0, 5])
+def test_margin_refs_never_in_labels(tmp_path, columns_offset):
+    """Références en marge sur toutes les lignes (en-tête, colonnes, titres, tableau, pied)."""
+    sections = _two_accounts()
+    sections[0].txs = _many_txs(20)
+    doc = _parse(tmp_path, sections, rows_per_page=12, margin_refs=True, columns_offset=columns_offset,
+                 footer_lines=["Caisse de Credit Mutuel TEST"])
+    assert [s.account_label for s in doc.sections] == ["C/C EUROCOMPTE TEST", "LIVRET BLEU TEST"]
     labels = [t.label for s in doc.sections for t in s.transactions]
-    assert len(labels) == 4
+    assert len(labels) == 21
     assert not any("KV." in label for label in labels)
-    assert labels[0] == "PAIEMENT CB ALPHA VILLEA CARTE 0000"
+    assert labels[0] == "PAIEMENT CB 000 MAGASIN TEST"
+
+
+# --- Pied de page (fix 1 : C1) ---------------------------------------------------------------
+
+def test_footer_boilerplate_not_in_labels(tmp_path):
+    footer = ["Banque TEST societe cooperative", "ORIAS 00000000 mentions legales"]   # hors mots-clés
+    doc = _parse(tmp_path, [FSection(CC, ("CREDITEUR", "11/03/2024", "1.830,00"), ("CREDITEUR", "10/04/2024", "0,00"),
+                                     _many_txs(60))], rows_per_page=25, footer_lines=footer)
+    labels = [t.label for t in doc.sections[0].transactions]
+    assert labels == [f"PAIEMENT CB {i:03d} MAGASIN TEST" for i in range(60)]
+
+
+def test_footer_keywords_stop_label_even_when_close(tmp_path):
+    footer = ["Sous réserve de bonne fin", "www.banque-test.example", "Médiateur TEST"]
+    doc = _parse(tmp_path, [FSection(CC, ("CREDITEUR", "11/03/2024", "1.830,00"), ("CREDITEUR", "10/04/2024", "0,00"),
+                                     _many_txs(60))], rows_per_page=25, footer_lines=footer, footer_gap=12)
+    labels = [t.label for t in doc.sections[0].transactions]
+    assert labels == [f"PAIEMENT CB {i:03d} MAGASIN TEST" for i in range(60)]
 
 
 # --- Garde-fous du générateur (addendum 3) --------------------------------------------------------
