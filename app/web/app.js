@@ -2,6 +2,7 @@
 // pastille « À classer »), onglets chargés dynamiquement depuis /api/tabs.
 // L'état (onglet, période, comparaison, comptes, paramètres d'onglet) vit dans le hash de l'URL.
 import { api, ApiError, setUnauthorizedHandler } from "./api.js";
+import { hideAll, isKindVisible, KINDS, onPrivacyChange, setKindVisible, toggleHideAll } from "./privacy.js";
 
 const $ = (id) => document.getElementById(id);
 const RESERVED = new Set(["tab", "from", "to", "cmp", "acc"]);
@@ -344,6 +345,47 @@ function setupBar() {
   });
 }
 
+// --- Masquage des montants --------------------------------------------------------------------
+
+function renderPrivacy() {
+  const all = hideAll();
+  const toggle = $("privacy-toggle");
+  toggle.textContent = all ? "Afficher les montants" : "Masquer les montants";
+  toggle.setAttribute("aria-pressed", String(all));
+  for (const box of $("privacy-list").querySelectorAll("input")) {
+    box.checked = isKindVisible(box.value);
+    box.disabled = all;           // tout est masqué : les cases reprennent effet au réaffichage
+  }
+  $("privacy-note").hidden = !all;
+}
+
+function setupPrivacy() {
+  const list = $("privacy-list");
+  list.append(Object.assign(document.createElement("p"), {
+    className: "privacy-title", textContent: "Montants affichés" }));
+  for (const [kind, label] of KINDS) {
+    const row = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = kind;
+    box.addEventListener("change", () => setKindVisible(kind, box.checked));
+    row.append(box, ` ${label}`);
+    list.append(row);
+  }
+  const note = Object.assign(document.createElement("p"), {
+    id: "privacy-note", className: "muted privacy-note", textContent: "Tous les montants sont masqués." });
+  list.append(note);
+  $("privacy-toggle").addEventListener("click", toggleHideAll);
+  document.addEventListener("click", (event) => {       // le menu se ferme en cliquant ailleurs
+    if (!$("privacy-menu").contains(event.target)) $("privacy-menu").open = false;
+  });
+  onPrivacyChange(() => {
+    renderPrivacy();
+    renderCurrent();
+  });
+  renderPrivacy();
+}
+
 // --- Onglets -----------------------------------------------------------------------------------
 
 function navigate(tabId, params = {}) {
@@ -455,6 +497,7 @@ function setupLogin() {
 setUnauthorizedHandler(showLogin);
 setupLogin();
 setupBar();
+setupPrivacy();
 window.addEventListener("hashchange", () => renderCurrent());
 showApp().catch((error) => {
   if (!(error instanceof ApiError && error.status === 401)) toast(`Chargement impossible : ${error.message}`, "error", 0);

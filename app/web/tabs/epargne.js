@@ -10,7 +10,7 @@ function tiles(total) {
     [["Versements", total.deposits], ["Retraits", total.withdrawals], ["Épargne nette", total.net]].map(
       ([label, value]) => el("div", { className: "tile" },
         el("p", { className: "tile-label", text: label }),
-        el("p", { className: "tile-value", text: money(value) }))));
+        el("p", { className: "tile-value", text: money(value, "savings") }))));
 }
 
 function destinationsTable(ctx, destinations) {
@@ -22,9 +22,9 @@ function destinationsTable(ctx, destinations) {
       ? el("button", { type: "button", className: "link", text: d.name,
                        on: { click: () => ctx.navigate("categories", { id: d.id }) } })
       : d.name),
-    el("td", { className: "num", text: money(d.deposits) }),
-    el("td", { className: "num", text: money(d.withdrawals) }),
-    el("td", { className: "num" }, amount(d.net)))));
+    el("td", { className: "num", text: money(d.deposits, "savings") }),
+    el("td", { className: "num", text: money(d.withdrawals, "savings") }),
+    el("td", { className: "num" }, amount(d.net, "savings")))));
   return el("div", { className: "table-wrap" }, el("table", { className: "data-table" }, head, body));
 }
 
@@ -51,9 +51,9 @@ export async function render(container, ctx) {
       ],
     },
     options: {
-      scales: { y: { ticks: { callback: (v) => money(v) } } },
+      scales: { y: { ticks: { callback: (v) => money(v, "savings") } } },
       plugins: { legend: { position: "bottom" },
-                 tooltip: { callbacks: { label: (item) => `${item.dataset.label} : ${money(item.raw)}` } } },
+                 tooltip: { callbacks: { label: (item) => `${item.dataset.label} : ${money(item.raw, "savings")}` } } },
     },
   });
 }

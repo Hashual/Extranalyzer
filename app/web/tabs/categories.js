@@ -62,10 +62,10 @@ function newRootBlock(ctx) {
   return block;
 }
 
-function categoryButton(ctx, category, selectedId, className) {
+function categoryButton(ctx, category, selectedId, className, kind) {
   if (category.id === null) {         // pseudo-ligne (virements internes non classés) : pas de détail
     return el("div", { className: `cat-link static ${className}` },
-      el("span", { text: category.name }), el("span", { className: "muted", text: money(category.amount) }));
+      el("span", { text: category.name }), el("span", { className: "muted", text: money(category.amount, kind) }));
   }
   const current = category.id === selectedId;
   return el("button", {
@@ -73,7 +73,7 @@ function categoryButton(ctx, category, selectedId, className) {
     className: `cat-link ${className}`,
     attrs: { "aria-current": current ? "true" : "false" },
     on: { click: () => ctx.navigate("categories", { id: category.id }) },
-  }, el("span", { text: category.name }), el("span", { className: "muted", text: money(category.amount) }));
+  }, el("span", { text: category.name }), el("span", { className: "muted", text: money(category.amount, kind) }));
 }
 
 function sidebar(ctx, tree, selectedId) {
@@ -85,11 +85,11 @@ function sidebar(ctx, tree, selectedId) {
     nav.append(el("h3", { text: KIND_TITLES[kind] }));
     const list = el("ul");
     for (const root of roots) {
-      const item = el("li", {}, categoryButton(ctx, root, selectedId, "root"));
+      const item = el("li", {}, categoryButton(ctx, root, selectedId, "root", kind));
       const showChildren = root.id === selectedId || root.children.some((c) => c.id === selectedId);
       const children = root.children.filter((c) => showChildren || c.id === null);   // pseudo-ligne toujours visible
       if (children.length) {
-        item.append(el("ul", {}, children.map((c) => el("li", {}, categoryButton(ctx, c, selectedId, "child")))));
+        item.append(el("ul", {}, children.map((c) => el("li", {}, categoryButton(ctx, c, selectedId, "child", kind)))));
       }
       list.append(item);
     }
@@ -104,7 +104,7 @@ function sidebar(ctx, tree, selectedId) {
       on: { click: () => ctx.navigate("transactions", { category: "none" }) },
     }, el("span", { text: "Opérations à classer" }),
     el("span", { className: "muted", text: Number(debits) || Number(credits)
-      ? `${money(debits)} / ${money(credits)}`
+      ? `${money(debits, "expense")} / ${money(credits, "income")}`
       : `${count} opération${count > 1 ? "s" : ""}` })));
   }
   nav.append(newRootBlock(ctx));
@@ -130,7 +130,7 @@ async function detailPanel(ctx, categoryId, meta) {
       on: { click: () => ctx.navigate("categories", { id: data.parent_id }) },
     }));
   }
-  header.append(el("h2", { text: data.name }), el("p", { className: "tile-value", text: money(data.amount) }),
+  header.append(el("h2", { text: data.name }), el("p", { className: "tile-value", text: money(data.amount, data.kind) }),
     manageBar(ctx, data, meta));
   panel.append(header);
 
@@ -145,7 +145,7 @@ async function detailPanel(ctx, categoryId, meta) {
         type: "button", className: "bar-row-button", disabled: isSelf,
         on: { click: () => ctx.navigate("categories", { id: c.id }) },
       }, el("span", { className: "bar-name", text: c.name }), el("span", { className: "bar-track" }, fill),
-      el("span", { className: "bar-amount", text: money(c.amount) })));
+      el("span", { className: "bar-amount", text: money(c.amount, data.kind) })));
     }))));
   }
 
@@ -178,9 +178,9 @@ async function detailPanel(ctx, categoryId, meta) {
                    backgroundColor: cssVar("--accent") }],
     },
     options: {
-      scales: { y: { ticks: { callback: (v) => money(v) } } },
+      scales: { y: { ticks: { callback: (v) => money(v, data.kind) } } },
       plugins: { legend: { display: false },
-                 tooltip: { callbacks: { label: (item) => money(item.raw) } } },
+                 tooltip: { callbacks: { label: (item) => money(item.raw, data.kind) } } },
     },
   }) };
 }
