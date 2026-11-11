@@ -1,6 +1,6 @@
 // Onglet « À classer » : une ligne par libellé normalisé sans catégorie (période et comptes de la barre),
 // avec catégorie → sous-catégorie pré-remplies par la suggestion du modèle (et son score), création d'une
-// règle (cochée par défaut, motif modifiable), et validation groupée des suggestions affichées.
+// règle (cochée par défaut, sauf sur une suggestion), et validation groupée de ce qui est affiché.
 import { amount, el, emptyNote, formatDate, scopeParams, score } from "../ui.js";
 
 export const id = "a_classer";
@@ -42,6 +42,7 @@ function categoryPicker(categories) {
   };
 }
 
+/** Ligne d'un groupe ; renvoie { node, group, picker } (le bouton de validation groupée lit `picker`). */
 function groupRow(group, categories, ctx) {
   const picker = categoryPicker(categories);
   const createRule = el("input", { type: "checkbox", checked: true });
@@ -58,9 +59,11 @@ function groupRow(group, categories, ctx) {
   if (group.suggested_category_id !== null) {
     picker.select(group.suggested_category_id);
     submit.disabled = picker.value() === null;
+    createRule.checked = false;         // pas de règle d'un clic à partir d'une proposition du modèle
     suggestion = el("span", { className: "tag suggestion", text: `suggestion ${score(group.confidence)}`,
                               title: group.reason || "" });
   }
+  ruleFields.hidden = !createRule.checked;
   createRule.addEventListener("change", () => { ruleFields.hidden = !createRule.checked; });
 
   submit.addEventListener("click", async () => {
@@ -81,7 +84,7 @@ function groupRow(group, categories, ctx) {
   const dates = group.first_date === group.last_date
     ? formatDate(group.first_date)
     : `${formatDate(group.first_date)} → ${formatDate(group.last_date)}`;
-  return el("li", { className: "group-row" },
+  const node = el("li", { className: "group-row" },
     el("div", { className: "group-head" },
       el("div", { className: "group-label" },
         el("strong", { text: group.sample_label }),
@@ -94,30 +97,40 @@ function groupRow(group, categories, ctx) {
       ruleFields,
       submit),
     error);
+  return { node, group, picker };
 }
 
-/** « Valider les suggestions affichées (N) » : une décision manuelle par opération suggérée, sans règle. */
-function acceptAll(groups, ctx) {
-  const suggested = groups.filter((g) => g.suggested_count > 0);
-  if (!suggested.length) return null;
-  const n = suggested.reduce((total, g) => total + g.suggested_count, 0);
-  const button = el("button", { type: "button", className: "primary",
-                                text: `Valider les suggestions affichées (${n})` });
+/**
+ * « Valider les suggestions affichées (N) » : applique ce que l'écran montre — la catégorie choisie dans chaque
+ * groupe (pré-remplie ou modifiée) devient une décision manuelle pour toutes ses opérations, sans règle.
+ */
+function acceptAll(rows, ctx) {
+  const chosen = () => rows.filter((r) => r.picker.value() !== null);
+  const button = el("button", { type: "button", className: "primary" });
+  let n = 0;
+  const update = () => {
+    n = chosen().reduce((total, r) => total + r.group.count, 0);
+    button.textContent = `Valider les suggestions affichées (${n})`;
+    button.disabled = n === 0;
+  };
+  rows.forEach((r) => r.picker.onChange(update));
+  update();
   const error = el("p", { className: "error cell-error", attrs: { role: "alert" } });
   button.addEventListener("click", async () => {
-    const question = `Classer ${n} opération(s) selon les suggestions affichées ? ` +
+    const items = chosen().map((r) => ({ label_norm: r.group.label_norm, category_id: r.picker.value() }));
+    if (!items.length) return;
+    const question = `Classer ${n} opération(s) dans les catégories affichées ? ` +
                      "Chacune devient une décision manuelle ; aucune règle n'est créée.";
     if (!window.confirm(question)) return;
     button.disabled = true;
     error.textContent = "";
     try {
       const query = new URLSearchParams(scopeParams(ctx)).toString();
-      await ctx.api.post(`/tabs/a_classer/accept_suggestions?${query}`,
-                         { label_norms: suggested.map((g) => g.label_norm) });
+      await ctx.api.post(`/tabs/a_classer/accept_suggestions?${query}`, { items });
       await ctx.refresh();
     } catch (e) {
       error.textContent = `Validation impossible : ${e.message}`;
-      button.disabled = false;
+      update();
     }
   });
   return el("div", { className: "accept-all" }, button, error);
@@ -131,10 +144,11 @@ export async function render(container, ctx) {
     return;
   }
   const count = data.groups.reduce((n, g) => n + g.count, 0);
+  const rows = data.groups.map((g) => groupRow(g, meta.categories, ctx));
   container.replaceChildren(
     el("p", { className: "muted",
               text: `${count} opération(s) à classer sur la période, en ${data.groups.length} libellé(s). ` +
                     "Une règle classe aussi les opérations à classer des autres périodes." }),
-    ...[acceptAll(data.groups, ctx)].filter(Boolean),
-    el("ul", { className: "group-list" }, data.groups.map((g) => groupRow(g, meta.categories, ctx))));
+    acceptAll(rows, ctx),
+    el("ul", { className: "group-list" }, rows.map((r) => r.node)));
 }

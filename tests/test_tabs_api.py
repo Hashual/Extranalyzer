@@ -367,8 +367,7 @@ def test_a_classer_groups_by_label(env):
     _add_unknown(conn, "u3", "2025-01-23", -900, account=2)   # livret : hors vue par défaut
     conn.commit()
     data = get(client, "/a_classer/list", **JAN)
-    no_suggestion = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None,
-                     "suggested_count": 0}
+    no_suggestion = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None}
     assert data["groups"] == [
         {"label_norm": "cb inconnu zeta", "count": 2, "total": "-35.00", "sample_label": "CB INCONNU ZETA",
          "first_date": "2025-01-20", "last_date": "2025-01-22", "sign": "debit", **no_suggestion},
@@ -503,7 +502,7 @@ def test_a_classer_group_has_suggestion(env):
     suggested = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)     # 2 voisins : suggestion seule
     groups = {g["label_norm"]: g for g in get(client, "/a_classer/list", **JAN)["groups"]}
     group = groups["prlv club sigma"]
-    assert group["count"] == 2 and group["suggested_count"] == 2
+    assert group["count"] == 2
     assert group["suggested_category_id"] == cat["Transport/Train"]
     assert group["suggested_name"] == "Transport › Train"
     assert group["confidence"] == pytest.approx(1.0)
@@ -516,38 +515,87 @@ def test_a_classer_group_has_suggestion(env):
     assert (group["suggested_category_id"], group["suggested_name"]) == (cat["Transport/Train"], "Transport › Train")
     for label_norm, g in groups.items():
         if g["suggested_category_id"] is None:
-            assert g["suggested_name"] is g["confidence"] is g["reason"] is None and g["suggested_count"] == 0
+            assert g["suggested_name"] is g["confidence"] is g["reason"] is None
+
+
+ACCEPT = "/api/tabs/a_classer/accept_suggestions"
+
+
+def _overrides(conn):
+    return set(conn.execute("SELECT tx_key, category_id FROM manual_overrides").fetchall())
+
+
+def _tx_keys(conn, tx_ids):
+    return [conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (i,)).fetchone()[0] for i in tx_ids]
 
 
 def test_accept_suggestions_creates_manual_decisions(env):
-    client, conn, cat, _ = env
+    client, conn, cat, ids = env
     in_scope = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)
     [out_of_scope] = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 0, 1, day="2024-11-1")
     rules_before = conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+    overrides_before = _overrides(conn)
     before = _unclassified_count(client)
-    r = client.post("/api/tabs/a_classer/accept_suggestions", params=JAN, headers=H,
-                    json={"label_norms": ["prlv club sigma", "cb inconnu zeta"]})
+    r = client.post(ACCEPT, params=JAN, headers=H, json={"items": [
+        {"label_norm": "prlv club sigma", "category_id": cat["Transport/Train"]},
+        {"label_norm": "cb inconnu zeta", "category_id": cat["Courses"]}]})
     assert r.status_code == 200, r.text
     # 4 exemples manuels désormais : le passage unique de la chaîne classe aussi l'opération hors période
-    assert r.json() == {"classified": 2, "unclassified_count": before - 3}
-    assert _unclassified_count(client) == before - 3
+    assert r.json() == {"classified": 3, "unclassified_count": before - 4}
+    assert _unclassified_count(client) == before - 4
     for tx_id in in_scope:
         assert conn.execute("SELECT category_id, manual, classified_by FROM transactions WHERE id = ?",
                             (tx_id,)).fetchone() == (cat["Transport/Train"], 1, "manual")
-    assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] >= 2
+    assert _overrides(conn) - overrides_before == {
+        *((key, cat["Transport/Train"]) for key in _tx_keys(conn, in_scope)),
+        (_tx_keys(conn, [ids["unknown"]])[0], cat["Courses"])}
     assert conn.execute("SELECT manual, classified_by FROM transactions WHERE id = ?",
                         (out_of_scope,)).fetchone() == (0, "model")
     assert conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == rules_before
-    assert "prlv club sigma" not in [g["label_norm"] for g in get(client, "/a_classer/list", **JAN)["groups"]]
+    assert [g["label_norm"] for g in get(client, "/a_classer/list", **JAN)["groups"]] == ["vir inconnu eta"]
 
 
-def test_accept_suggestions_empty_422(env):
-    client = env[0]
-    url = "/api/tabs/a_classer/accept_suggestions"
-    assert client.post(url, params=JAN, headers=H, json={"label_norms": []}).status_code == 422
-    assert client.post(url, params=JAN, headers=H, json={}).status_code == 422
-    assert client.post(url, headers=H, json={"label_norms": ["x"]}).status_code == 422       # période requise
-    assert client.post(url, params=JAN, json={"label_norms": ["x"]}).status_code == 403     # en-tête CSRF
+def test_accept_suggestions_applies_the_edited_category(env):
+    client, conn, cat, _ = env
+    in_scope = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)     # suggestion : Train
+    r = client.post(ACCEPT, params=JAN, headers=H,
+                    json={"items": [{"label_norm": "prlv club sigma", "category_id": cat["Loisirs"]}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["classified"] == 2
+    for tx_id in in_scope:
+        assert conn.execute("SELECT category_id, classified_by FROM transactions WHERE id = ?",
+                            (tx_id,)).fetchone() == (cat["Loisirs"], "manual")
+
+
+def test_accept_suggestions_applies_the_displayed_category_to_the_whole_group(env):
+    client, conn, cat, _ = env
+    first, second = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)
+    conn.execute("UPDATE transactions SET suggested_category_id = ?, confidence = 0.4 WHERE id = ?",
+                 (cat["Loisirs"], second))          # suggestions stockées différentes dans le groupe
+    conn.commit()
+    shown = {g["label_norm"]: g for g in get(client, "/a_classer/list", **JAN)["groups"]}["prlv club sigma"]
+    assert shown["suggested_category_id"] == cat["Transport/Train"]
+    r = client.post(ACCEPT, params=JAN, headers=H,
+                    json={"items": [{"label_norm": "prlv club sigma", "category_id": shown["suggested_category_id"]}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["classified"] == 2
+    assert {conn.execute("SELECT category_id FROM transactions WHERE id = ?", (i,)).fetchone()[0]
+            for i in (first, second)} == {cat["Transport/Train"]}
+
+
+def test_accept_suggestions_errors(env):
+    client, conn, cat, _ = env
+    item = {"label_norm": "cb inconnu zeta", "category_id": cat["Courses"]}
+    before = _unclassified_count(client)
+    assert client.post(ACCEPT, params=JAN, headers=H, json={"items": []}).status_code == 422
+    assert client.post(ACCEPT, params=JAN, headers=H, json={}).status_code == 422
+    unknown = client.post(ACCEPT, params=JAN, headers=H, json={"items": [item, {**item, "label_norm": "vir inconnu eta",
+                                                                                 "category_id": 9999}]})
+    assert unknown.status_code == 404
+    assert client.post(ACCEPT, headers=H, json={"items": [item]}).status_code == 422          # période requise
+    assert client.post(ACCEPT, params=JAN, json={"items": [item]}).status_code == 403        # en-tête CSRF
+    assert _unclassified_count(client) == before
+    assert conn.execute("SELECT COUNT(*) FROM transactions WHERE manual = 1 AND category_id IS NULL").fetchone() == (0,)
 
 
 # --- Relevés -----------------------------------------------------------------------------------
