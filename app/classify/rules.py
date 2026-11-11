@@ -81,7 +81,7 @@ def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) 
     """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None)."""
     sql = ("UPDATE transactions SET category_id = (SELECT s.category_id FROM transactions s "
            "WHERE s.id = transactions.mirror_of), rule_id = NULL, "
-           "classified_by = 'pair' WHERE mirror_of ")
+           "classified_by = CASE WHEN (SELECT s.category_id FROM transactions s WHERE s.id = transactions.mirror_of) IS NULL THEN NULL ELSE 'pair' END WHERE mirror_of ")
     if source_ids is None:
         conn.execute(sql + "IS NOT NULL")
         return
@@ -101,7 +101,8 @@ def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> in
             conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
                          "WHERE id = ?", (tx_id,))
         else:
-            conn.execute("UPDATE transactions SET category_id = ?, rule_id = ?, classified_by = 'rule' "
+            conn.execute("UPDATE transactions SET category_id = ?, rule_id = ?, classified_by = 'rule', confidence = NULL, "
+                         "suggested_category_id = NULL, suggestion_reason = NULL "
                          "WHERE id = ?",
                          (winner.category_id, winner.id, tx_id))
             classified += 1
@@ -171,5 +172,6 @@ def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int |
     conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
                  "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
     conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL, "
-                 "classified_by = 'manual' WHERE id = ?", (category_id, tx_id))
+                 "classified_by = 'manual', confidence = NULL, suggested_category_id = NULL, "
+                 "suggestion_reason = NULL WHERE id = ?", (category_id, tx_id))
     sync_mirrors(conn, [tx_id])

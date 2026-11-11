@@ -188,8 +188,8 @@ def insert_transaction(conn: sqlite3.Connection, section_id: int, account_id: in
     category_id, manual = (None, 0) if row is None else (row[0], 1)
     cur = conn.execute(
         "INSERT INTO transactions(section_id, account_id, tx_key, op_date, value_date, label, label_norm, "
-        "amount_cents, category_id, manual) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "amount_cents, category_id, manual, classified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (section_id, account_id, tx_key, op_date, value_date, label, label_norm, amount_cents,
-         category_id, manual),
+         category_id, manual, 'manual' if manual else None),
     )
     return cur.lastrowid

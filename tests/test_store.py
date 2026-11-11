@@ -174,7 +174,8 @@ def test_migration_2_to_3(tmp_path):
     raw.execute("INSERT INTO rules(id, pattern, match, category_id, priority) VALUES (1, 'x', 'contains', 1, 1)")
     cols = "(id, account_id, tx_key, op_date, label, label_norm, amount_cents, category_id, rule_id, manual, mirror_of)"
     rows = [(1, 'k1', -100, 1, None, 1, None), (2, 'k2', -100, 1, 1, 0, None),
-            (3, 'k3', 100, 1, None, 0, 1), (4, 'k4', 100, None, None, 0, None)]
+            (3, 'k3', 100, 1, None, 0, 1), (4, 'k4', 100, None, None, 0, None),
+            (5, 'k5', 100, None, None, 0, 4)]
     for i, key, cents, cat, rule, manual, mirror in rows:
         raw.execute(f"INSERT INTO transactions{cols} VALUES (?, 1, ?, '2024-01-01', 'a', 'a', ?, ?, ?, ?, ?)",
                     (i, key, cents, cat, rule, manual, mirror))
@@ -185,12 +186,12 @@ def test_migration_2_to_3(tmp_path):
     assert c.execute("SELECT id, classified_by, confidence, suggested_category_id, suggestion_reason "
                      "FROM transactions ORDER BY id").fetchall() == [
         (1, "manual", None, None, None), (2, "rule", None, None, None),
-        (3, "pair", None, None, None), (4, None, None, None, None)]
+        (3, "pair", None, None, None), (4, None, None, None, None), (5, None, None, None, None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
     assert c.execute("PRAGMA user_version").fetchone()[0] == 3
     assert c.execute("SELECT classified_by FROM transactions ORDER BY id").fetchall() == [
-        ("manual",), ("rule",), ("pair",), (None,)]
+        ("manual",), ("rule",), ("pair",), (None,), (None,)]
     c.close()
 
 
@@ -199,3 +200,34 @@ def test_classified_by_check_constraint(conn):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, "
                      "classified_by) VALUES (1, 'k', '2024-01-01', 'a', 'a', 1, 'bogus')")
+
+
+def test_insert_transaction_reapplies_override_with_classified_by(conn):
+    from app.store.repo import insert_transaction
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
+    conn.execute("INSERT INTO categories(id, name, kind) VALUES (1, 'Divers', 'expense')")
+    conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES ('kM', 1)")
+    a = insert_transaction(conn, None, 1, "kM", "2024-01-01", "2024-01-01", "a", "a", -100)
+    b = insert_transaction(conn, None, 1, "kN", "2024-01-01", "2024-01-01", "b", "b", -100)
+    assert conn.execute("SELECT manual, category_id, classified_by FROM transactions WHERE id = ?",
+                        (a,)).fetchone() == (1, 1, "manual")
+    assert conn.execute("SELECT manual, category_id, classified_by FROM transactions WHERE id = ?",
+                        (b,)).fetchone() == (0, None, None)
+
+
+def test_failed_migration_rolls_back_and_closes(tmp_path, monkeypatch):
+    from importlib import resources
+    import app.store.db as db
+    schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    path = tmp_path / "t.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(_strip_v3_columns(schema).replace("user_version = 3", "user_version = 2"))
+    raw.close()
+    monkeypatch.setattr(db, "_MIGRATE_2_TO_3", "BEGIN; ALTER TABLE transactions ADD COLUMN classified_by TEXT; "
+                                              "ALTER TABLE nope ADD COLUMN x TEXT; COMMIT;")
+    with pytest.raises(sqlite3.Error):
+        connect(path)
+    raw = sqlite3.connect(path)
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert "classified_by" not in [r[1] for r in raw.execute("PRAGMA table_info(transactions)")]
+    raw.close()

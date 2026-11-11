@@ -14,7 +14,8 @@ ALTER TABLE transactions ADD COLUMN suggested_category_id INTEGER NULL REFERENCE
 ALTER TABLE transactions ADD COLUMN suggestion_reason TEXT NULL;
 UPDATE transactions SET classified_by = 'manual' WHERE manual = 1;
 UPDATE transactions SET classified_by = 'rule' WHERE manual = 0 AND rule_id IS NOT NULL;
-UPDATE transactions SET classified_by = 'pair' WHERE mirror_of IS NOT NULL;
+UPDATE transactions SET classified_by = 'pair' WHERE mirror_of IS NOT NULL
+    AND (SELECT s.category_id FROM transactions s WHERE s.id = transactions.mirror_of) IS NOT NULL;
 PRAGMA user_version = 3;
 COMMIT;
 """
@@ -36,9 +37,16 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
     if version == 0:
         schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
         conn.executescript(schema)
-    elif version == 1:      # 1 -> 2 : message persistant d'une section (ex. collision d'identités)
-        conn.executescript("BEGIN; ALTER TABLE sections ADD COLUMN message TEXT; PRAGMA user_version = 2; COMMIT;")
-        version = 2
-    if version == 2:        # 2 -> 3 : origine et confiance du classement
-        conn.executescript(_MIGRATE_2_TO_3)
+        return conn
+    try:
+        if version == 1:    # 1 -> 2 : message persistant d'une section (ex. collision d'identités)
+            conn.executescript("BEGIN; ALTER TABLE sections ADD COLUMN message TEXT; PRAGMA user_version = 2; COMMIT;")
+            version = 2
+        if version == 2:    # 2 -> 3 : origine et confiance du classement
+            conn.executescript(_MIGRATE_2_TO_3)
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+        raise
     return conn

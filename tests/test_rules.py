@@ -255,7 +255,7 @@ def test_apply_rules_sets_classified_by(conn, cats):
     create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
     assert (_by(conn, hit), _by(conn, miss), _by(conn, mirror)) == ("rule", None, "pair")
     delete_rule(conn, conn.execute("SELECT id FROM rules").fetchone()[0])
-    assert (_by(conn, hit), _by(conn, mirror)) == (None, "pair")
+    assert (_by(conn, hit), _by(conn, mirror)) == (None, None)
 
 
 def test_manual_sets_and_clears_classified_by(conn, cats):
@@ -270,3 +270,24 @@ def test_manual_sets_and_clears_classified_by(conn, cats):
     set_manual_category(conn, t, cats["Courses"])
     set_manual_category(conn, t, None)
     assert _by(conn, t) == "rule"
+
+
+def test_mirror_of_uncategorised_source_has_no_classified_by(conn, cats):
+    src = add_tx(conn, "INCONNU", -100)
+    mirror = add_tx(conn, "INCONNU", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (src, mirror))
+    apply_rules(conn)
+    assert _by(conn, mirror) is None
+
+
+def test_classifying_clears_suggestion_fields(conn, cats):
+    t = add_tx(conn, "MAGASIN ALPHA", -100)
+    u = add_tx(conn, "AUTRE", -100)
+    for tx in (t, u):
+        conn.execute("UPDATE transactions SET classified_by = 'model', confidence = 0.95, "
+                     "suggested_category_id = ?, suggestion_reason = 'x' WHERE id = ?", (cats["Divers"], tx))
+    create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
+    set_manual_category(conn, u, cats["Courses"])
+    for tx in (t, u):
+        assert conn.execute("SELECT confidence, suggested_category_id, suggestion_reason FROM transactions "
+                            "WHERE id = ?", (tx,)).fetchone() == (None, None, None)
