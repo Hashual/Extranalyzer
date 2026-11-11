@@ -1,6 +1,6 @@
 // Onglet « Règles » : tableau modifiable des règles de classement (motif, correspondance, sens, compte,
 // catégorie, priorité), ajout, suppression et aperçu des libellés reconnus par un motif.
-import { categorySelect, el, emptyNote, section } from "../ui.js";
+import { categorySelect, el, emptyNote, score, section } from "../ui.js";
 
 export const id = "regles";
 export const title = "Règles";
@@ -167,11 +167,14 @@ function rulesTable(rules, meta, ctx) {
 }
 
 export async function render(container, ctx) {
-  const [rules, meta] = await Promise.all([ctx.api.get("/tabs/regles"), ctx.api.get("/meta")]);
+  const [{ rules, auto }, meta] = await Promise.all([ctx.api.get("/tabs/regles"), ctx.api.get("/meta")]);
   container.replaceChildren(
     newRuleCard(meta, ctx),
     section(`Règles (${rules.length})`,
       el("p", { className: "muted",
                 text: "Modifier ou supprimer une règle reclasse ses opérations, sauf celles classées à la main." }),
+      el("p", { className: "muted auto-info",
+                text: `${auto.count} opération${auto.count > 1 ? "s" : ""} classée${auto.count > 1 ? "s" : ""} ` +
+                      `automatiquement (seuil ${score(auto.threshold)})` }),
       rules.length ? rulesTable(rules, meta, ctx) : emptyNote("Aucune règle.")));
 }

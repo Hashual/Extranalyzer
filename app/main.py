@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from app.analytics.totals import unclassified_count
 from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, load_or_create_secret, \
     verify_password
-from app.classify.pipeline import on_new_transactions
+from app.classify.pipeline import on_new_transactions, reclassify
 from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
@@ -72,7 +72,9 @@ def _content_length(request: Request) -> int | None:
 
 
 def _init_storage(settings: Settings) -> None:
-    """Au démarrage : crée les dossiers, ouvre la base (schéma) puis charge le seed.
+    """Au démarrage : crée les dossiers, ouvre la base (schéma, migrations), charge le seed puis repasse la
+    chaîne de classement une fois (une base mise à jour, un seuil modifié ou un nouveau seed prennent effet sans
+    attendre un import ; une passe stable n'écrit rien).
 
     Les catégories du seed sont complétées à chaque démarrage ; ses règles ne sont installées que sur
     une installation neuve (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
@@ -82,6 +84,8 @@ def _init_storage(settings: Settings) -> None:
     try:
         with resources.as_file(resources.files("app.classify").joinpath("rules.seed.toml")) as seed:
             load_seed(conn, seed, with_rules=is_fresh_install(conn))
+        reclassify(conn)
+        conn.commit()
     finally:
         conn.close()
 

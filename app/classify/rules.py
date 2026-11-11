@@ -78,9 +78,19 @@ def _non_manual_rows(conn: sqlite3.Connection, tx_ids: list[int] | None) -> list
 
 
 def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) -> None:
-    """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None)."""
-    sql = ("UPDATE transactions SET category_id = (SELECT s.category_id FROM transactions s "
-           "WHERE s.id = transactions.mirror_of), rule_id = NULL WHERE mirror_of ")
+    """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None).
+
+    N'écrit que les jambes miroir dont l'état diffère.
+    """
+    sql = ("UPDATE transactions AS m SET category_id = s.category_id, rule_id = NULL, confidence = NULL, "
+           "suggested_category_id = NULL, suggestion_reason = NULL, suggestion_support = NULL, "
+           "classified_by = CASE WHEN s.category_id IS NULL THEN NULL ELSE 'pair' END "
+           "FROM transactions AS s WHERE s.id = m.mirror_of "
+           "AND (m.category_id IS NOT s.category_id OR m.rule_id IS NOT NULL OR m.confidence IS NOT NULL "
+           "OR m.suggested_category_id IS NOT NULL OR m.suggestion_reason IS NOT NULL "
+           "OR m.suggestion_support IS NOT NULL "
+           "OR m.classified_by IS NOT (CASE WHEN s.category_id IS NULL THEN NULL ELSE 'pair' END)) "
+           "AND m.mirror_of ")
     if source_ids is None:
         conn.execute(sql + "IS NOT NULL")
         return
@@ -92,23 +102,45 @@ def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) 
 def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> int:
     """Reclasse les transactions non manuelles (toutes si `tx_ids` est None) ; renvoie le nombre classées."""
     rules = _rules_by_precedence(conn)
-    classified = 0
     rows = _non_manual_rows(conn, tx_ids)
+    hits, misses = [], []
     for tx_id, label_norm, amount_cents, account_id in rows:
         winner = next((r for r in rules if _matches(r, label_norm, amount_cents, account_id)), None)
         if winner is None:
-            conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL WHERE id = ?", (tx_id,))
+            misses.append((tx_id,))
         else:
-            conn.execute("UPDATE transactions SET category_id = ?, rule_id = ? WHERE id = ?",
-                         (winner.category_id, winner.id, tx_id))
-            classified += 1
+            hits.append((winner.category_id, winner.id, tx_id))
+    # Sans règle : la ligne retombe à classer, sauf si son état est encore valable et sera recalculé plus loin
+    # (`model` : repassé par le modèle ; `pair` : source d'une jambe miroir d'épargne, gardée par l'appariement).
+    conn.executemany(
+        "UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL WHERE id = ? "
+        "AND (category_id IS NOT NULL OR rule_id IS NOT NULL OR classified_by IS NOT NULL) "
+        "AND classified_by IS NOT 'model' AND NOT (classified_by = 'pair' AND EXISTS ("
+        "SELECT 1 FROM transactions m JOIN accounts a ON a.id = m.account_id "
+        "WHERE m.mirror_of = transactions.id AND a.kind = 'savings'))", misses)
+    conn.executemany(
+        "UPDATE transactions SET category_id = ?1, rule_id = ?2, classified_by = 'rule', confidence = NULL, "
+        "suggested_category_id = NULL, suggestion_reason = NULL, suggestion_support = NULL WHERE id = ?3 "
+        "AND (category_id IS NOT ?1 OR rule_id IS NOT ?2 OR classified_by IS NOT 'rule' OR confidence IS NOT NULL "
+        "OR suggested_category_id IS NOT NULL OR suggestion_reason IS NOT NULL OR suggestion_support IS NOT NULL)",
+        hits)
     sync_mirrors(conn, None if tx_ids is None else [r[0] for r in rows])
-    return classified
+    return len(hits)
+
+
+def _reclassify(conn: sqlite3.Connection) -> None:
+    from app.classify.pipeline import reclassify      # import tardif : pipeline dépend de ce module
+    reclassify(conn)
 
 
 def create_rule(conn: sqlite3.Connection, pattern: str, match: str, category_id: int,
                 direction: str | None = None, account_id: int | None = None, priority: int | None = None,
                 apply_to: Literal["unclassified", "all_non_manual"] = "unclassified") -> int:
+    """Crée une règle puis repasse toute la chaîne (`reclassify`) sur toutes les lignes non manuelles.
+
+    `apply_to` n'est plus que validé (compatibilité d'API) : le classement par règle étant un état dérivé,
+    la règle de plus haute priorité l'emporte partout, quelle que soit sa valeur.
+    """
     if apply_to not in ("unclassified", "all_non_manual"):
         raise ValueError(f"apply_to inconnu : {apply_to!r}")
     _validate(pattern, match, direction)
@@ -117,8 +149,7 @@ def create_rule(conn: sqlite3.Connection, pattern: str, match: str, category_id:
     rule_id = conn.execute(
         "INSERT INTO rules(pattern, match, direction, account_id, category_id, priority) "
         "VALUES (?, ?, ?, ?, ?, ?)", (pattern, match, direction, account_id, category_id, priority)).lastrowid
-    where = "manual = 0" + (" AND category_id IS NULL" if apply_to == "unclassified" else "")
-    apply_rules(conn, [r[0] for r in conn.execute(f"SELECT id FROM transactions WHERE {where}")])
+    _reclassify(conn)
     return rule_id
 
 
@@ -135,38 +166,38 @@ def update_rule(conn: sqlite3.Connection, rule_id: int, **fields) -> None:
     if fields:
         conn.execute(f"UPDATE rules SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), rule_id))
-    # Concernées : celles déjà classées par cette règle, les non classées et celles que la règle modifiée reconnaît.
-    rule = next(r for r in _rules_by_precedence(conn) if r.id == rule_id)
-    ids = [tx_id for tx_id, label_norm, amount, account_id, current_rule, category in conn.execute(
-               "SELECT id, label_norm, amount_cents, account_id, rule_id, category_id "
-               "FROM transactions WHERE manual = 0")
-           if current_rule == rule_id or category is None or _matches(rule, label_norm, amount, account_id)]
-    apply_rules(conn, ids)
+    _reclassify(conn)
 
 
 def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
-    ids = [r[0] for r in conn.execute("SELECT id FROM transactions WHERE rule_id = ? AND manual = 0", (rule_id,))]
-    conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL WHERE rule_id = ? AND manual = 0",
-                 (rule_id,))
+    conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
+                 "WHERE rule_id = ? AND manual = 0", (rule_id,))
     conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
-    apply_rules(conn, ids)
+    _reclassify(conn)
 
 
-def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> None:
+def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None, *,
+                        reclassify_after: bool = True) -> None:
+    """Pose (ou efface si `category_id` est None) la décision manuelle d'une opération.
+
+    `reclassify_after=False` laisse l'appelant lancer `reclassify` une seule fois après un lot.
+    """
     row = conn.execute("SELECT tx_key, mirror_of FROM transactions WHERE id = ?", (tx_id,)).fetchone()
     if row is None:
         raise ValueError(f"transaction {tx_id} introuvable")
     if row[1] is not None:       # jambe miroir : le changement porte sur la jambe source
-        return set_manual_category(conn, row[1], category_id)
+        return set_manual_category(conn, row[1], category_id, reclassify_after=reclassify_after)
     tx_key = row[0]
     if category_id is None:
         conn.execute("DELETE FROM manual_overrides WHERE tx_key = ?", (tx_key,))
-        conn.execute("UPDATE transactions SET manual = 0, category_id = NULL, rule_id = NULL WHERE id = ?",
-                     (tx_id,))
-        apply_rules(conn, [tx_id])
-        return
-    conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
-                 "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
-    conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL WHERE id = ?",
-                 (category_id, tx_id))
+        conn.execute("UPDATE transactions SET manual = 0, category_id = NULL, rule_id = NULL, "
+                     "classified_by = NULL WHERE id = ?", (tx_id,))
+    else:
+        conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
+                     "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
+        conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL, "
+                     "classified_by = 'manual', confidence = NULL, suggested_category_id = NULL, "
+                     "suggestion_reason = NULL, suggestion_support = NULL WHERE id = ?", (category_id, tx_id))
     sync_mirrors(conn, [tx_id])
+    if reclassify_after:
+        _reclassify(conn)

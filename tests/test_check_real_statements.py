@@ -52,6 +52,11 @@ def test_counters_on_synthetic_folder(tmp_path, capsys):
     assert values["Transactions à classer"] in {"0", "1", "2"}
     assert values["Erreurs d'import"] == "0"
     assert values["Lignes d'information"] == "1"      # une seule version du doublon est comptée
+    for key in ("Suggestions vers Épargne", "Suggestions vers une autre catégorie",
+                "Suggestions à une seule opération similaire", "Durée d'un reclassement en régime établi (ms)"):
+        assert values[key].isdigit()
+    assert int(values["Suggestions à une seule opération similaire"]) <= (
+        int(values["Suggestions vers Épargne"]) + int(values["Suggestions vers une autre catégorie"]))
     # confidentialité : aucun libellé, nom de fichier, numéro de compte, montant ni date
     for forbidden in ("PAIEMENT", "MAGASIN", "EPARGNE", "GAMMA", "secret", "copy", "00000000001",
                       "2,50", "100,00", "2024", "EUROCOMPTE"):
@@ -112,3 +117,48 @@ def test_library_logs_and_warnings_never_reach_output(tmp_path, capsys, monkeypa
 
 def test_usage_error(capsys):
     assert script.main([]) == 2
+
+
+CLASSIFY_LABELS = ("Classées par règle", "Classées par appariement", "Classées automatiquement (modèle)",
+                   "Suggestions sous le seuil", "Sans suggestion", "Durée du dernier reclassement (ms)")
+
+
+def test_classification_counters_are_integers_and_leak_nothing(tmp_path, capsys):
+    folder = tmp_path / "rel"
+    folder.mkdir()
+    make_statement(folder / "a_secret.pdf", "10 avril 2024",
+                   _good("11/03/2024", "10/04/2024", "PAIEMENT CB 0703 VILLEA"))
+    assert script.main([str(folder)]) == 0
+    out = _out(capsys)
+    values = dict(line.split(" : ") for line in out.splitlines() if " : " in line)
+    for label in CLASSIFY_LABELS:
+        assert re.fullmatch(r"\d+", values[label]), label
+    # 2 transactions non miroir : chaque ligne est classée ou suggérée ou sans suggestion
+    total = sum(int(values[k]) for k in CLASSIFY_LABELS[:5])
+    assert total == 2
+    for forbidden in ("PAIEMENT", "MAGASIN", "EPARGNE", "secret", "00000000001"):
+        assert forbidden not in out
+
+
+def test_suggestion_counts_and_steady_state(tmp_path):
+    from app.classify.pipeline import reclassify
+    from app.store.db import connect
+    conn = connect(tmp_path / "s.db")
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', 'CC', 'checking')")
+    savings = conn.execute("INSERT INTO categories(name, kind) VALUES ('Épargne', 'savings')").lastrowid
+    food = conn.execute("INSERT INTO categories(name, kind) VALUES ('Courses', 'expense')").lastrowid
+    rows = [("VIR VERS LIVRET FICTIF", -100, savings, 1), ("VIR VERS LIVRET FICTIF", -100, None, 0),
+            ("CB MAGASIN ALPHA", -200, food, 1), ("CB MAGASIN ALPHA", -200, food, 1),
+            ("CB MAGASIN ALPHA", -300, None, 0), ("XYZZY QWERTY", -50, None, 0), ("XYZZY QWERTY", -60, None, 0)]
+    for i, (label, cents, cat, manual) in enumerate(rows):
+        conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, "
+                     "category_id, manual, classified_by) VALUES (1, ?, '2024-03-01', ?, ?, ?, ?, ?, ?)",
+                     (f"k{i}", label, label, cents, cat, manual, "manual" if manual else None))
+    reclassify(conn, threshold=1.0)
+    assert script.suggestion_counts(conn) == {"sugg_savings": 1, "sugg_other": 1, "sugg_single": 1}
+    assert script.steady_state_ms(conn) >= 0
+    dummy = conn.execute("SELECT id FROM categories WHERE name = ?", (script.DUMMY_CATEGORY,)).fetchone()[0]
+    marked = conn.execute("SELECT COUNT(*) FROM transactions WHERE category_id = ? AND classified_by = 'manual'",
+                          (dummy,)).fetchone()[0]
+    assert marked == 2          # 4 restantes (2 suggestions + 2 sans) : une sur deux
+    conn.close()

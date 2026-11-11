@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 # `_Rule` / `_matches` / `_validate` : l'aperçu doit reconnaître exactement ce que reconnaîtra la règle.
 from app.classify.rules import _matches, _Rule, _validate, create_rule, delete_rule, update_rule
+from app.config import auto_threshold
 from app.deps import get_conn
 from app.tabs.registry import Tab
 
@@ -82,7 +83,10 @@ def _check_refs(conn: sqlite3.Connection, fields: dict) -> None:
 
 @router.get("")
 def list_rules(conn: Conn):
-    return [_rule_dict(row) for row in conn.execute(RULE_SELECT + " ORDER BY r.priority DESC, r.id ASC")]
+    """Règles par priorité décroissante, et `auto` : opérations classées par le modèle et seuil en vigueur."""
+    rules = [_rule_dict(row) for row in conn.execute(RULE_SELECT + " ORDER BY r.priority DESC, r.id ASC")]
+    count = conn.execute("SELECT COUNT(*) FROM transactions WHERE classified_by = 'model'").fetchone()[0]
+    return {"rules": rules, "auto": {"count": count, "threshold": auto_threshold()}}
 
 
 @router.post("", status_code=201)

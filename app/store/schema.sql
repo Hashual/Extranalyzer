@@ -63,7 +63,12 @@ CREATE TABLE transactions (
     category_id INTEGER NULL REFERENCES categories(id),
     rule_id INTEGER NULL REFERENCES rules(id),
     manual INTEGER NOT NULL DEFAULT 0,
-    mirror_of INTEGER NULL REFERENCES transactions(id)
+    mirror_of INTEGER NULL REFERENCES transactions(id),
+    classified_by TEXT NULL CHECK(classified_by IN ('manual','rule','pair','model')),
+    confidence REAL NULL,
+    suggested_category_id INTEGER NULL REFERENCES categories(id),
+    suggestion_reason TEXT NULL,
+    suggestion_support INTEGER NULL
 );
 
 CREATE TABLE manual_overrides (
@@ -80,6 +85,6 @@ CREATE INDEX idx_transactions_section_id ON transactions(section_id);
 CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
 CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 4;
 
 COMMIT;

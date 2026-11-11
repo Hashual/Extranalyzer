@@ -271,6 +271,10 @@ input, select {
   font-size: 0.75rem;
 }
 
+.tag.auto { border-color: var(--accent); color: var(--accent); cursor: help; }
+.tag.suggestion { margin-left: 0; border-color: var(--accent); color: var(--accent); cursor: help; white-space: nowrap; }
+.accept-all { margin-bottom: 0.6rem; }
+
 /* Tableaux */
 .table-wrap { max-width: 100%; }
 .tx-table, .data-table { width: 100%; border-collapse: collapse; }

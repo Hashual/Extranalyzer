@@ -15,7 +15,7 @@ ROW_FROM = """
 """
 ROW_SELECT = """
     SELECT t.id, t.op_date, t.label, t.amount_cents, t.account_id, t.category_id, c.name, t.manual,
-           t.mirror_of
+           t.mirror_of, t.classified_by, t.confidence, t.suggestion_reason
 """ + ROW_FROM
 
 
@@ -24,13 +24,15 @@ class ReclassBody(BaseModel):
 
 
 def row_to_dict(row: tuple) -> dict:
-    tx_id, op_date, label, cents, account_id, category_id, category_name, manual, mirror_of = row
+    (tx_id, op_date, label, cents, account_id, category_id, category_name, manual, mirror_of,
+     classified_by, confidence, suggestion_reason) = row
     return {"id": tx_id, "op_date": op_date, "label": label, "amount": from_cents(cents),
             "account_id": account_id, "category_id": category_id, "category_name": category_name,
-            "manual": bool(manual), "mirror": mirror_of is not None}
+            "manual": bool(manual), "mirror": mirror_of is not None,
+            "classified_by": classified_by, "confidence": confidence, "suggestion_reason": suggestion_reason}
 
 
-def reclassify(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> dict:
+def set_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> dict:
     """Classement manuel (None : retour aux règles) ; renvoie la ligne mise à jour."""
     if conn.execute("SELECT 1 FROM transactions WHERE id = ?", (tx_id,)).fetchone() is None:
         raise HTTPException(404, f"transaction {tx_id} introuvable")

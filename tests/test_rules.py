@@ -113,15 +113,19 @@ def test_no_rule_stays_null(conn, cats):
     assert cat_of(conn, t) is None
 
 
-def test_create_rule_unclassified_vs_all(conn, cats):
+def test_create_rule_reclassifies_by_global_precedence(conn, cats):
+    # Le classement par règle est un état dérivé : toute création repasse la chaîne sur toutes les lignes,
+    # quel que soit `apply_to` (toujours validé) ; la règle de plus haute priorité l'emporte partout.
     t = add_tx(conn, "MAGASIN ALPHA", -100)
     create_rule(conn, "MAGASIN", "contains", cats["Divers"])
     assert cat_of(conn, t) == cats["Divers"]
-    create_rule(conn, "MAGASIN ALPHA", "contains", cats["Courses"])          # unclassified only
-    assert cat_of(conn, t) == cats["Divers"]
+    create_rule(conn, "MAGASIN ALPHA", "contains", cats["Courses"], apply_to="unclassified")
+    assert cat_of(conn, t) == cats["Courses"]
     create_rule(conn, "MAGASIN ALPHA", "contains", cats["Restauration"], priority=1000,
                 apply_to="all_non_manual")
     assert cat_of(conn, t) == cats["Restauration"]
+    with pytest.raises(ValueError):
+        create_rule(conn, "X", "contains", cats["Divers"], apply_to="bogus")
 
 
 def test_update_rule_reclassifies(conn, cats):
@@ -240,3 +244,55 @@ def test_apply_rules_as_import_callback(conn, tmp_path, pdf_dir):
     rows = dict(conn.execute("SELECT label_norm, category_id FROM transactions").fetchall())
     assert rows["PRLV SEPA BETA"] == cat
     assert rows["VIR DE M TEST"] is None
+
+
+def _by(conn, tx_id):
+    return conn.execute("SELECT classified_by FROM transactions WHERE id = ?", (tx_id,)).fetchone()[0]
+
+
+def test_apply_rules_sets_classified_by(conn, cats):
+    hit = add_tx(conn, "MAGASIN ALPHA", -100)
+    miss = add_tx(conn, "INCONNU", -100)
+    mirror = add_tx(conn, "MAGASIN ALPHA", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (hit, mirror))
+    conn.execute("UPDATE transactions SET classified_by = 'model' WHERE id = ?", (miss,))
+    create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
+    assert (_by(conn, hit), _by(conn, miss), _by(conn, mirror)) == ("rule", None, "pair")
+    delete_rule(conn, conn.execute("SELECT id FROM rules").fetchone()[0])
+    assert _by(conn, miss) is None
+    assert (_by(conn, hit), _by(conn, mirror)) == ("pair", "pair")    # retombe sur l'appariement (LIV)
+
+
+def test_manual_sets_and_clears_classified_by(conn, cats):
+    t = add_tx(conn, "MAGASIN ALPHA", -100)
+    mirror = add_tx(conn, "MAGASIN ALPHA", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (t, mirror))
+    set_manual_category(conn, t, cats["Courses"])
+    assert (_by(conn, t), _by(conn, mirror)) == ("manual", "pair")
+    set_manual_category(conn, t, None)
+    assert _by(conn, t) == "pair"                    # source appariée à un compte d'épargne
+    create_rule(conn, "MAGASIN", "contains", cats["Divers"])
+    set_manual_category(conn, t, cats["Courses"])
+    set_manual_category(conn, t, None)
+    assert _by(conn, t) == "rule"
+
+
+def test_mirror_of_uncategorised_source_has_no_classified_by(conn, cats):
+    src = add_tx(conn, "INCONNU", -100)
+    mirror = add_tx(conn, "INCONNU", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (src, mirror))
+    apply_rules(conn)
+    assert _by(conn, mirror) is None
+
+
+def test_classifying_clears_suggestion_fields(conn, cats):
+    t = add_tx(conn, "MAGASIN ALPHA", -100)
+    u = add_tx(conn, "AUTRE", -100)
+    for tx in (t, u):
+        conn.execute("UPDATE transactions SET classified_by = 'model', confidence = 0.95, "
+                     "suggested_category_id = ?, suggestion_reason = 'x' WHERE id = ?", (cats["Divers"], tx))
+    create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
+    set_manual_category(conn, u, cats["Courses"])
+    for tx in (t, u):
+        assert conn.execute("SELECT confidence, suggested_category_id, suggestion_reason FROM transactions "
+                            "WHERE id = ?", (tx,)).fetchone() == (None, None, None)

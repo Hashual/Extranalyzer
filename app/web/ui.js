@@ -3,6 +3,7 @@
 
 const EUR = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
 const PCT = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 1, signDisplay: "exceptZero" });
+const SCORE = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 0 });
 const MONTH = new Intl.DateTimeFormat("fr-FR", { month: "short", year: "numeric", timeZone: "UTC" });
 
 /** Montant (chaîne "123.45" de l'API) → « 123,45 € ». */
@@ -12,6 +13,16 @@ export function money(value) {
 
 export function percent(ratio) {
   return PCT.format(ratio);
+}
+
+/** Confiance du modèle (0..1) → « 94 % ». */
+export function score(confidence) {
+  return SCORE.format(confidence);
+}
+
+/** Confiance d'une suggestion, tronquée (0,896 → « 89 % », jamais « 90 % » sous le seuil). */
+export function suggestionScore(confidence) {
+  return SCORE.format(Math.floor(confidence * 100 + 1e-9) / 100);   // 1e-9 : bruit flottant (0,29 × 100)
 }
 
 /** "2025-01-31" → "31/01/2025". */
@@ -118,6 +129,10 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
     const labelCell = el("td", { className: "label" }, el("span", { text: tx.label }));
     if (tx.manual) labelCell.append(el("span", { className: "tag", text: "manuel" }));
     if (tx.mirror) labelCell.append(el("span", { className: "tag", text: "miroir" }));
+    if (tx.classified_by === "model") {
+      labelCell.append(el("span", { className: "tag auto", text: `auto ${score(tx.confidence)}`,
+                                    title: tx.suggestion_reason || "" }));
+    }
     body.append(el("tr", {},
       el("td", { className: "date", text: formatDate(tx.op_date) }),
       labelCell,

@@ -57,6 +57,25 @@ def test_totals_all_accounts(conn):
         Decimal("70"), Decimal("1500"), Decimal("205"), Decimal("1225"))
 
 
+def test_unclassified_credit_not_income(conn):
+    seed(conn)
+    before = totals(conn, P, None)
+    tx(conn, 1, "2025-01-22", 5000, None)
+    t = totals(conn, P, None)
+    assert t.income == before.income
+    assert t.unclassified_credits == Decimal("50.00")
+    assert t.balance == before.balance
+    assert t.balance == t.income - t.expenses - t.savings_net
+
+
+def test_income_breakdown_has_no_unclassified_row(conn):
+    seed(conn)
+    tx(conn, 1, "2025-01-22", 5000, None)
+    rows = by_category(conn, P, None, "income", "parent")
+    assert all(name != "À classer" for _, name, _ in rows)
+    assert monthly_series(conn, P, None)[0]["income"] == Decimal("1500.00")
+
+
 def test_totals_default_view_and_unclassified(conn):
     seed(conn)
     tx(conn, 1, "2025-01-20", -1000, None)
@@ -65,7 +84,7 @@ def test_totals_default_view_and_unclassified(conn):
     assert t.savings_net == Decimal("200")
     assert t.unclassified_debits == Decimal("10")
     assert t.unclassified_credits == Decimal("4")
-    assert t.expenses == Decimal("80") and t.income == Decimal("1504")
+    assert t.expenses == Decimal("80") and t.income == Decimal("1500")
 
 
 def test_empty_period_and_empty_accounts(conn):
@@ -141,8 +160,7 @@ def test_by_category_unclassified_and_income(conn):
     tx(conn, 1, "2025-01-20", -1000, None)
     tx(conn, 1, "2025-01-21", 400, None)
     assert (None, "À classer", Decimal("10.00")) in by_category(conn, P, None, "expense", "parent")
-    assert by_category(conn, P, None, "income", "parent") == [
-        (1, "Salaire", Decimal("1500.00")), (None, "À classer", Decimal("4.00"))]
+    assert by_category(conn, P, None, "income", "parent") == [(1, "Salaire", Decimal("1500.00"))]
 
 
 def test_start_bound_excluded_with_month_clipping(conn):

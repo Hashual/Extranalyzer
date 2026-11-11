@@ -15,6 +15,7 @@ class Settings:
     data_dir: Path
     password_hash: bytes          # sel || scrypt, voir app.auth.hash_password
     max_upload_mb: int = 20
+    auto_threshold: float = 0.90  # seuil du classement automatique par le modèle
 
 
 def _password() -> str:
@@ -43,7 +44,25 @@ def _max_upload_mb() -> int:
     return value
 
 
+DEFAULT_AUTO_THRESHOLD = 0.90
+
+
+def auto_threshold() -> float:
+    """Seuil de confiance du classement automatique : EXTRANALYZER_AUTO_THRESHOLD, dans ]0, 1]."""
+    raw = os.environ.get("EXTRANALYZER_AUTO_THRESHOLD")
+    if raw is None:
+        return DEFAULT_AUTO_THRESHOLD
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ConfigError(f"EXTRANALYZER_AUTO_THRESHOLD invalide : {raw!r}") from None
+    if not 0 < value <= 1:          # écarte aussi nan
+        raise ConfigError("EXTRANALYZER_AUTO_THRESHOLD doit être dans ]0, 1]")
+    return value
+
+
 def load_settings() -> Settings:
     return Settings(data_dir=Path(os.environ.get("EXTRANALYZER_DATA_DIR", "/data")),
                     password_hash=hash_password(_password()),
-                    max_upload_mb=_max_upload_mb())
+                    max_upload_mb=_max_upload_mb(),
+                    auto_threshold=auto_threshold())
