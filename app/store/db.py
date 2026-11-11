@@ -2,8 +2,22 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
+
+_MIGRATE_2_TO_3 = """
+BEGIN;
+ALTER TABLE transactions ADD COLUMN classified_by TEXT NULL
+    CHECK(classified_by IN ('manual','rule','pair','model'));
+ALTER TABLE transactions ADD COLUMN confidence REAL NULL;
+ALTER TABLE transactions ADD COLUMN suggested_category_id INTEGER NULL REFERENCES categories(id);
+ALTER TABLE transactions ADD COLUMN suggestion_reason TEXT NULL;
+UPDATE transactions SET classified_by = 'manual' WHERE manual = 1;
+UPDATE transactions SET classified_by = 'rule' WHERE manual = 0 AND rule_id IS NOT NULL;
+UPDATE transactions SET classified_by = 'pair' WHERE mirror_of IS NOT NULL;
+PRAGMA user_version = 3;
+COMMIT;
+"""
 
 
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -24,4 +38,7 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
         conn.executescript(schema)
     elif version == 1:      # 1 -> 2 : message persistant d'une section (ex. collision d'identités)
         conn.executescript("BEGIN; ALTER TABLE sections ADD COLUMN message TEXT; PRAGMA user_version = 2; COMMIT;")
+        version = 2
+    if version == 2:        # 2 -> 3 : origine et confiance du classement
+        conn.executescript(_MIGRATE_2_TO_3)
     return conn

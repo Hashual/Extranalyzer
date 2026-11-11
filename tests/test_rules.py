@@ -240,3 +240,33 @@ def test_apply_rules_as_import_callback(conn, tmp_path, pdf_dir):
     rows = dict(conn.execute("SELECT label_norm, category_id FROM transactions").fetchall())
     assert rows["PRLV SEPA BETA"] == cat
     assert rows["VIR DE M TEST"] is None
+
+
+def _by(conn, tx_id):
+    return conn.execute("SELECT classified_by FROM transactions WHERE id = ?", (tx_id,)).fetchone()[0]
+
+
+def test_apply_rules_sets_classified_by(conn, cats):
+    hit = add_tx(conn, "MAGASIN ALPHA", -100)
+    miss = add_tx(conn, "INCONNU", -100)
+    mirror = add_tx(conn, "MAGASIN ALPHA", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (hit, mirror))
+    conn.execute("UPDATE transactions SET classified_by = 'model' WHERE id = ?", (miss,))
+    create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
+    assert (_by(conn, hit), _by(conn, miss), _by(conn, mirror)) == ("rule", None, "pair")
+    delete_rule(conn, conn.execute("SELECT id FROM rules").fetchone()[0])
+    assert (_by(conn, hit), _by(conn, mirror)) == (None, "pair")
+
+
+def test_manual_sets_and_clears_classified_by(conn, cats):
+    t = add_tx(conn, "MAGASIN ALPHA", -100)
+    mirror = add_tx(conn, "MAGASIN ALPHA", 100, account_id=2)
+    conn.execute("UPDATE transactions SET mirror_of = ? WHERE id = ?", (t, mirror))
+    set_manual_category(conn, t, cats["Courses"])
+    assert (_by(conn, t), _by(conn, mirror)) == ("manual", "pair")
+    set_manual_category(conn, t, None)
+    assert _by(conn, t) is None
+    create_rule(conn, "MAGASIN", "contains", cats["Divers"])
+    set_manual_category(conn, t, cats["Courses"])
+    set_manual_category(conn, t, None)
+    assert _by(conn, t) == "rule"
