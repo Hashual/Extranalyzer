@@ -10,7 +10,10 @@ volume Docker `data`.
 - Build multi-stage sur `python:3.12-alpine` ; l'étape `build` n'accepte que des wheels binaires
   (`--only-binary=:all:`), aucune compilation. L'image finale ne contient ni pip-cache ni outils de build,
   tourne en utilisateur non privilégié (uid 10001) avec un système de fichiers racine en lecture seule.
-- Contexte de build minimal (`.dockerignore` en liste blanche : `app/` et `pyproject.toml` seulement).
+- Contexte de build minimal (`.dockerignore` en liste blanche : `app/`, `pyproject.toml` et
+  `constraints.txt` seulement).
+- Dépendances figées : l'étape `build` installe les versions exactes de `constraints.txt` (voir
+  « Dépendances figées »), deux builds du même commit donnent donc les mêmes paquets.
 - Taille de l'image : environ 122 Mo en arm64 (voir « Tailles mesurées »).
 - Repli : si une dépendance n'avait pas de wheel `musllinux` pour aarch64, passer les deux `FROM` du
   `Dockerfile` sur `python:3.12-slim` (non nécessaire à ce jour).
@@ -142,6 +145,30 @@ L'archive contient les PDF et la base : la ranger hors du dépôt, chiffrée si 
 python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"
 .venv/Scripts/python -m pytest
 ```
+
+## Dépendances figées
+
+`constraints.txt` fixe la version exacte de chaque paquet de l'image : outils de build (`setuptools`,
+`wheel`), dépendances de `pyproject.toml` et toutes leurs dépendances transitives. Le `Dockerfile`
+l'applique (`-c constraints.txt`) ; `pyproject.toml` garde des dépendances sans version pour le
+développement local. `tests/test_constraints.py` vérifie que rien n'y manque et que le `Dockerfile`
+s'en sert.
+
+Chaque version doit exister en wheel pour linux/arm64 musl (`python:3.12-alpine`), sans quoi le build
+échoue (`--only-binary=:all:`). Pour mettre à jour :
+
+1. Mettre à jour le venv (`.venv/Scripts/python -m pip install -U -e ".[dev]"`) et faire passer les tests.
+2. Reporter dans `constraints.txt` les versions installées (`.venv/Scripts/python -m pip freeze`),
+   sans `extranalyzer` ni les paquets de développement (`pytest`, `httpx2`, `reportlab`…).
+3. Vérifier, sans Docker, que tout se résout en wheels pour l'image (les deux étiquettes `musllinux`
+   sont nécessaires : certains paquets, comme `pydantic_core`, ne publient que `musllinux_1_1`) :
+
+   ```bash
+   .venv/Scripts/python -m pip install --dry-run --ignore-installed --target .tmp-check -c constraints.txt --only-binary=:all: --platform musllinux_1_2_aarch64 --platform musllinux_1_1_aarch64 --python-version 3.12 --implementation cp --abi cp312 setuptools wheel fastapi uvicorn python-multipart pdfplumber itsdangerous
+   ```
+
+   La liste « Would install » doit reprendre exactement les versions de `constraints.txt`.
+4. Reconstruire l'image (« Construire et installer l'image ») et vérifier qu'elle passe « healthy ».
 
 ## Tailles mesurées
 
