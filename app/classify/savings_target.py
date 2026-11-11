@@ -9,9 +9,14 @@ _ALIASES = {"EPARGNE LOGEMENT": "CEL"}
 
 
 def _savings_root(conn: sqlite3.Connection) -> int:
-    for cat_id, name in conn.execute("SELECT id, name FROM categories WHERE parent_id IS NULL ORDER BY id"):
+    """Racine « Épargne », sinon l'unique racine d'épargne (« Épargne » renommée par l'utilisateur), sinon créée."""
+    roots = conn.execute("SELECT id, name FROM categories WHERE parent_id IS NULL AND kind = 'savings' "
+                         "ORDER BY id").fetchall()
+    for cat_id, name in roots:
         if fold(name) == fold(ROOT_NAME):
             return cat_id
+    if len(roots) == 1:
+        return roots[0][0]
     return conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES (?, NULL, 'savings')",
                         (ROOT_NAME,)).lastrowid
 

@@ -76,8 +76,9 @@ def _init_storage(settings: Settings) -> None:
     chaîne de classement une fois (une base mise à jour, un seuil modifié ou un nouveau seed prennent effet sans
     attendre un import ; une passe stable n'écrit rien).
 
-    Les catégories du seed sont complétées à chaque démarrage ; ses règles ne sont installées que sur
-    une installation neuve (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
+    Les catégories du seed sont complétées à chaque démarrage, sauf celles que l'utilisateur a supprimées ou
+    renommées (mémorisées dans `seed_dismissed`) ; ses règles ne sont installées que sur une installation neuve
+    (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
     """
     (settings.data_dir / "pdfs").mkdir(parents=True, exist_ok=True)
     conn = connect(settings.data_dir / "extranalyzer.db")
