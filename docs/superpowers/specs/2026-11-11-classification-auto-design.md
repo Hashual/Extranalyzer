@@ -97,8 +97,9 @@ copie de virement appariée → `pair`.
      suggestion si la confiance baisse.
 
 ### 5.3 Le modèle (`app/classify/model.py`)
-- **Exemples d'apprentissage** : opérations classées `manual`, `rule` ou `pair`, copies de virement
-  exclues. **Jamais** les opérations classées par le modèle.
+- **Exemples d'apprentissage** : opérations classées `manual` ou `rule`, copies de virement
+  exclues. **Jamais** les opérations classées par le modèle ni par appariement (`pair`) : les virements
+  internes sont déjà traités par l'appariement et tireraient les suggestions vers Épargne.
 - **Représentation** : trigrammes de caractères du `label_norm` (avec bornes de mots), pondérés TF-IDF,
   puis similarité cosinus.
 - **Contraintes dures** : le voisin doit avoir le même sens (débit ou crédit).
@@ -174,7 +175,8 @@ copie de virement appariée → `pair`.
    - La racine « Épargne » (kind `savings`) existe dans la configuration initiale ; on la crée si elle
      manque. Une sous-catégorie créée prend le kind `savings`.
 5. **Données d'apprentissage.**
-   - Les sources classées par appariement servent d'exemples.
+   - Les sources classées par appariement ne servent **pas** d'exemples : les virements internes sont déjà
+     traités par l'appariement et, comme exemples, tireraient les suggestions vers Épargne.
    - Une sortie du modèle ne devient exemple que si l'utilisateur la valide, ce qui la passe en
      `manual`.
 6. **Revenus.**

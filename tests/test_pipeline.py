@@ -296,18 +296,19 @@ def test_explicit_threshold_validated(conn, bad):
         reclassify(conn, threshold=bad)
 
 
-def test_pair_only_neighbours_give_a_suggestion_not_auto(conn, cats):
-    """Virement à son nom depuis une banque inconnue : seuls des exemples d'appariement → suggestion, pas auto."""
+def test_pair_rows_are_not_model_examples(conn, cats):
+    """Virement à son nom depuis une banque inconnue : des sources appariées (Épargne) ne servent pas d'exemples,
+    l'opération ressemblante non appariée reste sans suggestion."""
     sources = [pair(conn, "VIR DE M TEST", 10000, f"2024-0{m}-12")[0] for m in (3, 5, 7)]
     target = add_tx(conn, "VIR DE M TEST", 10000, 1, "2024-09-12")
     counts = reclassify(conn)
     for src in sources:
         assert state(conn, src)[:2] == (cats["Livret Bleu"], "pair")
-    cat, by, sugg, conf, _ = state(conn, target)
-    assert (cat, by, sugg) == (None, None, cats["Livret Bleu"]) and conf == pytest.approx(1.0)
-    assert counts["model"] == 0 and counts["suggested"] == 1
-    assert support(conn, target) == 3
-    manual(conn, "VIR DE M TEST", 10000, cats["Livret Bleu"])     # un exemple de confiance suffit
+    assert state(conn, target) == (None, None, None, None, "aucune opération similaire")
+    assert support(conn, target) is None
+    assert counts["model"] == 0 and counts["suggested"] == 0 and counts["unclassified"] == 1
+    for _ in range(3):
+        manual(conn, "VIR DE M TEST", 10000, cats["Livret Bleu"])     # seules les décisions apprennent
     reclassify(conn)
     assert state(conn, target)[:2] == (cats["Livret Bleu"], "model")
 

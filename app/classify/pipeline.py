@@ -10,8 +10,10 @@ from app.classify.rules import apply_rules, sync_mirrors
 from app.classify.transfers import classify_paired_sources, pair_internal_transfers
 from app.config import auto_threshold
 
-EXAMPLE_SOURCES = ("manual", "rule", "pair")
-TRUSTED_SOURCES = ("manual", "rule")      # un exemple d'appariement seul ne classe jamais
+# Les lignes `pair` ne sont pas des exemples : les virements internes sont déjà traités par l'appariement et
+# tireraient les suggestions vers Épargne. Tout exemple est donc de confiance (`trusted` reste une défense).
+EXAMPLE_SOURCES = ("manual", "rule")
+TRUSTED_SOURCES = ("manual", "rule")
 
 
 def _apply_model(conn: sqlite3.Connection, threshold: float) -> tuple[int, int, int]:
