@@ -118,6 +118,11 @@ def _reclassify(conn: sqlite3.Connection) -> None:
 def create_rule(conn: sqlite3.Connection, pattern: str, match: str, category_id: int,
                 direction: str | None = None, account_id: int | None = None, priority: int | None = None,
                 apply_to: Literal["unclassified", "all_non_manual"] = "unclassified") -> int:
+    """Crée une règle puis repasse toute la chaîne (`reclassify`) sur toutes les lignes non manuelles.
+
+    `apply_to` n'est plus que validé (compatibilité d'API) : le classement par règle étant un état dérivé,
+    la règle de plus haute priorité l'emporte partout, quelle que soit sa valeur.
+    """
     if apply_to not in ("unclassified", "all_non_manual"):
         raise ValueError(f"apply_to inconnu : {apply_to!r}")
     _validate(pattern, match, direction)

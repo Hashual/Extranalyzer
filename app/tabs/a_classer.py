@@ -72,7 +72,8 @@ def classify(body: ClassifyBody, conn: Conn, s: Annotated[Scope, Depends(scope)]
         if body.create_rule:
             pattern = (body.pattern if body.pattern is not None else body.label_norm).strip()
             try:
-                # La règle classe toutes les opérations encore à classer qu'elle reconnaît, hors période comprise.
+                # La création repasse toute la chaîne : la règle s'applique partout où elle est prioritaire,
+                # hors période comprise ; `classified` ne compte que les opérations du groupe affiché.
                 rule_id = create_rule(conn, pattern, body.match, body.category_id, direction=body.direction,
                                       apply_to="unclassified")
             except ValueError as exc:
@@ -82,8 +83,7 @@ def classify(body: ClassifyBody, conn: Conn, s: Annotated[Scope, Depends(scope)]
                 [rule_id, *tx_ids]).fetchone()[0]
             if in_group == 0:
                 raise HTTPException(422, "le motif ne reconnaît aucune opération de ce groupe")
-            classified = conn.execute("SELECT COUNT(*) FROM transactions WHERE rule_id = ? AND mirror_of IS NULL",
-                                      (rule_id,)).fetchone()[0]
+            classified = in_group
         else:
             for tx_id in tx_ids:
                 set_manual_category(conn, tx_id, body.category_id, reclassify_after=False)

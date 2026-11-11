@@ -410,7 +410,7 @@ def test_a_classer_classify_with_rule_clears_the_group(env):
                     json={"label_norm": "cb inconnu zeta", "category_id": cat["Loisirs"], "create_rule": True})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["classified"] == 3
+    assert body["classified"] == 2                           # opérations du groupe affiché (janvier)
     assert body["unclassified_count"] == before - 3 == _unclassified_count(client)
     rule = conn.execute("SELECT pattern, match, direction, category_id FROM rules WHERE id = ?",
                         (body["rule_id"],)).fetchone()

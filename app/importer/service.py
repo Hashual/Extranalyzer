@@ -1,7 +1,10 @@
 """Service d'import : dédoublonnage, réconciliation par section, conflits, identité stable, ré-analyse.
 
 Toute l'écriture d'un import (ou d'une ré-analyse de document) se fait dans une seule transaction
-SQLite ; `on_new_transactions(conn, ids)` est appelé dans cette transaction et ne doit pas valider.
+SQLite. `on_new_transactions(conn, ids)` (une passe complète de classement) est appelé une seule fois
+par opération et ne doit pas valider : à la fin de la transaction d'un import ou d'une acceptation de
+conflit, et pour une ré-analyse dans une transaction à part, après la boucle des documents, avec les ids
+de tous les documents.
 """
 import hashlib
 import json
@@ -163,21 +166,29 @@ def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, 
 
 
 def _insert_transactions(conn: sqlite3.Connection, section_id: int, account_id: int,
-                         keyed: list[_KeyedTx], on_new_transactions: OnNewTransactions,
-                         unmirrored: list[int] = ()) -> None:
-    """Insère les transactions puis les classe, avec les anciennes jambes miroir `unmirrored` (leur
-    source vient d'être supprimée : elles sont reclassées ou ré-appariées au lieu de garder une
-    catégorie copiée périmée)."""
-    ids = [repo.insert_transaction(conn, section_id, account_id, k.key, k.tx.op_date.isoformat(),
-                                   k.tx.value_date.isoformat(), k.tx.label, k.label_norm,
-                                   to_cents(k.tx.amount))
-           for k in keyed]
-    if ids or unmirrored:
-        on_new_transactions(conn, ids + list(unmirrored))
+                         keyed: list[_KeyedTx], pending: list[int], unmirrored: list[int] = ()) -> None:
+    """Insère les transactions et ajoute à `pending` leurs ids et les anciennes jambes miroir `unmirrored`
+    (leur source vient d'être supprimée : elles seront reclassées ou ré-appariées au lieu de garder une
+    catégorie copiée périmée). Le classement est lancé une seule fois par opération, voir `_classify`."""
+    pending += [repo.insert_transaction(conn, section_id, account_id, k.key, k.tx.op_date.isoformat(),
+                                        k.tx.value_date.isoformat(), k.tx.label, k.label_norm,
+                                        to_cents(k.tx.amount))
+                for k in keyed]
+    pending += unmirrored
+
+
+def _classify(conn: sqlite3.Connection, on_new_transactions: OnNewTransactions, pending: list[int]) -> None:
+    """Un seul appel du classement (une passe complète de la chaîne) par import, acceptation ou ré-analyse.
+
+    Les ids supprimés depuis leur ajout (jambe miroir d'une section ré-analysée ensuite) sont écartés.
+    """
+    if pending:
+        existing = {row[0] for row in conn.execute("SELECT id FROM transactions")}
+        on_new_transactions(conn, [i for i in dict.fromkeys(pending) if i in existing])
 
 
 def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
-                    on_new_transactions: OnNewTransactions) -> SectionReport:
+                    pending: list[int]) -> SectionReport:
     account_id = repo.upsert_account(conn, section.account_number, section.account_label)
     statement_date = section.statement_date.isoformat()
     gap, digest = reconciliation_gap(section), content_hash(section)
@@ -190,7 +201,7 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
                                      to_cents(section.opening), to_cents(section.closing), to_cents(gap),
                                      status, digest, message)
     if status == "ok":
-        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions)
+        _insert_transactions(conn, section_id, account_id, keyed, pending)
     return _report(section, status, gap, section_id, message)
 
 
@@ -216,7 +227,9 @@ def import_pdf(conn: sqlite3.Connection, pdf_bytes: bytes, filename: str, pdf_di
             imported_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             document_id = repo.insert_document(conn, sha, filename, stored.name, parser.name,
                                                doc.statement_date.isoformat(), imported_at)
-            reports = [_import_section(conn, document_id, s, on_new_transactions) for s in doc.sections]
+            pending: list[int] = []
+            reports = [_import_section(conn, document_id, s, pending) for s in doc.sections]
+            _classify(conn, on_new_transactions, pending)
     except BaseException:
         stored.unlink(missing_ok=True)
         raise
@@ -268,18 +281,20 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
             repo.set_section_status(conn, old[0], "superseded")
             unmirrored = repo.delete_section_transactions(conn, old[0])
         repo.update_section(conn, section_id, opening, closing, 0, "ok", digest)
-        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
+        pending: list[int] = []
+        _insert_transactions(conn, section_id, account_id, keyed, pending, unmirrored)
+        _classify(conn, on_new_transactions, pending)
     return orphaned
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
-                       on_new_transactions: OnNewTransactions) -> tuple[SectionReport, bool]:
+                       pending: list[int]) -> tuple[SectionReport, bool]:
     """Renvoie (rapport, ancienne version conservée malgré un échec)."""
     account_id = repo.upsert_account(conn, section.account_number, section.account_label)
     statement_date = section.statement_date.isoformat()
     existing = repo.find_document_section(conn, document_id, account_id, statement_date)
     if existing is None:     # section nouvellement reconnue par le parseur
-        return _import_section(conn, document_id, section, on_new_transactions), False
+        return _import_section(conn, document_id, section, pending), False
     section_id, old_status = existing
     gap, digest = reconciliation_gap(section), content_hash(section)
     keyed = _keyed(section)
@@ -304,7 +319,7 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),
                         to_cents(gap), status, digest, message)
     if status == "ok":
-        _insert_transactions(conn, section_id, account_id, keyed, on_new_transactions, unmirrored)
+        _insert_transactions(conn, section_id, account_id, keyed, pending, unmirrored)
     return _report(section, status, gap, section_id, message, orphaned), False
 
 
@@ -320,6 +335,7 @@ def _missing_ok_sections(conn: sqlite3.Connection, document_id: int, seen: set[i
 def reanalyse_all(conn: sqlite3.Connection, pdf_dir: Path, parsers: list[StatementParser],
                   on_new_transactions: OnNewTransactions) -> list[ImportReport]:
     reports = []
+    pending: list[int] = []
     for document_id, stored_path in repo.list_documents(conn):
         path = pdf_dir / stored_path
         if not path.is_file():
@@ -332,10 +348,13 @@ def reanalyse_all(conn: sqlite3.Connection, pdf_dir: Path, parsers: list[Stateme
             continue
         with _transaction(conn):
             repo.set_document_parser(conn, document_id, parser.name)
-            results = [_reanalyse_section(conn, document_id, s, on_new_transactions) for s in doc.sections]
+            results = [_reanalyse_section(conn, document_id, s, pending) for s in doc.sections]
             missing = _missing_ok_sections(conn, document_id, {r.section_id for r, _ in results})
         sections = [r for r, _ in results] + missing
         kept = [r.account_number for r, kept_old in results if kept_old] + [r.account_number for r in missing]
         error = f"section(s) {', '.join(kept)} : {KEPT_OLD_VERSION}" if kept else None
         reports.append(ImportReport(document_id, False, sections, error))
+    if pending:                     # une seule passe de classement pour toute la ré-analyse
+        with _transaction(conn):
+            _classify(conn, on_new_transactions, pending)
     return reports

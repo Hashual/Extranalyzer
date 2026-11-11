@@ -276,3 +276,21 @@ def test_reclassify_is_fast_enough(conn, cats):
     elapsed = time.perf_counter() - start
     assert sum(counts.values()) == 1100 - 367
     assert elapsed < 5
+
+
+def test_model_step_ignores_model_rows_as_examples(conn, cats):
+    """Étape modèle seule (sans le passage de `apply_rules`) : des lignes `model` ne sont jamais des exemples."""
+    from app.classify.pipeline import _apply_model
+    for _ in range(3):
+        tx = add_tx(conn, DUPONT, -350)
+        conn.execute("UPDATE transactions SET category_id = ?, classified_by = 'model' WHERE id = ?",
+                     (cats["Courses"], tx))
+    target = add_tx(conn, DUPONT, -400)
+    assert _apply_model(conn, 0.9) == (0, 0, 4)
+    assert state(conn, target)[:4] == (None, None, None, None)
+
+
+@pytest.mark.parametrize("bad", [0, -0.1, 1.01, float("nan")])
+def test_explicit_threshold_validated(conn, bad):
+    with pytest.raises(ValueError):
+        reclassify(conn, threshold=bad)

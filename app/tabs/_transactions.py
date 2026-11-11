@@ -30,7 +30,7 @@ def row_to_dict(row: tuple) -> dict:
             "manual": bool(manual), "mirror": mirror_of is not None}
 
 
-def reclassify(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> dict:
+def set_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> dict:
     """Classement manuel (None : retour aux règles) ; renvoie la ligne mise à jour."""
     if conn.execute("SELECT 1 FROM transactions WHERE id = ?", (tx_id,)).fetchone() is None:
         raise HTTPException(404, f"transaction {tx_id} introuvable")

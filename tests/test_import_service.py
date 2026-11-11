@@ -83,7 +83,8 @@ def test_import_ok(tmp_path, conn, pdf_dir):
     sha = hashlib.sha256(data).hexdigest()
     assert (pdf_dir / f"{sha}.pdf").read_bytes() == data
     assert _count(conn) == 4
-    assert sorted(i for call in rec.calls for i in call) == [r[0] for r in conn.execute("SELECT id FROM transactions ORDER BY id")]
+    assert len(rec.calls) == 1                     # une seule passe pour les deux sections
+    assert sorted(rec.calls[0]) == [r[0] for r in conn.execute("SELECT id FROM transactions ORDER BY id")]
 
     row = conn.execute("SELECT op_date, value_date, label, label_norm, amount_cents, category_id, manual "
                        "FROM transactions ORDER BY id LIMIT 1").fetchone()
@@ -305,7 +306,7 @@ def test_manual_override_survives_reanalyse(tmp_path, conn, pdf_dir):
     assert [s.status for s in report.sections] == ["ok", "ok"]
     assert not conn.in_transaction
     new_ids = {r[0] for r in conn.execute("SELECT id FROM transactions")}
-    assert len(new_ids) == 4 and sorted(i for c in rec.calls for i in c) == sorted(new_ids)
+    assert len(new_ids) == 4 and len(rec.calls) == 1 and sorted(rec.calls[0]) == sorted(new_ids)
     rows = conn.execute("SELECT label, category_id, manual FROM transactions ORDER BY id").fetchall()
     assert ("PRLV SEPA BETA", cat, 1) in rows
     assert all((c, m) == (None, 0) for label, c, m in rows if label != "PRLV SEPA BETA")
@@ -536,3 +537,26 @@ def test_carried_override_never_overwrites_an_occupied_key(tmp_path, conn, pdf_d
     rows = conn.execute("SELECT label, category_id, manual FROM transactions ORDER BY id").fetchall()
     assert rows == [("PRLV SEPA BAR", bar, 1), ("PRLV SEPA FOO GAZ", None, 0)]
     assert foo in [r[0] for r in conn.execute("SELECT category_id FROM manual_overrides")]
+
+
+def test_classification_runs_once_per_operation(tmp_path, conn, pdf_dir):
+    """Le rappel de classement (une passe complète) est appelé une fois par import, acceptation de conflit
+    ou ré-analyse, quel que soit le nombre de sections et de documents."""
+    rec = Recorder()
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir, PARSERS, rec)
+    assert len(rec.calls) == 1
+    later_cc = FSection(CC, ("CREDITEUR", "10/04/2024", "1.087,50"), ("CREDITEUR", "10/05/2024", "1.077,50"),
+                        [FTx("12/04/2024", "12/04/2024", ["PRLV SEPA GAMMA"], debit="10,00")])
+    rec = Recorder()
+    import_pdf(conn, make_statement(tmp_path / "b.pdf", "10 mai 2024", [later_cc]).read_bytes(), "b.pdf",
+               pdf_dir, PARSERS, rec)
+    assert len(rec.calls) == 1
+    rec = Recorder()
+    reports = reanalyse_all(conn, pdf_dir, PARSERS, rec)
+    assert len(reports) == 2 and all(r.error is None for r in reports)
+    assert len(rec.calls) == 1 and len(rec.calls[0]) == 5
+    assert not conn.in_transaction
+    rec = Recorder()
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "copie.pdf", pdf_dir,
+               PARSERS, rec)
+    assert rec.calls == []                         # rien d'inséré : pas de passe

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.analytics.totals import scope_clause
 from app.deps import get_conn
 from app.tabs._params import Scope, scope
-from app.tabs._transactions import ROW_FROM, ROW_SELECT, ReclassBody, reclassify, row_to_dict
+from app.tabs._transactions import ROW_FROM, ROW_SELECT, ReclassBody, set_category, row_to_dict
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable
 
@@ -55,8 +55,8 @@ def list_transactions(conn: Conn, s: Annotated[Scope, Depends(scope)], q: str = 
 
 
 @router.post("/{tx_id}/category")
-def set_category(tx_id: int, body: ReclassBody, conn: Conn):
-    return to_jsonable(reclassify(conn, tx_id, body.category_id))
+def post_category(tx_id: int, body: ReclassBody, conn: Conn):
+    return to_jsonable(set_category(conn, tx_id, body.category_id))
 
 
 TAB = Tab("transactions", "Transactions", 30, router)

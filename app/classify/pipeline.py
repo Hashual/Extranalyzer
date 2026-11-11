@@ -53,12 +53,15 @@ def reclassify(conn: sqlite3.Connection, threshold: float | None = None) -> dict
     """
     if threshold is None:
         threshold = auto_threshold()
+    elif not 0 < threshold <= 1:
+        raise ValueError(f"seuil hors de ]0, 1] : {threshold!r}")
     apply_rules(conn)
     pair_internal_transfers(conn)
     classify_paired_sources(conn)
     model, suggested, unclassified = _apply_model(conn, threshold)
     conn.execute("UPDATE transactions SET confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL "
-                 "WHERE classified_by IN ('manual', 'rule', 'pair') AND mirror_of IS NULL")
+                 "WHERE classified_by IN ('manual', 'rule', 'pair') AND mirror_of IS NULL "
+                 "AND (confidence IS NOT NULL OR suggested_category_id IS NOT NULL OR suggestion_reason IS NOT NULL)")
     sync_mirrors(conn)
     counts = dict(conn.execute(
         "SELECT classified_by, COUNT(*) FROM transactions WHERE mirror_of IS NULL "
