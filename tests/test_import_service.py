@@ -1,4 +1,5 @@
 import hashlib
+import sqlite3
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -560,3 +561,37 @@ def test_classification_runs_once_per_operation(tmp_path, conn, pdf_dir):
     import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "copie.pdf", pdf_dir,
                PARSERS, rec)
     assert rec.calls == []                         # rien d'inséré : pas de passe
+
+
+class _FlakyClassifier:
+    """Classement qui échoue `failures` fois (l'écriture faite avant l'échec doit être annulée)."""
+
+    def __init__(self, failures):
+        self.failures, self.calls = failures, 0
+
+    def __call__(self, conn, new_ids):
+        self.calls += 1
+        conn.execute("UPDATE transactions SET suggestion_reason = 'partiel'")
+        if self.calls <= self.failures:
+            raise sqlite3.OperationalError("database is locked: libellé secret")
+
+
+def test_reanalyse_final_pass_retried_once_and_logs_type_only(tmp_path, conn, pdf_dir, caplog):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    flaky = _FlakyClassifier(1)
+    with caplog.at_level("WARNING"):
+        [report] = reanalyse_all(conn, pdf_dir, PARSERS, flaky)
+    assert report.error is None and flaky.calls == 2 and not conn.in_transaction
+    assert "OperationalError" in caplog.text and "secret" not in caplog.text
+    assert {r[0] for r in conn.execute("SELECT suggestion_reason FROM transactions")} == {"partiel"}
+
+
+def test_reanalyse_final_pass_reraises_second_failure(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    flaky = _FlakyClassifier(2)
+    with pytest.raises(sqlite3.OperationalError):
+        reanalyse_all(conn, pdf_dir, PARSERS, flaky)
+    assert flaky.calls == 2 and not conn.in_transaction
+    assert {r[0] for r in conn.execute("SELECT suggestion_reason FROM transactions")} == {None}

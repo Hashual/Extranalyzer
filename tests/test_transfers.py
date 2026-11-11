@@ -260,3 +260,32 @@ def test_sync_mirrors_clears_model_fields(conn):
     sync_mirrors(conn)
     assert conn.execute("SELECT confidence, suggested_category_id, suggestion_reason FROM transactions "
                         "WHERE id = ?", (inn,)).fetchone() == (None, None, None)
+
+
+def test_subcategory_match_is_whole_word(conn):
+    out, _ = _savings_setup(conn, label="LIVRET A M MARCEL X")       # « MARCEL » contient « CEL »
+    classify_paired_sources(conn)
+    assert _cat_name(conn, out) == "Livret A M Marcel X"
+
+
+def test_alias_match_is_whole_word(tmp_path):
+    c = connect(tmp_path / "w.db")
+    c.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', 'PLAN EPARGNE LOGEMENTS', 'savings')")
+    c.execute("INSERT INTO accounts(id, number, label, kind) VALUES (2, '2', 'COMPTE EPARGNE LOGEMENT', 'savings')")
+    name = lambda i: c.execute("SELECT name FROM categories WHERE id = ?", (i,)).fetchone()[0]
+    assert name(savings_category_for_account(c, 1)) == "Plan Epargne Logements"
+    assert name(savings_category_for_account(c, 2)) == "CEL"
+    c.close()
+
+
+def test_mirror_leg_loses_manual_flag_but_keeps_its_override(conn):
+    out = add_tx(conn, 1, "2024-03-12", -10000)
+    inn = add_tx(conn, 2, "2024-03-13", 10000)
+    set_manual_category(conn, inn, 2, reclassify_after=False)     # avant appariement : décision sur le livret
+    assert conn.execute("SELECT manual, classified_by FROM transactions WHERE id = ?", (inn,)).fetchone() == (
+        1, "manual")
+    assert pair_internal_transfers(conn) == 1
+    sync_mirrors(conn)
+    assert conn.execute("SELECT manual, mirror_of, classified_by FROM transactions WHERE id = ?",
+                        (inn,)).fetchone() == (0, out, None)
+    assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 1

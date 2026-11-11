@@ -8,6 +8,7 @@ de tous les documents.
 """
 import hashlib
 import json
+import logging
 import sqlite3
 import tempfile
 from collections import Counter
@@ -24,6 +25,8 @@ from app.importer.base import StatementParser
 from app.importer.validate import reconciliation_gap
 from app.model import ParsedDocument, ParsedSection, ParsedTransaction, ParseError
 from app.store import repo
+
+log = logging.getLogger(__name__)
 
 OnNewTransactions = Callable[[sqlite3.Connection, list[int]], None]
 
@@ -355,6 +358,12 @@ def reanalyse_all(conn: sqlite3.Connection, pdf_dir: Path, parsers: list[Stateme
         error = f"section(s) {', '.join(kept)} : {KEPT_OLD_VERSION}" if kept else None
         reports.append(ImportReport(document_id, False, sections, error))
     if pending:                     # une seule passe de classement pour toute la ré-analyse
-        with _transaction(conn):
-            _classify(conn, on_new_transactions, pending)
+        try:
+            with _transaction(conn):
+                _classify(conn, on_new_transactions, pending)
+        except Exception as exc:    # documents déjà validés : une nouvelle tentative, dans une transaction neuve
+            log.warning("échec de la passe de classement après ré-analyse (%s), nouvelle tentative",
+                        type(exc).__name__)
+            with _transaction(conn):
+                _classify(conn, on_new_transactions, pending)
     return reports

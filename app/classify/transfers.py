@@ -14,7 +14,8 @@ MAX_GAP_DAYS = 5
 def pair_internal_transfers(conn: sqlite3.Connection) -> int:
     """Apparie les virements internes ; renvoie le nombre de paires créées.
 
-    La jambe côté compte `savings` reçoit `mirror_of` = id de l'autre jambe et sa catégorie.
+    La jambe côté compte `savings` reçoit `mirror_of` = id de l'autre jambe et sa catégorie ; elle perd son
+    indicateur `manual` (sa décision reste dans `manual_overrides`) : c'est la source qui porte la décision.
     """
     rows = conn.execute(
         "SELECT t.id, t.account_id, a.kind, t.op_date, t.amount_cents FROM transactions t "
@@ -45,7 +46,7 @@ def pair_internal_transfers(conn: sqlite3.Connection) -> int:
         other_id = best[1]
         mirror_id, source_id = (tx_id, other_id) if kind == "savings" else (other_id, tx_id)
         conn.execute(
-            "UPDATE transactions SET mirror_of = ?, rule_id = NULL, "
+            "UPDATE transactions SET mirror_of = ?, rule_id = NULL, manual = 0, "
             "category_id = (SELECT category_id FROM transactions WHERE id = ?), "
             "classified_by = CASE WHEN (SELECT category_id FROM transactions WHERE id = ?) IS NULL "
             "THEN NULL ELSE 'pair' END WHERE id = ?",
