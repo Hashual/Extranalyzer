@@ -9,6 +9,10 @@ export const title = "Catégories";
 const KIND_TITLES = { expense: "Dépenses", income: "Revenus", savings: "Épargne" };
 
 function categoryButton(ctx, category, selectedId, className) {
+  if (category.id === null) {         // pseudo-ligne (virements internes non classés) : pas de détail
+    return el("div", { className: `cat-link static ${className}` },
+      el("span", { text: category.name }), el("span", { className: "muted", text: money(category.amount) }));
+  }
   const current = category.id === selectedId;
   return el("button", {
     type: "button",
@@ -29,21 +33,25 @@ function sidebar(ctx, tree, selectedId) {
     for (const root of roots) {
       const item = el("li", {}, categoryButton(ctx, root, selectedId, "root"));
       const showChildren = root.id === selectedId || root.children.some((c) => c.id === selectedId);
-      if (showChildren && root.children.length) {
-        item.append(el("ul", {}, root.children.map((c) => el("li", {}, categoryButton(ctx, c, selectedId, "child")))));
+      const children = root.children.filter((c) => showChildren || c.id === null);   // pseudo-ligne toujours visible
+      if (children.length) {
+        item.append(el("ul", {}, children.map((c) => el("li", {}, categoryButton(ctx, c, selectedId, "child")))));
       }
       list.append(item);
     }
     nav.append(list);
   }
-  const { debits, credits } = tree.unclassified;
-  if ((Number(debits) || Number(credits)) && hasTab(ctx, "transactions")) {
+  const { debits, credits, count } = tree.unclassified;
+  // `count` inclut les virements internes appariés non classés (comptés en épargne, pas en débits/crédits)
+  if ((Number(debits) || Number(credits) || count) && hasTab(ctx, "transactions")) {
     nav.append(el("h3", { text: "À classer" }), el("button", {
       type: "button",
       className: "cat-link root",
       on: { click: () => ctx.navigate("transactions", { category: "none" }) },
     }, el("span", { text: "Opérations à classer" }),
-    el("span", { className: "muted", text: `${money(debits)} / ${money(credits)}` })));
+    el("span", { className: "muted", text: Number(debits) || Number(credits)
+      ? `${money(debits)} / ${money(credits)}`
+      : `${count} opération${count > 1 ? "s" : ""}` })));
   }
   return nav;
 }
@@ -51,7 +59,7 @@ function sidebar(ctx, tree, selectedId) {
 function defaultCategory(tree) {
   const expenses = tree.roots.filter((r) => r.kind === "expense" && Number(r.amount) > 0)
     .sort((a, b) => Number(b.amount) - Number(a.amount));
-  return (expenses[0] || tree.roots[0])?.id ?? null;
+  return (expenses[0] || tree.roots.find((r) => r.id !== null))?.id ?? null;
 }
 
 async function detailPanel(ctx, categoryId, meta) {
@@ -76,7 +84,7 @@ async function detailPanel(ctx, categoryId, meta) {
       const fill = el("span", { className: "bar-fill" });
       fill.style.width = `${max > 0 ? (Math.max(Number(c.amount), 0) / max) * 100 : 0}%`;   // jamais négatif
       fill.style.background = cssVar("--accent");
-      const isSelf = c.id === data.id;
+      const isSelf = c.id === data.id || c.id === null;     // pseudo-ligne : pas de détail
       return el("li", {}, el("button", {
         type: "button", className: "bar-row-button", disabled: isSelf,
         on: { click: () => ctx.navigate("categories", { id: c.id }) },
@@ -128,7 +136,7 @@ export async function render(container, ctx) {
   ]);
   const requested = /^\d+$/.test(ctx.params.id || "") ? Number(ctx.params.id) : null;
   const known = new Set(tree.roots.flatMap((r) => [r.id, ...r.children.map((c) => c.id)]));
-  const selectedId = known.has(requested) ? requested : defaultCategory(tree);
+  const selectedId = requested !== null && known.has(requested) ? requested : defaultCategory(tree);
 
   if (selectedId === null) {
     container.replaceChildren(emptyNote("Aucune catégorie définie."));

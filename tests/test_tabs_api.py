@@ -144,7 +144,7 @@ def test_categories_tree(env):
     assert roots["Revenus"]["amount"] == "2000.00"
     assert roots["Épargne"]["amount"] == "250.00"
     assert roots["Loisirs"]["amount"] == "0.00"
-    assert tree["unclassified"] == {"debits": "25.00", "credits": "7.00"}
+    assert tree["unclassified"] == {"debits": "25.00", "credits": "7.00", "count": 2}
 
 
 def test_category_detail_returns_children(env):
@@ -309,6 +309,38 @@ def test_paired_unclassified_transfer_is_savings_in_overview_and_epargne(env):
     labels = [g["label_norm"] for g in get(client, "/a_classer/list", **JAN)["groups"]]
     assert "vir vers livret" in labels                           # toujours à classer (destination à choisir)
 
+
+
+def _paired_unclassified(conn):
+    src = _add_unknown(conn, "p1", "2025-01-26", -7000, "VIR VERS LIVRET")
+    conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, mirror_of) "
+                 "VALUES (2, 'p2', '2025-01-26', 'VIR DEPUIS CC', 'vir depuis cc', 7000, ?)", (src,))
+    conn.commit()
+    return src
+
+
+def test_categories_tree_shows_paired_unclassified_transfer_under_epargne(env):
+    client, conn, cat, _ = env
+    _paired_unclassified(conn)
+    savings_net = get(client, "/overview/summary", **JAN)["totals"]["savings_net"]
+    tree = get(client, "/categories/tree", **JAN)
+    epargne = next(r for r in tree["roots"] if r["name"] == "Épargne")
+    assert epargne["amount"] == savings_net == "320.00"
+    assert {"id": None, "name": "Virements internes (non classés)", "amount": "70.00"} in epargne["children"]
+    assert all(r["id"] is not None for r in tree["roots"])
+    detail = get(client, f"/categories/{cat['Épargne']}", **JAN)
+    assert detail["amount"] == "320.00" and detail["monthly"] == [{"month": "2025-01", "amount": "320.00"}]
+    assert {"id": None, "name": "Virements internes (non classés)", "amount": "70.00"} in detail["children"]
+
+
+def test_categories_tree_counts_paired_rows_left_to_classify(env):
+    client, conn, _, ids = env
+    conn.execute("UPDATE transactions SET category_id = (SELECT id FROM categories WHERE name = 'Courses') "
+                 "WHERE id IN (?, ?)", (ids["unknown"], ids["unknown_credit"]))
+    conn.commit()
+    assert get(client, "/categories/tree", **JAN)["unclassified"] == {"debits": "0.00", "credits": "0.00", "count": 0}
+    _paired_unclassified(conn)
+    assert get(client, "/categories/tree", **JAN)["unclassified"] == {"debits": "0.00", "credits": "0.00", "count": 1}
 
 # --- À classer ---------------------------------------------------------------------------------
 
