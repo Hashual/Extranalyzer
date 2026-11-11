@@ -1,5 +1,6 @@
 import os
 import re
+import sqlite3
 import sys
 import types
 
@@ -445,3 +446,31 @@ def test_seed_rules_not_restored_when_transactions_exist(settings):
     conn = connect(settings.data_dir / "extranalyzer.db")
     assert conn.execute("SELECT COUNT(*) FROM categories WHERE name = 'CEL'").fetchone()[0] == 1   # catégories : idempotent
     conn.close()
+
+
+def test_startup_reclassifies_an_upgraded_database(settings):
+    """Base v2 (avant le classement automatique) : la source d'un virement apparié mais non classée est classée
+    'pair' dès le démarrage, sans attendre un import."""
+    from importlib import resources
+    from test_store import _strip_v3_columns
+    schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    settings.data_dir.mkdir(parents=True)
+    raw = sqlite3.connect(settings.data_dir / "extranalyzer.db")
+    raw.executescript(_strip_v3_columns(schema).replace("user_version = 4", "user_version = 2"))
+    raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', 'CC', 'checking')")
+    raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (2, '2', 'LIVRET BLEU', 'savings')")
+    cols = "(id, account_id, tx_key, op_date, label, label_norm, amount_cents, mirror_of)"
+    raw.execute(f"INSERT INTO transactions{cols} VALUES (1, 1, 'k1', '2024-03-12', 'OP FICTIVE', 'OP FICTIVE', "
+                "-10000, NULL)")
+    raw.execute(f"INSERT INTO transactions{cols} VALUES (2, 2, 'k2', '2024-03-12', 'VERSEMENT', 'VERSEMENT', "
+                "10000, 1)")
+    raw.commit()
+    raw.close()
+    create_app(settings)
+    conn = sqlite3.connect(settings.data_dir / "extranalyzer.db")
+    try:
+        rows = conn.execute("SELECT t.id, t.classified_by, c.name FROM transactions t "
+                            "LEFT JOIN categories c ON c.id = t.category_id ORDER BY t.id").fetchall()
+    finally:
+        conn.close()
+    assert rows == [(1, "pair", "Livret Bleu"), (2, "pair", "Livret Bleu")]
