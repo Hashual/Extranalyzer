@@ -20,6 +20,11 @@ export function score(confidence) {
   return SCORE.format(confidence);
 }
 
+/** Confiance d'une suggestion, tronquée (0,896 → « 89 % », jamais « 90 % » sous le seuil). */
+export function suggestionScore(confidence) {
+  return SCORE.format(Math.floor(confidence * 100 + 1e-9) / 100);   // 1e-9 : bruit flottant (0,29 × 100)
+}
+
 /** "2025-01-31" → "31/01/2025". */
 export function formatDate(isoDate) {
   const [y, m, d] = isoDate.split("-");

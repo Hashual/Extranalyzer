@@ -1,7 +1,8 @@
 // Onglet « À classer » : une ligne par libellé normalisé sans catégorie (période et comptes de la barre),
 // avec catégorie → sous-catégorie pré-remplies par la suggestion du modèle (et son score), création d'une
-// règle (cochée par défaut, sauf sur une suggestion), et validation groupée de ce qui est affiché.
-import { amount, el, emptyNote, formatDate, scopeParams, score } from "../ui.js";
+// règle (cochée par défaut, sauf sur une suggestion), et validation groupée de ce qui est affiché (sauf les
+// suggestions fondées sur une seule opération similaire, tant que l'utilisateur ne les a pas choisies lui-même).
+import { amount, el, emptyNote, formatDate, scopeParams, suggestionScore } from "../ui.js";
 
 export const id = "a_classer";
 export const title = "À classer";
@@ -42,7 +43,12 @@ function categoryPicker(categories) {
   };
 }
 
-/** Ligne d'un groupe ; renvoie { node, group, picker } (le bouton de validation groupée lit `picker`). */
+const MIN_BULK_SUPPORT = 2;     // en dessous, une suggestion n'est validée en lot que si l'utilisateur l'a touchée
+
+/**
+ * Ligne d'un groupe ; renvoie { node, group, picker, bulk } : `bulk()` dit si la validation groupée la prend
+ * (une catégorie choisie, et pas une suggestion à moins de 2 opérations similaires laissée telle quelle).
+ */
 function groupRow(group, categories, ctx) {
   const picker = categoryPicker(categories);
   const createRule = el("input", { type: "checkbox", checked: true });
@@ -54,15 +60,21 @@ function groupRow(group, categories, ctx) {
   const submit = el("button", { type: "button", className: "primary", text: "Classer", disabled: true });
   const error = el("p", { className: "error cell-error", attrs: { role: "alert" } });
 
-  picker.onChange(() => { submit.disabled = picker.value() === null; });
+  let touched = false;                  // le choix vient de l'utilisateur (enregistré avant le compteur du lot)
+  picker.onChange(() => { touched = true; submit.disabled = picker.value() === null; });
   let suggestion = null;
+  let weak = false;
   if (group.suggested_category_id !== null) {
     picker.select(group.suggested_category_id);
     submit.disabled = picker.value() === null;
     createRule.checked = false;         // pas de règle d'un clic à partir d'une proposition du modèle
-    suggestion = el("span", { className: "tag suggestion", text: `suggestion ${score(group.confidence)}`,
+    weak = (group.support ?? 0) < MIN_BULK_SUPPORT;
+    const support = group.support === null || group.support === undefined ? "" : ` · ${group.support} op.`;
+    suggestion = el("span", { className: "tag suggestion",
+                              text: `suggestion ${suggestionScore(group.confidence)}${support}`,
                               title: group.reason || "" });
   }
+  const bulk = () => picker.value() !== null && (!weak || touched);
   ruleFields.hidden = !createRule.checked;
   createRule.addEventListener("change", () => { ruleFields.hidden = !createRule.checked; });
 
@@ -97,15 +109,16 @@ function groupRow(group, categories, ctx) {
       ruleFields,
       submit),
     error);
-  return { node, group, picker };
+  return { node, group, picker, bulk };
 }
 
 /**
  * « Valider les suggestions affichées (N) » : applique ce que l'écran montre — la catégorie choisie dans chaque
- * groupe (pré-remplie ou modifiée) devient une décision manuelle pour toutes ses opérations, sans règle.
+ * groupe (pré-remplie ou modifiée) devient une décision manuelle pour toutes ses opérations, sans règle. Une
+ * suggestion fondée sur une seule opération similaire n'est prise que si l'utilisateur a touché son choix.
  */
 function acceptAll(rows, ctx) {
-  const chosen = () => rows.filter((r) => r.picker.value() !== null);
+  const chosen = () => rows.filter((r) => r.bulk());
   const button = el("button", { type: "button", className: "primary" });
   let n = 0;
   const update = () => {
@@ -119,8 +132,11 @@ function acceptAll(rows, ctx) {
   button.addEventListener("click", async () => {
     const items = chosen().map((r) => ({ label_norm: r.group.label_norm, category_id: r.picker.value() }));
     if (!items.length) return;
+    const skipped = rows.filter((r) => r.picker.value() !== null && !r.bulk()).length;
     const question = `Classer ${n} opération(s) dans les catégories affichées ? ` +
-                     "Chacune devient une décision manuelle ; aucune règle n'est créée.";
+                     "Chacune devient une décision manuelle ; aucune règle n'est créée." +
+                     (skipped ? ` ${skipped} libellé(s) dont la suggestion ne repose que sur une opération ` +
+                                "similaire ne sont pas inclus : choisissez leur catégorie pour les inclure." : "");
     if (!window.confirm(question)) return;
     button.disabled = true;
     error.textContent = "";
