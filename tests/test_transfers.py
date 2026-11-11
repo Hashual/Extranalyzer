@@ -289,3 +289,20 @@ def test_mirror_leg_loses_manual_flag_but_keeps_its_override(conn):
     assert conn.execute("SELECT manual, mirror_of, classified_by FROM transactions WHERE id = ?",
                         (inn,)).fetchone() == (0, out, None)
     assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("label", ["LIVRET BLEU (M X)", "LIVRET A."])
+def test_savings_category_idempotent_with_punctuated_label(tmp_path, label):
+    c = connect(tmp_path / "p.db")
+    c.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', ?, 'savings')", (label,))
+    first = savings_category_for_account(c, 1)
+    assert savings_category_for_account(c, 1) == first
+    assert c.execute("SELECT COUNT(*) FROM categories WHERE parent_id IS NOT NULL").fetchone()[0] == 1
+    c.close()
+
+
+def test_savings_category_reuses_existing_child_with_same_folded_name(conn):
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (10, '10', 'LIVRET A.', 'savings')")
+    existing = conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES ('livret a.', 1, 'savings')"
+                            ).lastrowid
+    assert savings_category_for_account(conn, 10) == existing

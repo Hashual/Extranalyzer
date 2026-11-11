@@ -391,3 +391,22 @@ def test_stale_pair_source_falls_back_when_its_mirror_is_unlinked(conn, cats):
     conn.execute("DELETE FROM transactions WHERE id = ?", (mirror,))
     reclassify(conn)
     assert state(conn, src)[:2] == (None, None)
+
+
+def test_pair_source_category_is_recomputed(conn, cats):
+    """Une source appariée classée dans une mauvaise sous-catégorie d'Épargne (ancienne correspondance) est
+    corrigée par la passe suivante, qui n'écrit ensuite plus rien."""
+    src, mirror = pair(conn)
+    reclassify(conn)
+    wrong = conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES ('CEL', ?, 'savings')",
+                         (cats["Épargne"],)).lastrowid
+    conn.execute("UPDATE transactions SET category_id = ?, classified_by = 'pair' WHERE id IN (?, ?)",
+                 (wrong, src, mirror))
+    reclassify(conn)
+    assert state(conn, src) == (cats["Livret Bleu"], "pair", None, None, None)
+    assert state(conn, mirror) == (cats["Livret Bleu"], "pair", None, None, None)
+    conn.execute("CREATE TEMP TABLE written(id INTEGER)")
+    conn.execute("CREATE TEMP TRIGGER log_update AFTER UPDATE ON transactions "
+                 "BEGIN INSERT INTO written VALUES (new.id); END")
+    reclassify(conn)
+    assert conn.execute("SELECT id FROM written").fetchall() == []

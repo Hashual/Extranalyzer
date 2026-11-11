@@ -17,8 +17,9 @@ def _savings_root(conn: sqlite3.Connection) -> int:
 
 
 def _has_words(norm_label: str, words: str) -> bool:
-    """`words` apparaît en mots entiers dans le libellé (« CEL » ne reconnaît pas « MARCEL »)."""
-    return re.search(rf"\b{re.escape(fold(words))}\b", norm_label) is not None
+    """`words` apparaît en mots entiers dans le libellé (« CEL » ne reconnaît pas « MARCEL ») ; des
+    lookarounds plutôt que `\\b`, qui échoue quand `words` commence ou finit par une ponctuation (« LIVRET A. »)."""
+    return re.search(rf"(?<!\w){re.escape(fold(words))}(?!\w)", norm_label) is not None
 
 
 def savings_category_for_account(conn: sqlite3.Connection, account_id: int) -> int:
@@ -38,5 +39,8 @@ def savings_category_for_account(conn: sqlite3.Connection, account_id: int) -> i
         if found:
             return max(found)[1]
         name = label.title()
+    same = next((i for i, n in children if fold(n) == fold(name)), None)    # jamais de doublon (idempotence)
+    if same is not None:
+        return same
     return conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES (?, ?, 'savings')",
                         (name, root)).lastrowid
