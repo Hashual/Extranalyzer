@@ -21,6 +21,7 @@ class Example:
     amount_cents: int
     account_id: int
     category_id: int
+    trusted: bool = True        # exemple issu d'une décision `manual` ou d'une règle (pas d'un appariement)
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class Prediction:
     support: int
     best_similarity: float
     reason: str
+    trusted_support: int = 0    # voisins du gagnant venant d'un exemple de confiance
 
     def is_auto(self, threshold: float) -> bool:
         return (
@@ -37,6 +39,7 @@ class Prediction:
             and self.confidence >= threshold
             and self.support >= MIN_SUPPORT
             and self.best_similarity >= MIN_BEST_SIMILARITY
+            and self.trusted_support >= 1       # des exemples d'appariement seuls ne classent jamais
         )
 
 
@@ -120,6 +123,11 @@ def build_index(examples: list[Example]) -> Index:
     return Index(examples)
 
 
+def prediction_key(label_norm: str, amount_cents: int, account_id: int) -> tuple:
+    """Tout ce dont dépend `predict` pour un index donné : deux requêtes de même clé ont la même prédiction."""
+    return label_norm, _sign(amount_cents), account_id, _magnitude(amount_cents)
+
+
 def predict(index: Index, label_norm: str, amount_cents: int, account_id: int) -> Prediction:
     neighbours = index.neighbours(label_norm, amount_cents)
     if not neighbours:
@@ -127,6 +135,7 @@ def predict(index: Index, label_norm: str, amount_cents: int, account_id: int) -
     magnitude = _magnitude(amount_cents)
     weights: dict[int, float] = {}
     counts: Counter = Counter()
+    trusted: Counter = Counter()
     best_sim: dict[int, float] = {}
     total = 0.0
     for sim, ex in neighbours:
@@ -137,6 +146,7 @@ def predict(index: Index, label_norm: str, amount_cents: int, account_id: int) -
             w *= BONUS
         weights[ex.category_id] = weights.get(ex.category_id, 0.0) + w
         counts[ex.category_id] += 1
+        trusted[ex.category_id] += ex.trusted
         best_sim.setdefault(ex.category_id, sim)  # voisins triés : le premier est le meilleur
         total += w
     winner = max(weights, key=weights.__getitem__)
@@ -147,4 +157,5 @@ def predict(index: Index, label_norm: str, amount_cents: int, account_id: int) -
         support=support,
         best_similarity=best_sim[winner],
         reason=f"{support} opération(s) similaire(s) classée(s) ainsi",
+        trusted_support=trusted[winner],
     )

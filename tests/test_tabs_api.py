@@ -367,7 +367,8 @@ def test_a_classer_groups_by_label(env):
     _add_unknown(conn, "u3", "2025-01-23", -900, account=2)   # livret : hors vue par défaut
     conn.commit()
     data = get(client, "/a_classer/list", **JAN)
-    no_suggestion = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None}
+    no_suggestion = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None,
+                     "support": None}
     assert data["groups"] == [
         {"label_norm": "cb inconnu zeta", "count": 2, "total": "-35.00", "sample_label": "CB INCONNU ZETA",
          "first_date": "2025-01-20", "last_date": "2025-01-22", "sign": "debit", **no_suggestion},
@@ -507,15 +508,17 @@ def test_a_classer_group_has_suggestion(env):
     assert group["suggested_name"] == "Transport › Train"
     assert group["confidence"] == pytest.approx(1.0)
     assert group["reason"] == "2 opération(s) similaire(s) classée(s) ainsi"
-    # le groupe prend la suggestion de sa ligne la plus sûre
-    conn.execute("UPDATE transactions SET suggested_category_id = ?, confidence = 0.5, suggestion_reason = 'x' "
-                 "WHERE id = ?", (cat["Courses"], suggested[0]))
+    assert group["support"] == 2
+    # le groupe prend la suggestion de sa ligne la plus sûre (support compris)
+    conn.execute("UPDATE transactions SET suggested_category_id = ?, confidence = 0.5, suggestion_reason = 'x', "
+                 "suggestion_support = 1 WHERE id = ?", (cat["Courses"], suggested[0]))
     conn.commit()
     group = {g["label_norm"]: g for g in get(client, "/a_classer/list", **JAN)["groups"]}["prlv club sigma"]
     assert (group["suggested_category_id"], group["suggested_name"]) == (cat["Transport/Train"], "Transport › Train")
+    assert group["support"] == 2
     for label_norm, g in groups.items():
         if g["suggested_category_id"] is None:
-            assert g["suggested_name"] is g["confidence"] is g["reason"] is None
+            assert g["suggested_name"] is g["confidence"] is g["reason"] is g["support"] is None
 
 
 ACCEPT = "/api/tabs/a_classer/accept_suggestions"

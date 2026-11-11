@@ -78,11 +78,19 @@ def _non_manual_rows(conn: sqlite3.Connection, tx_ids: list[int] | None) -> list
 
 
 def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) -> None:
-    """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None)."""
-    sql = ("UPDATE transactions SET category_id = (SELECT s.category_id FROM transactions s "
-           "WHERE s.id = transactions.mirror_of), rule_id = NULL, confidence = NULL, "
-           "suggested_category_id = NULL, suggestion_reason = NULL, "
-           "classified_by = CASE WHEN (SELECT s.category_id FROM transactions s WHERE s.id = transactions.mirror_of) IS NULL THEN NULL ELSE 'pair' END WHERE mirror_of ")
+    """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None).
+
+    N'écrit que les jambes miroir dont l'état diffère.
+    """
+    sql = ("UPDATE transactions AS m SET category_id = s.category_id, rule_id = NULL, confidence = NULL, "
+           "suggested_category_id = NULL, suggestion_reason = NULL, suggestion_support = NULL, "
+           "classified_by = CASE WHEN s.category_id IS NULL THEN NULL ELSE 'pair' END "
+           "FROM transactions AS s WHERE s.id = m.mirror_of "
+           "AND (m.category_id IS NOT s.category_id OR m.rule_id IS NOT NULL OR m.confidence IS NOT NULL "
+           "OR m.suggested_category_id IS NOT NULL OR m.suggestion_reason IS NOT NULL "
+           "OR m.suggestion_support IS NOT NULL "
+           "OR m.classified_by IS NOT (CASE WHEN s.category_id IS NULL THEN NULL ELSE 'pair' END)) "
+           "AND m.mirror_of ")
     if source_ids is None:
         conn.execute(sql + "IS NOT NULL")
         return
@@ -102,10 +110,20 @@ def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> in
             misses.append((tx_id,))
         else:
             hits.append((winner.category_id, winner.id, tx_id))
-    conn.executemany("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
-                     "WHERE id = ?", misses)
-    conn.executemany("UPDATE transactions SET category_id = ?, rule_id = ?, classified_by = 'rule', confidence = NULL, "
-                     "suggested_category_id = NULL, suggestion_reason = NULL WHERE id = ?", hits)
+    # Sans règle : la ligne retombe à classer, sauf si son état est encore valable et sera recalculé plus loin
+    # (`model` : repassé par le modèle ; `pair` : source d'une jambe miroir d'épargne, gardée par l'appariement).
+    conn.executemany(
+        "UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL WHERE id = ? "
+        "AND (category_id IS NOT NULL OR rule_id IS NOT NULL OR classified_by IS NOT NULL) "
+        "AND classified_by IS NOT 'model' AND NOT (classified_by = 'pair' AND EXISTS ("
+        "SELECT 1 FROM transactions m JOIN accounts a ON a.id = m.account_id "
+        "WHERE m.mirror_of = transactions.id AND a.kind = 'savings'))", misses)
+    conn.executemany(
+        "UPDATE transactions SET category_id = ?1, rule_id = ?2, classified_by = 'rule', confidence = NULL, "
+        "suggested_category_id = NULL, suggestion_reason = NULL, suggestion_support = NULL WHERE id = ?3 "
+        "AND (category_id IS NOT ?1 OR rule_id IS NOT ?2 OR classified_by IS NOT 'rule' OR confidence IS NOT NULL "
+        "OR suggested_category_id IS NOT NULL OR suggestion_reason IS NOT NULL OR suggestion_support IS NOT NULL)",
+        hits)
     sync_mirrors(conn, None if tx_ids is None else [r[0] for r in rows])
     return len(hits)
 
@@ -179,7 +197,7 @@ def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int |
                      "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
         conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL, "
                      "classified_by = 'manual', confidence = NULL, suggested_category_id = NULL, "
-                     "suggestion_reason = NULL WHERE id = ?", (category_id, tx_id))
+                     "suggestion_reason = NULL, suggestion_support = NULL WHERE id = ?", (category_id, tx_id))
     sync_mirrors(conn, [tx_id])
     if reclassify_after:
         _reclassify(conn)

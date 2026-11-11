@@ -234,3 +234,29 @@ def test_performance_1100_examples_1100_queries():
     elapsed = time.perf_counter() - start
     print(f"1100x1100: {elapsed:.3f}s")
     assert elapsed < 2.0
+
+
+def test_trusted_support_counts_manual_or_rule_neighbours_of_the_winner():
+    exs = [Example("VIR M TEST", 10000, 1, SALAIRE, trusted=False) for _ in range(3)]
+    exs += [Example("VIR M TEST", 10000, 1, SALAIRE, trusted=True)]
+    exs += [Example("VIR M TEST", 10000, 1, LOISIRS, trusted=True)]
+    p = predict(build_index(exs), "VIR M TEST", 10000, 1)
+    assert p.category_id == SALAIRE
+    assert p.support == 4
+    assert p.trusted_support == 1
+
+
+def test_pair_only_evidence_never_auto():
+    exs = [Example("VIR M TEST", 10000, 1, SALAIRE, trusted=False) for _ in range(5)]
+    p = predict(build_index(exs), "VIR M TEST", 10000, 1)
+    assert p.category_id == SALAIRE
+    assert p.confidence == 1.0 and p.support == 5 and p.best_similarity == pytest.approx(1.0)
+    assert p.trusted_support == 0
+    assert not p.is_auto(0.9)          # seul le garde « au moins un exemple de confiance » refuse
+    exs[0] = Example("VIR M TEST", 10000, 1, SALAIRE, trusted=True)
+    assert predict(build_index(exs), "VIR M TEST", 10000, 1).is_auto(0.9)
+
+
+def test_examples_are_trusted_by_default():
+    assert ex("MAGASIN ALPHA", COURSES).trusted is True
+    assert predict(build_index([]), "X", -1, 1).trusted_support == 0

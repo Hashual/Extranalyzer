@@ -56,7 +56,8 @@ def pair_internal_transfers(conn: sqlite3.Connection) -> int:
 
 
 def classify_paired_sources(conn: sqlite3.Connection) -> int:
-    """Classe en Épargne / <livret> les jambes sources appariées sans catégorie et non manuelles.
+    """Classe en Épargne / <livret> les jambes sources appariées non manuelles, sans catégorie ou classées
+    par le modèle (appariement > modèle).
 
     Une source déjà classée (règle) garde sa catégorie ; seules les jambes miroir portées par un
     compte d'épargne sont concernées. Renvoie le nombre de sources classées.
@@ -64,13 +65,14 @@ def classify_paired_sources(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         "SELECT t.id, m.account_id FROM transactions t JOIN transactions m ON m.mirror_of = t.id "
         "JOIN accounts a ON a.id = m.account_id "
-        "WHERE t.category_id IS NULL AND t.manual = 0 AND a.kind = 'savings' ORDER BY t.id").fetchall()
+        "WHERE (t.category_id IS NULL OR t.classified_by = 'model') AND t.manual = 0 AND a.kind = 'savings' "
+        "ORDER BY t.id").fetchall()
     cache: dict[int, int] = {}
     for tx_id, account_id in rows:
         if account_id not in cache:
             cache[account_id] = savings_category_for_account(conn, account_id)
         conn.execute("UPDATE transactions SET category_id = ?, rule_id = NULL, classified_by = 'pair', "
-                     "confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL "
-                     "WHERE id = ?", (cache[account_id], tx_id))
+                     "confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL, "
+                     "suggestion_support = NULL WHERE id = ?", (cache[account_id], tx_id))
     sync_mirrors(conn, [r[0] for r in rows])
     return len(rows)

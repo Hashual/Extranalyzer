@@ -19,10 +19,10 @@ def conn(tmp_path):
 def test_connect_twice_keeps_user_version(tmp_path):
     path = tmp_path / "t.db"
     c1 = connect(path)
-    assert c1.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c1.execute("PRAGMA user_version").fetchone()[0] == 4
     c1.close()
     c2 = connect(path)
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 4
     assert c2.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c2.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     c2.close()
@@ -109,7 +109,7 @@ def test_connect_waits_on_busy_database(tmp_path):
 
 
 def _strip_v3_columns(schema: str) -> str:
-    stripped = re.sub(r",\n    classified_by .*?suggestion_reason TEXT NULL\n", "\n", schema, flags=re.S)
+    stripped = re.sub(r",\n    classified_by .*?suggestion_support INTEGER NULL\n", "\n", schema, flags=re.S)
     assert "classified_by" not in stripped
     return stripped
 
@@ -117,14 +117,14 @@ def _strip_v3_columns(schema: str) -> str:
 def _v1_schema() -> str:
     from importlib import resources
     schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
-    v1 = _strip_v3_columns(schema).replace(",\n    message TEXT\n", "\n").replace("user_version = 3", "user_version = 1")
+    v1 = _strip_v3_columns(schema).replace(",\n    message TEXT\n", "\n").replace("user_version = 4", "user_version = 1")
     assert "message" not in v1 and "user_version = 1" in v1
     return v1
 
 
 def test_new_database_has_section_message(tmp_path):
     c = connect(tmp_path / "t.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     assert "message" in [r[1] for r in c.execute("PRAGMA table_info(sections)")]
     c.close()
 
@@ -141,11 +141,11 @@ def test_migration_from_v1_adds_section_message(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     assert c.execute("SELECT status, message FROM sections").fetchall() == [("ok", None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     c.close()
 
 
@@ -165,7 +165,7 @@ def test_move_manual_overrides_never_overwrites(tmp_path):
 def test_migration_2_to_3(tmp_path):
     from importlib import resources
     schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
-    v2 = _strip_v3_columns(schema).replace("user_version = 3", "user_version = 2")
+    v2 = _strip_v3_columns(schema).replace("user_version = 4", "user_version = 2")
     path = tmp_path / "t.db"
     raw = sqlite3.connect(path)
     raw.executescript(v2)
@@ -182,14 +182,14 @@ def test_migration_2_to_3(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     assert c.execute("SELECT id, classified_by, confidence, suggested_category_id, suggestion_reason "
                      "FROM transactions ORDER BY id").fetchall() == [
         (1, "manual", None, None, None), (2, "rule", None, None, None),
         (3, "pair", None, None, None), (4, None, None, None, None), (5, None, None, None, None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
     assert c.execute("SELECT classified_by FROM transactions ORDER BY id").fetchall() == [
         ("manual",), ("rule",), ("pair",), (None,), (None,)]
     c.close()
@@ -221,7 +221,7 @@ def test_failed_migration_rolls_back_and_closes(tmp_path, monkeypatch):
     schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
     path = tmp_path / "t.db"
     raw = sqlite3.connect(path)
-    raw.executescript(_strip_v3_columns(schema).replace("user_version = 3", "user_version = 2"))
+    raw.executescript(_strip_v3_columns(schema).replace("user_version = 4", "user_version = 2"))
     raw.close()
     monkeypatch.setattr(db, "_MIGRATE_2_TO_3", "BEGIN; ALTER TABLE transactions ADD COLUMN classified_by TEXT; "
                                               "ALTER TABLE nope ADD COLUMN x TEXT; COMMIT;")
@@ -231,3 +231,23 @@ def test_failed_migration_rolls_back_and_closes(tmp_path, monkeypatch):
     assert raw.execute("PRAGMA user_version").fetchone()[0] == 2
     assert "classified_by" not in [r[1] for r in raw.execute("PRAGMA table_info(transactions)")]
     raw.close()
+
+
+def test_migration_3_to_4_adds_suggestion_support(tmp_path):
+    from importlib import resources
+    schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    v3 = schema.replace(",\n    suggestion_support INTEGER NULL\n", "\n").replace("user_version = 4", "user_version = 3")
+    assert "suggestion_support" not in v3 and "user_version = 3" in v3
+    path = tmp_path / "t.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(v3)
+    raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
+    raw.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, "
+                "confidence, suggestion_reason) VALUES (1, 'k', '2024-01-01', 'a', 'a', -1, 0.5, 'r')")
+    raw.commit()
+    raw.close()
+    c = connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert c.execute("SELECT confidence, suggestion_reason, suggestion_support FROM transactions").fetchone() == (
+        0.5, "r", None)
+    c.close()

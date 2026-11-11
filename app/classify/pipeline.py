@@ -5,44 +5,52 @@ Ne valide pas : l'appelant possède la transaction.
 """
 import sqlite3
 
-from app.classify.model import Example, build_index, predict
+from app.classify.model import Example, Prediction, build_index, predict, prediction_key
 from app.classify.rules import apply_rules, sync_mirrors
 from app.classify.transfers import classify_paired_sources, pair_internal_transfers
 from app.config import auto_threshold
 
 EXAMPLE_SOURCES = ("manual", "rule", "pair")
+TRUSTED_SOURCES = ("manual", "rule")      # un exemple d'appariement seul ne classe jamais
 
 
 def _apply_model(conn: sqlite3.Connection, threshold: float) -> tuple[int, int, int]:
     """Classe ou suggère chaque ligne non miroir non classée (ou classée `model`).
 
-    Renvoie (classées par le modèle, suggestions, sans suggestion).
+    N'écrit que les lignes dont l'état change. Renvoie (classées par le modèle, suggestions, sans suggestion).
     """
     rows = conn.execute(
-        "SELECT id, label_norm, amount_cents, account_id, category_id, classified_by, manual FROM transactions "
+        "SELECT id, label_norm, amount_cents, account_id, category_id, classified_by, manual, rule_id, confidence, "
+        "suggested_category_id, suggestion_reason, suggestion_support FROM transactions "
         "WHERE mirror_of IS NULL ORDER BY id").fetchall()
     # Exemples triés par id : le départage des égalités dépend de leur ordre.
-    examples = [Example(label, amount, account, category) for _, label, amount, account, category, by, _ in rows
-                if by in EXAMPLE_SOURCES]
+    examples = [Example(r[1], r[2], r[3], r[4], trusted=r[5] in TRUSTED_SOURCES) for r in rows
+                if r[5] in EXAMPLE_SOURCES]
     index = build_index(examples)
+    memo: dict[tuple, Prediction] = {}
     updates = []
     auto = suggested = unclassified = 0
-    for tx_id, label, amount, account, _, by, is_manual in rows:
+    for tx_id, label, amount, account, category, by, is_manual, *current in rows:
         if is_manual or by not in (None, "model"):
             continue
-        p = predict(index, label, amount, account)
+        key = prediction_key(label, amount, account)
+        p = memo.get(key)
+        if p is None:
+            p = memo[key] = predict(index, label, amount, account)
         if p.is_auto(threshold):
-            updates.append((p.category_id, "model", p.confidence, p.category_id, p.reason, tx_id))
+            new = (p.category_id, "model", None, p.confidence, p.category_id, p.reason, p.support)
             auto += 1
+        elif p.category_id is None:
+            new = (None, None, None, None, None, p.reason, None)
+            unclassified += 1
         else:
-            confidence = None if p.category_id is None else p.confidence
-            updates.append((None, None, confidence, p.category_id, p.reason, tx_id))
-            if p.category_id is None:
-                unclassified += 1
-            else:
-                suggested += 1
-    conn.executemany("UPDATE transactions SET category_id = ?, rule_id = NULL, classified_by = ?, confidence = ?, "
-                     "suggested_category_id = ?, suggestion_reason = ? WHERE id = ?", updates)
+            new = (None, None, None, p.confidence, p.category_id, p.reason, p.support)
+            suggested += 1
+        if new != (category, by, *current):
+            updates.append((*new, tx_id))
+    conn.executemany("UPDATE transactions SET category_id = ?, classified_by = ?, rule_id = ?, confidence = ?, "
+                     "suggested_category_id = ?, suggestion_reason = ?, suggestion_support = ? WHERE id = ?",
+                     updates)
     return auto, suggested, unclassified
 
 
@@ -59,9 +67,10 @@ def reclassify(conn: sqlite3.Connection, threshold: float | None = None) -> dict
     pair_internal_transfers(conn)
     classify_paired_sources(conn)
     model, suggested, unclassified = _apply_model(conn, threshold)
-    conn.execute("UPDATE transactions SET confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL "
-                 "WHERE classified_by IN ('manual', 'rule', 'pair') AND mirror_of IS NULL "
-                 "AND (confidence IS NOT NULL OR suggested_category_id IS NOT NULL OR suggestion_reason IS NOT NULL)")
+    conn.execute("UPDATE transactions SET confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL, "
+                 "suggestion_support = NULL WHERE classified_by IN ('manual', 'rule', 'pair') AND mirror_of IS NULL "
+                 "AND (confidence IS NOT NULL OR suggested_category_id IS NOT NULL OR suggestion_reason IS NOT NULL "
+                 "OR suggestion_support IS NOT NULL)")
     sync_mirrors(conn)
     counts = dict(conn.execute(
         "SELECT classified_by, COUNT(*) FROM transactions WHERE mirror_of IS NULL "

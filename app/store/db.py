@@ -2,7 +2,7 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -17,6 +17,14 @@ UPDATE transactions SET classified_by = 'rule' WHERE manual = 0 AND rule_id IS N
 UPDATE transactions SET classified_by = 'pair' WHERE mirror_of IS NOT NULL
     AND (SELECT s.category_id FROM transactions s WHERE s.id = transactions.mirror_of) IS NOT NULL;
 PRAGMA user_version = 3;
+COMMIT;
+"""
+
+# 3 -> 4 : nombre d'opérations similaires derrière une suggestion (affiché et pris en compte par la validation groupée)
+_MIGRATE_3_TO_4 = """
+BEGIN;
+ALTER TABLE transactions ADD COLUMN suggestion_support INTEGER NULL;
+PRAGMA user_version = 4;
 COMMIT;
 """
 
@@ -44,6 +52,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 2
         if version == 2:    # 2 -> 3 : origine et confiance du classement
             conn.executescript(_MIGRATE_2_TO_3)
+            version = 3
+        if version == 3:    # 3 -> 4 : nombre d'opérations similaires d'une suggestion
+            conn.executescript(_MIGRATE_3_TO_4)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

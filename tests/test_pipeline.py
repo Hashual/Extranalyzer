@@ -294,3 +294,99 @@ def test_model_step_ignores_model_rows_as_examples(conn, cats):
 def test_explicit_threshold_validated(conn, bad):
     with pytest.raises(ValueError):
         reclassify(conn, threshold=bad)
+
+
+def test_pair_only_neighbours_give_a_suggestion_not_auto(conn, cats):
+    """Virement à son nom depuis une banque inconnue : seuls des exemples d'appariement → suggestion, pas auto."""
+    sources = [pair(conn, "VIR DE M TEST", 10000, f"2024-0{m}-12")[0] for m in (3, 5, 7)]
+    target = add_tx(conn, "VIR DE M TEST", 10000, 1, "2024-09-12")
+    counts = reclassify(conn)
+    for src in sources:
+        assert state(conn, src)[:2] == (cats["Livret Bleu"], "pair")
+    cat, by, sugg, conf, _ = state(conn, target)
+    assert (cat, by, sugg) == (None, None, cats["Livret Bleu"]) and conf == pytest.approx(1.0)
+    assert counts["model"] == 0 and counts["suggested"] == 1
+    assert support(conn, target) == 3
+    manual(conn, "VIR DE M TEST", 10000, cats["Livret Bleu"])     # un exemple de confiance suffit
+    reclassify(conn)
+    assert state(conn, target)[:2] == (cats["Livret Bleu"], "model")
+
+
+def support(conn, tx_id):
+    return conn.execute("SELECT suggestion_support FROM transactions WHERE id = ?", (tx_id,)).fetchone()[0]
+
+
+def test_suggestion_support_written_by_model_and_cleared(conn, cats):
+    manual(conn, "CB PHARMACIE CENTRALE", -1200, cats["Santé"])
+    target = add_tx(conn, "CB PHARMACIE CENTRALE", -900)
+    lonely = add_tx(conn, "XYZZY QWERTY", 1234)
+    rule_row = add_tx(conn, "PRLV EDF FACTURE", -5000)
+    src, mirror = pair(conn)
+    conn.execute("UPDATE transactions SET suggestion_support = 9")
+    conn.execute("INSERT INTO rules(pattern, match, category_id, priority) VALUES ('PRLV EDF', 'contains', ?, 80)",
+                 (cats["Divers"],))
+    reclassify(conn)
+    assert support(conn, target) == 1
+    assert support(conn, lonely) is None
+    for tx in (rule_row, src, mirror):
+        assert support(conn, tx) is None
+    set_manual_category(conn, target, cats["Santé"])
+    assert support(conn, target) is None
+
+
+def test_model_step_memoises_identical_inputs(conn, cats, monkeypatch):
+    import app.classify.pipeline as pipeline
+    calls = []
+    real = pipeline.predict
+    monkeypatch.setattr(pipeline, "predict", lambda *a: calls.append(a[1:]) or real(*a))
+    manual(conn, DUPONT, -350, cats["Courses"])
+    for cents in (-410, -420, -430, -4200):             # 3 du même ordre de grandeur, 1 d'un autre
+        add_tx(conn, DUPONT, cents)
+    add_tx(conn, DUPONT, -415, account_id=2)            # autre compte
+    reclassify(conn)
+    assert len(calls) == 3
+
+
+def test_steady_state_pass_writes_nothing(conn, cats):
+    rule_row = add_tx(conn, "PRLV EDF FACTURE", -5000)
+    pair(conn)
+    for _ in range(3):
+        manual(conn, DUPONT, -350, cats["Courses"])
+    add_tx(conn, DUPONT, -420)                          # auto
+    manual(conn, "CB PHARMACIE CENTRALE", -1200, cats["Santé"])
+    add_tx(conn, "CB PHARMACIE CENTRALE", -900)         # suggestion
+    add_tx(conn, "XYZZY QWERTY", 1234)                  # sans suggestion
+    conn.execute("INSERT INTO rules(pattern, match, category_id, priority) VALUES ('PRLV EDF', 'contains', ?, 80)",
+                 (cats["Divers"],))
+    first = reclassify(conn)
+    snapshot = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+    conn.execute("CREATE TEMP TABLE written(id INTEGER)")
+    conn.execute("CREATE TEMP TRIGGER log_update AFTER UPDATE ON transactions "
+                 "BEGIN INSERT INTO written VALUES (new.id); END")
+    assert reclassify(conn) == first
+    assert conn.execute("SELECT id FROM written").fetchall() == []
+    assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == snapshot
+    assert state(conn, rule_row)[:2] == (cats["Divers"], "rule")
+
+
+def test_model_row_becomes_pair_when_its_savings_leg_arrives(conn, cats):
+    for _ in range(3):
+        manual(conn, "VIR VERS EPARGNE", -10000, cats["Divers"])
+    src = add_tx(conn, "VIR VERS EPARGNE", -10000, 1, "2024-04-02")
+    reclassify(conn)
+    assert state(conn, src)[:2] == (cats["Divers"], "model")
+    mirror = add_tx(conn, "VERSEMENT", 10000, 2, "2024-04-03")
+    reclassify(conn)
+    assert state(conn, src) == (cats["Livret Bleu"], "pair", None, None, None)
+    assert state(conn, mirror) == (cats["Livret Bleu"], "pair", None, None, None)
+    assert support(conn, src) is None
+
+
+def test_stale_pair_source_falls_back_when_its_mirror_is_unlinked(conn, cats):
+    src, mirror = pair(conn)
+    reclassify(conn)
+    assert state(conn, src)[:2] == (cats["Livret Bleu"], "pair")
+    conn.execute("UPDATE transactions SET mirror_of = NULL WHERE id = ?", (mirror,))
+    conn.execute("DELETE FROM transactions WHERE id = ?", (mirror,))
+    reclassify(conn)
+    assert state(conn, src)[:2] == (None, None)

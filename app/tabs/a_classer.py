@@ -62,16 +62,18 @@ def list_groups(conn: Conn, s: Annotated[Scope, Depends(scope)]):
             ORDER BY COUNT(*) DESC, ABS(SUM(t.amount_cents)) DESC, t.label_norm""", params).fetchall()
     # Suggestion d'un groupe : celle de sa ligne la plus sûre (à égalité, la plus ancienne).
     suggestions = {}
-    for label_norm, category_id, confidence, reason, name, parent in conn.execute(
-            f"""SELECT t.label_norm, t.suggested_category_id, t.confidence, t.suggestion_reason, c.name, p.name
+    for label_norm, category_id, confidence, reason, support, name, parent in conn.execute(
+            f"""SELECT t.label_norm, t.suggested_category_id, t.confidence, t.suggestion_reason, t.suggestion_support,
+                       c.name, p.name
                 {GROUP_FROM} JOIN categories c ON c.id = t.suggested_category_id
                 LEFT JOIN categories p ON p.id = c.parent_id
                 WHERE {where} AND t.category_id IS NULL
                 ORDER BY t.confidence DESC, t.id""", params):
         suggestions.setdefault(label_norm, {
             "suggested_category_id": category_id, "suggested_name": f"{parent} › {name}" if parent else name,
-            "confidence": confidence, "reason": reason})
-    none = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None}
+            "confidence": confidence, "reason": reason, "support": support})
+    none = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None,
+            "support": None}
     groups = [{"label_norm": label_norm, "count": count, "total": from_cents(total), "sample_label": sample,
                "first_date": first, "last_date": last, "sign": _sign(low, high),
                **suggestions.get(label_norm, none)}
