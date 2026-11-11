@@ -9,6 +9,7 @@ import io
 import logging
 import sys
 import tempfile
+import time
 import warnings
 from collections import Counter
 from pathlib import Path
@@ -68,6 +69,11 @@ def collect(folder: Path) -> tuple[dict[str, int], Counter]:
                                               (status,)).fetchone()[0]
             counts["transactions"] = _scalar(conn, "SELECT COUNT(*) FROM transactions")
             counts["unclassified"] = unclassified_count(conn)
+            started = time.perf_counter()
+            result = pipeline.reclassify(conn)
+            counts["reclassify_ms"] = int((time.perf_counter() - started) * 1000)
+            conn.commit()
+            counts.update({f"cls_{k}": int(v) for k, v in result.items()})
             counts["transfer_pairs"] = _scalar(
                 conn, "SELECT COUNT(*) FROM transactions WHERE mirror_of IS NOT NULL")
         finally:
@@ -98,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         ("Transactions", counts["transactions"]),
         ("Transactions à classer", counts["unclassified"]),
         ("Paires de virements internes", counts["transfer_pairs"]),
+        ("Classées par règle", counts["cls_rule"]),
+        ("Classées par appariement", counts["cls_pair"]),
+        ("Classées automatiquement (modèle)", counts["cls_model"]),
+        ("Suggestions sous le seuil", counts["cls_suggested"]),
+        ("Sans suggestion", counts["cls_unclassified"]),
+        ("Durée du dernier reclassement (ms)", counts["reclassify_ms"]),
         ("Lignes d'information", counts["info_lines"]),
         ("Erreurs d'import", counts["import_errors"]),
     ]

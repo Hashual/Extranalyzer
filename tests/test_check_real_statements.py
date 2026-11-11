@@ -112,3 +112,24 @@ def test_library_logs_and_warnings_never_reach_output(tmp_path, capsys, monkeypa
 
 def test_usage_error(capsys):
     assert script.main([]) == 2
+
+
+CLASSIFY_LABELS = ("Classées par règle", "Classées par appariement", "Classées automatiquement (modèle)",
+                   "Suggestions sous le seuil", "Sans suggestion", "Durée du dernier reclassement (ms)")
+
+
+def test_classification_counters_are_integers_and_leak_nothing(tmp_path, capsys):
+    folder = tmp_path / "rel"
+    folder.mkdir()
+    make_statement(folder / "a_secret.pdf", "10 avril 2024",
+                   _good("11/03/2024", "10/04/2024", "PAIEMENT CB 0703 VILLEA"))
+    assert script.main([str(folder)]) == 0
+    out = _out(capsys)
+    values = dict(line.split(" : ") for line in out.splitlines() if " : " in line)
+    for label in CLASSIFY_LABELS:
+        assert re.fullmatch(r"\d+", values[label]), label
+    # 2 transactions non miroir : chaque ligne est classée ou suggérée ou sans suggestion
+    total = sum(int(values[k]) for k in CLASSIFY_LABELS[:5])
+    assert total == 2
+    for forbidden in ("PAIEMENT", "MAGASIN", "EPARGNE", "secret", "00000000001"):
+        assert forbidden not in out
