@@ -20,8 +20,29 @@ volume Docker `data`.
 
 ## Construire et installer l'image
 
-Deux routes, au choix. Dans les deux cas, le Pi a besoin de Docker et de `docker-compose.yml` (un seul
+Trois routes, au choix. Dans tous les cas, le Pi a besoin de Docker et de `docker-compose.yml` (un seul
 fichier à copier, pas besoin du dépôt complet).
+
+**Route GitHub (recommandée) : l'image est construite par GitHub Actions, le Pi la télécharge.** Le dépôt
+doit être **privé**. À chaque push sur `main`, le workflow `.github/workflows/docker.yml` lance les tests puis
+publie l'image `linux/arm64` sur `ghcr.io/<compte>/<dépôt>` (étiquettes `arm64` et `arm64-<commit>`), sans
+secret à configurer. Le paquet ghcr.io créé par un dépôt privé est privé lui aussi. Une seule fois :
+
+1. Sur GitHub, créer un jeton classique (*Settings → Developer settings → Personal access tokens →
+   Tokens (classic)*) avec la seule permission `read:packages`.
+2. Sur le Pi, s'identifier (le jeton est demandé comme mot de passe, il n'apparaît pas dans l'historique) :
+
+   ```bash
+   docker login ghcr.io -u <compte-github>
+   ```
+
+3. Ajouter au `.env` du Pi (étape 2 ci-dessous) le nom de l'image, **en minuscules** :
+
+   ```bash
+   echo 'IMAGE=ghcr.io/<compte>/<depot>' >> .env
+   ```
+
+Puis `docker compose pull && docker compose up -d`. Le Pi ne reçoit que l'image arm64, jamais le code.
 
 **Route A : construire sur le PC, envoyer l'image au Pi** (Docker Desktop, buildx, émulation QEMU) :
 
@@ -64,8 +85,10 @@ docker build -t extranalyzer:arm64 .
    echo 'BIND_ADDR=10.8.0.1' > .env
    ```
 
-   `IMAGE_TAG` (facultatif, `arm64` par défaut) permet d'utiliser une autre étiquette d'image, par
-   exemple `IMAGE_TAG=amd64` pour un essai sur un PC x86.
+   `IMAGE` (facultatif, `extranalyzer` par défaut : image construite en local) donne le nom de l'image,
+   `ghcr.io/<compte>/<depot>` pour la route GitHub. `IMAGE_TAG` (facultatif, `arm64` par défaut) permet
+   d'utiliser une autre étiquette, par exemple `IMAGE_TAG=arm64-<commit>` pour revenir à une version
+   précise, ou `IMAGE_TAG=amd64` pour un essai sur un PC x86.
 
 3. Démarrer :
 
@@ -133,6 +156,8 @@ L'archive contient les PDF et la base : la ranger hors du dépôt, chiffrée si 
 
 ## Mettre à jour
 
+- **Route GitHub** : pousser sur `main`, attendre la fin du workflow (onglet *Actions*), puis sur le Pi :
+  `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
 - **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :
   `gunzip -c extranalyzer-arm64.tar.gz | docker load && docker compose up -d`.
 - **Route B** (build sur le Pi) : `git pull && docker build -t extranalyzer:arm64 . && docker compose up -d`.
