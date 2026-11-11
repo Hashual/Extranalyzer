@@ -286,7 +286,7 @@ def test_tx_key_collision_with_other_statement_marks_only_that_section(tmp_path,
 
 def _override(conn, label):
     """Reclassement manuel de la transaction `label` (comme le fera l'interface)."""
-    cat = conn.execute("INSERT INTO categories(name, kind) VALUES ('Test', 'expense')").lastrowid
+    cat = conn.execute("INSERT INTO categories(name, kind) VALUES (?, 'expense')", (f"Test {label}",)).lastrowid
     key = conn.execute("SELECT tx_key FROM transactions WHERE label = ?", (label,)).fetchone()[0]
     conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?)", (key, cat))
     conn.execute("UPDATE transactions SET category_id = ?, manual = 1 WHERE tx_key = ?", (cat, key))
@@ -514,3 +514,25 @@ def test_manual_override_follows_label_change_on_conflict_acceptance(tmp_path, c
     assert orphaned == 0
     assert conn.execute("SELECT category_id, manual FROM transactions "
                         "WHERE label = 'PRLV SEPA BETA ENERGIE'").fetchone() == (cat, 1)
+
+
+def _twins(*labels):
+    """Section de deux prélèvements de même date et même montant, dans l'ordre `labels`."""
+    return FSection(CC, OPEN, ("CREDITEUR", "10/04/2024", "80,00"), [
+        FTx("13/03/2024", "13/03/2024", [label], debit="10,00") for label in labels])
+
+
+def test_carried_override_never_overwrites_an_occupied_key(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_twins("PRLV SEPA FOO", "PRLV SEPA BAR")]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    foo, bar = _override(conn, "PRLV SEPA FOO"), _override(conn, "PRLV SEPA BAR")
+    # les deux opérations changent de rang ; FOO est relu autrement et prendrait le rang de BAR
+    report = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_twins("PRLV SEPA BAR", "PRLV SEPA FOO GAZ")]), "b.pdf",
+                        pdf_dir, PARSERS, Recorder())
+    assert report.sections[0].status == "conflict"
+    orphaned = resolve_conflict(conn, report.sections[0].section_id, True, Recorder(), pdf_dir=pdf_dir,
+                                parsers=PARSERS)
+    assert orphaned == 1
+    rows = conn.execute("SELECT label, category_id, manual FROM transactions ORDER BY id").fetchall()
+    assert rows == [("PRLV SEPA BAR", bar, 1), ("PRLV SEPA FOO GAZ", None, 0)]
+    assert foo in [r[0] for r in conn.execute("SELECT category_id FROM manual_overrides")]
