@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from app.analytics.totals import unclassified_count  # noqa: E402
 from app.classify import pipeline  # noqa: E402
+from app.classify.rules import set_manual_category  # noqa: E402
 from app.classify.seed import load_seed  # noqa: E402
 from app.importer.creditmutuel import CreditMutuelParser  # noqa: E402
 from app.importer.service import import_pdf  # noqa: E402
@@ -39,6 +40,35 @@ def _kind(message: str) -> str:
 
 def _scalar(conn, sql: str) -> int:
     return conn.execute(sql).fetchone()[0]
+
+
+_SUGGESTED = ("FROM transactions t JOIN categories c ON c.id = t.suggested_category_id "
+              "WHERE t.category_id IS NULL AND t.mirror_of IS NULL")
+DUMMY_CATEGORY = "Vérification (régime établi)"
+
+
+def suggestion_counts(conn) -> dict[str, int]:
+    """Suggestions en attente : vers Épargne (catégories `savings`), vers une autre catégorie, à un seul voisin."""
+    return {
+        "sugg_savings": _scalar(conn, f"SELECT COUNT(*) {_SUGGESTED} AND c.kind = 'savings'"),
+        "sugg_other": _scalar(conn, f"SELECT COUNT(*) {_SUGGESTED} AND c.kind <> 'savings'"),
+        "sugg_single": _scalar(conn, f"SELECT COUNT(*) {_SUGGESTED} AND t.suggestion_support = 1"),
+    }
+
+
+def steady_state_ms(conn) -> int:
+    """Une opération restante sur deux (non miroir, à classer) devient manuelle dans une catégorie factice, puis
+    durée d'un reclassement complet (base jetable : rien n'est conservé)."""
+    category = conn.execute("INSERT INTO categories(name, kind) VALUES (?, 'expense')", (DUMMY_CATEGORY,)).lastrowid
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM transactions WHERE category_id IS NULL AND mirror_of IS NULL ORDER BY id")]
+    for tx_id in ids[::2]:
+        set_manual_category(conn, tx_id, category, reclassify_after=False)
+    started = time.perf_counter()
+    pipeline.reclassify(conn)
+    elapsed = int((time.perf_counter() - started) * 1000)
+    conn.commit()
+    return elapsed
 
 
 def collect(folder: Path) -> tuple[dict[str, int], Counter]:
@@ -76,6 +106,8 @@ def collect(folder: Path) -> tuple[dict[str, int], Counter]:
             counts.update({f"cls_{k}": int(v) for k, v in result.items()})
             counts["transfer_pairs"] = _scalar(
                 conn, "SELECT COUNT(*) FROM transactions WHERE mirror_of IS NOT NULL")
+            counts.update(suggestion_counts(conn))
+            counts["steady_ms"] = steady_state_ms(conn)
         finally:
             conn.close()
     return counts, kinds
@@ -109,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         ("Classées automatiquement (modèle)", counts["cls_model"]),
         ("Suggestions sous le seuil", counts["cls_suggested"]),
         ("Sans suggestion", counts["cls_unclassified"]),
+        ("Suggestions vers Épargne", counts["sugg_savings"]),
+        ("Suggestions vers une autre catégorie", counts["sugg_other"]),
+        ("Suggestions à une seule opération similaire", counts["sugg_single"]),
         ("Durée du dernier reclassement (ms)", counts["reclassify_ms"]),
+        ("Durée d'un reclassement en régime établi (ms)", counts["steady_ms"]),
         ("Lignes d'information", counts["info_lines"]),
         ("Erreurs d'import", counts["import_errors"]),
     ]
