@@ -2,8 +2,13 @@ import sqlite3
 import unicodedata
 
 
+def fold(text: str) -> str:
+    """Majuscules sans accents : comparaison insensible à la casse et aux accents."""
+    return unicodedata.normalize("NFD", text).encode("ascii", "ignore").decode().upper()
+
+
 def account_kind_from_label(label: str) -> str:
-    upper = unicodedata.normalize("NFD", label).encode("ascii", "ignore").decode().upper()
+    upper = fold(label)
     if "LIVRET" in upper or "EPARGNE" in upper:
         return "savings"
     return "checking"

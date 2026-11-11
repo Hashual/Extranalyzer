@@ -80,7 +80,8 @@ def _non_manual_rows(conn: sqlite3.Connection, tx_ids: list[int] | None) -> list
 def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) -> None:
     """Aligne la catégorie des jambes miroir sur celle de leur jambe source (toutes si `source_ids` est None)."""
     sql = ("UPDATE transactions SET category_id = (SELECT s.category_id FROM transactions s "
-           "WHERE s.id = transactions.mirror_of), rule_id = NULL, "
+           "WHERE s.id = transactions.mirror_of), rule_id = NULL, confidence = NULL, "
+           "suggested_category_id = NULL, suggestion_reason = NULL, "
            "classified_by = CASE WHEN (SELECT s.category_id FROM transactions s WHERE s.id = transactions.mirror_of) IS NULL THEN NULL ELSE 'pair' END WHERE mirror_of ")
     if source_ids is None:
         conn.execute(sql + "IS NOT NULL")

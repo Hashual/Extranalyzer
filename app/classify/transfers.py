@@ -5,6 +5,9 @@ Ne valide pas : l'appelant possède la transaction.
 import sqlite3
 from datetime import date
 
+from app.classify.rules import sync_mirrors
+from app.classify.savings_target import savings_category_for_account
+
 MAX_GAP_DAYS = 5
 
 
@@ -43,8 +46,31 @@ def pair_internal_transfers(conn: sqlite3.Connection) -> int:
         mirror_id, source_id = (tx_id, other_id) if kind == "savings" else (other_id, tx_id)
         conn.execute(
             "UPDATE transactions SET mirror_of = ?, rule_id = NULL, "
-            "category_id = (SELECT category_id FROM transactions WHERE id = ?) WHERE id = ?",
-            (source_id, source_id, mirror_id))
+            "category_id = (SELECT category_id FROM transactions WHERE id = ?), "
+            "classified_by = CASE WHEN (SELECT category_id FROM transactions WHERE id = ?) IS NULL "
+            "THEN NULL ELSE 'pair' END WHERE id = ?",
+            (source_id, source_id, source_id, mirror_id))
         used.update((tx_id, other_id))
         pairs += 1
     return pairs
+
+
+def classify_paired_sources(conn: sqlite3.Connection) -> int:
+    """Classe en Épargne / <livret> les jambes sources appariées sans catégorie et non manuelles.
+
+    Une source déjà classée (règle) garde sa catégorie ; seules les jambes miroir portées par un
+    compte d'épargne sont concernées. Renvoie le nombre de sources classées.
+    """
+    rows = conn.execute(
+        "SELECT t.id, m.account_id FROM transactions t JOIN transactions m ON m.mirror_of = t.id "
+        "JOIN accounts a ON a.id = m.account_id "
+        "WHERE t.category_id IS NULL AND t.manual = 0 AND a.kind = 'savings' ORDER BY t.id").fetchall()
+    cache: dict[int, int] = {}
+    for tx_id, account_id in rows:
+        if account_id not in cache:
+            cache[account_id] = savings_category_for_account(conn, account_id)
+        conn.execute("UPDATE transactions SET category_id = ?, rule_id = NULL, classified_by = 'pair', "
+                     "confidence = NULL, suggested_category_id = NULL, suggestion_reason = NULL "
+                     "WHERE id = ?", (cache[account_id], tx_id))
+    sync_mirrors(conn, [r[0] for r in rows])
+    return len(rows)

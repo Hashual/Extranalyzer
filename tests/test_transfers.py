@@ -1,8 +1,9 @@
 import pytest
 
 from app.classify.pipeline import on_new_transactions
-from app.classify.rules import apply_rules, create_rule, set_manual_category
-from app.classify.transfers import pair_internal_transfers
+from app.classify.rules import apply_rules, create_rule, set_manual_category, sync_mirrors
+from app.classify.transfers import classify_paired_sources, pair_internal_transfers
+from app.classify.savings_target import savings_category_for_account
 from app.store.db import connect
 
 
@@ -166,3 +167,94 @@ def test_manual_category_on_mirror_redirects_to_source(conn):
     set_manual_category(conn, inn, None)
     assert flags(out) == (0, None) and flags(inn) == (0, None)
     assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 0
+
+
+# --- classement des sources appariées en Épargne / livret ---
+
+def _savings_setup(conn, label="LIVRET BLEU", children=("Livret Bleu", "CEL")):
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (10, '10', ?, 'savings')", (label,))
+    for name in children:
+        conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES (?, 1, 'savings')", (name,))
+    out = add_tx(conn, 1, "2024-03-12", -100)
+    inn = add_tx(conn, 10, "2024-03-12", 100)
+    assert pair_internal_transfers(conn) == 1
+    return out, inn
+
+
+def _cat_name(conn, tx_id):
+    return conn.execute("SELECT c.name FROM transactions t JOIN categories c ON c.id = t.category_id "
+                        "WHERE t.id = ?", (tx_id,)).fetchone()[0]
+
+
+def _by(conn, tx_id):
+    return conn.execute("SELECT classified_by FROM transactions WHERE id = ?", (tx_id,)).fetchone()[0]
+
+
+def test_paired_source_gets_livret_category(conn):
+    out, inn = _savings_setup(conn)
+    assert classify_paired_sources(conn) == 1
+    assert _cat_name(conn, out) == "Livret Bleu" and _by(conn, out) == "pair"
+    sync_mirrors(conn)
+    assert _cat_name(conn, inn) == "Livret Bleu" and _by(conn, inn) == "pair"
+    assert classify_paired_sources(conn) == 0
+
+
+def test_cel_alias(conn):
+    out, _ = _savings_setup(conn, label="Épargne Logement")
+    classify_paired_sources(conn)
+    assert _cat_name(conn, out) == "CEL"
+
+
+def test_unknown_savings_account_creates_subcategory_once(conn):
+    _savings_setup(conn, label="LIVRET A", children=())
+    first = savings_category_for_account(conn, 10)
+    assert savings_category_for_account(conn, 10) == first
+    rows = conn.execute("SELECT name, parent_id, kind FROM categories WHERE name = 'Livret A'").fetchall()
+    assert rows == [("Livret A", 1, "savings")]
+    classify_paired_sources(conn)
+    assert conn.execute("SELECT COUNT(*) FROM categories WHERE name = 'Livret A'").fetchone()[0] == 1
+
+
+def test_root_created_when_missing(tmp_path):
+    c = connect(tmp_path / "r.db")
+    c.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, '1', 'LIVRET JEUNE', 'savings')")
+    cat = savings_category_for_account(c, 1)
+    assert c.execute("SELECT c.name, p.name, p.kind FROM categories c JOIN categories p ON p.id = c.parent_id "
+                     "WHERE c.id = ?", (cat,)).fetchone() == ("Livret Jeune", "Épargne", "savings")
+    c.close()
+
+
+def test_rule_category_blocks_pair_classification(conn):
+    out, inn = _savings_setup(conn)
+    create_rule(conn, "VIREMENT", "contains", 2, direction="debit")
+    assert classify_paired_sources(conn) == 0
+    assert row(conn, out)[1] == 2 and _by(conn, out) == "rule"
+
+
+def test_manual_source_untouched(conn):
+    out, inn = _savings_setup(conn)
+    set_manual_category(conn, out, 2)
+    assert classify_paired_sources(conn) == 0
+    assert row(conn, out)[1] == 2 and _by(conn, out) == "manual"
+
+
+def test_pair_sets_classified_by_on_mirror(conn):
+    out = add_tx(conn, 1, "2024-03-12", -100)
+    inn = add_tx(conn, 2, "2024-03-12", 100)
+    conn.execute("UPDATE transactions SET category_id = 1, classified_by = 'rule' WHERE id = ?", (out,))
+    pair_internal_transfers(conn)
+    assert _by(conn, inn) == "pair"
+    out2 = add_tx(conn, 1, "2024-04-12", -200)
+    inn2 = add_tx(conn, 2, "2024-04-12", 200)
+    pair_internal_transfers(conn)
+    assert row(conn, inn2) == (out2, None) and _by(conn, inn2) is None
+
+
+def test_sync_mirrors_clears_model_fields(conn):
+    out = add_tx(conn, 1, "2024-03-12", -100)
+    inn = add_tx(conn, 2, "2024-03-12", 100)
+    conn.execute("UPDATE transactions SET mirror_of = ?, confidence = 0.9, suggested_category_id = 2, "
+                 "suggestion_reason = 'x' WHERE id = ?", (out, inn))
+    sync_mirrors(conn)
+    assert conn.execute("SELECT confidence, suggested_category_id, suggestion_reason FROM transactions "
+                        "WHERE id = ?", (inn,)).fetchone() == (None, None, None)
