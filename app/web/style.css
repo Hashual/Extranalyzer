@@ -368,6 +368,16 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 .cat-header { margin-bottom: 0.75rem; }
 .cat-header h2 { margin: 0.2rem 0 0; }
 .cat-header p { margin: 0; }
+.cat-actions { margin-top: 0.5rem; }
+.cat-actions button { padding: 0.2rem 0.6rem; font-size: 0.9rem; }
+.cat-slot:empty { display: none; }
+.cat-form { margin-top: 0.5rem; }
+.cat-form p { margin: 0.3rem 0; }
+.cat-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.cat-form select { min-width: 0; max-width: 100%; }
+.cat-new { margin: 0.6rem 0.4rem 0.2rem; }
+.cat-new .link { padding: 0; }
+.cat-new .cat-form { margin-top: 0; }
 
 /* Toasts */
 .toasts {
