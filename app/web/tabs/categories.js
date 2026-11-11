@@ -1,5 +1,6 @@
 // Onglet « Catégories » : liste des catégories à gauche, détail à droite (sous-catégories, évolution
 // mensuelle, transactions avec reclassement sur place). La catégorie affichée est le paramètre `id`.
+// On y crée une racine (bas de la liste) ou une sous-catégorie, on renomme et on supprime (détail).
 import { cssVar, mountChart } from "../charts.js";
 import { el, emptyNote, formatMonth, hasTab, money, scopeParams, section, transactionsTable } from "../ui.js";
 
@@ -7,6 +8,59 @@ export const id = "categories";
 export const title = "Catégories";
 
 const KIND_TITLES = { expense: "Dépenses", income: "Revenus", savings: "Épargne" };
+const NAME_MAX = 60;
+
+function plural(n, word, many = `${word}s`) {
+  return `${n} ${n > 1 ? many : word}`;
+}
+
+/**
+ * Petit formulaire (nom + champs éventuels) : `submit(name)` envoie la requête ; une erreur s'affiche
+ * sous le formulaire sans le fermer. Entrée valide, Échap annule.
+ */
+function nameForm({ label, value = "", submitText, extra = [], submit, cancel }) {
+  const input = el("input", { type: "text", value, maxLength: NAME_MAX, required: true,
+                              placeholder: label, attrs: { "aria-label": label } });
+  const ok = el("button", { type: "submit", className: "primary", text: submitText });
+  const error = el("p", { className: "error cell-error", attrs: { role: "alert" } });
+  const form = el("form", { className: "cat-form" },
+    el("div", { className: "row-actions" }, input, ...extra, ok,
+       el("button", { type: "button", text: "Annuler", on: { click: cancel } })),
+    error);
+  form.addEventListener("keydown", (e) => { if (e.key === "Escape") cancel(); });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    error.textContent = "";
+    ok.disabled = true;
+    try {
+      await submit(input.value.trim());
+    } catch (err) {
+      error.textContent = err.message;
+      ok.disabled = false;
+    }
+  });
+  queueMicrotask(() => { input.focus(); input.select(); });
+  return form;
+}
+
+function newRootBlock(ctx) {
+  const block = el("div", { className: "cat-new" });
+  const close = () => block.replaceChildren(el("button", {
+    type: "button", className: "link", text: "+ Nouvelle catégorie", on: { click: open } }));
+  const open = () => {
+    const kind = el("select", { attrs: { "aria-label": "Type" } },
+      Object.entries(KIND_TITLES).map(([value, text]) => el("option", { value, text })));
+    block.replaceChildren(nameForm({
+      label: "Nom de la catégorie", submitText: "Créer", extra: [kind], cancel: close,
+      submit: async (name) => {
+        const created = await ctx.api.post("/tabs/categories", { name, kind: kind.value });
+        ctx.navigate("categories", { id: String(created.id) });
+      },
+    }));
+  };
+  close();
+  return block;
+}
 
 function categoryButton(ctx, category, selectedId, className) {
   if (category.id === null) {         // pseudo-ligne (virements internes non classés) : pas de détail
@@ -53,6 +107,7 @@ function sidebar(ctx, tree, selectedId) {
       ? `${money(debits)} / ${money(credits)}`
       : `${count} opération${count > 1 ? "s" : ""}` })));
   }
+  nav.append(newRootBlock(ctx));
   return nav;
 }
 
@@ -75,7 +130,8 @@ async function detailPanel(ctx, categoryId, meta) {
       on: { click: () => ctx.navigate("categories", { id: data.parent_id }) },
     }));
   }
-  header.append(el("h2", { text: data.name }), el("p", { className: "tile-value", text: money(data.amount) }));
+  header.append(el("h2", { text: data.name }), el("p", { className: "tile-value", text: money(data.amount) }),
+    manageBar(ctx, data, meta));
   panel.append(header);
 
   if (data.children.length) {
@@ -129,6 +185,96 @@ async function detailPanel(ctx, categoryId, meta) {
   }) };
 }
 
+/** Catégories vers lesquelles déplacer les usages d'une catégorie supprimée : même type, elle exclue. */
+function destinationSelect(meta, data) {
+  const select = el("select", { attrs: { "aria-label": "Catégorie de destination" } });
+  for (const root of meta.categories.filter((r) => r.kind === data.kind)) {
+    const group = el("optgroup", { label: root.name });
+    if (root.id !== data.id) group.append(el("option", { value: String(root.id), text: root.name }));
+    for (const child of root.children.filter((c) => c.id !== data.id)) {
+      group.append(el("option", { value: String(child.id), text: `${root.name} › ${child.name}` }));
+    }
+    if (group.children.length) select.append(group);
+  }
+  if (data.parent_id !== null) select.value = String(data.parent_id);
+  return select;
+}
+
+/** Boutons Renommer / Sous-catégorie / Supprimer et zone du formulaire ouvert (un seul à la fois). */
+function manageBar(ctx, data, meta) {
+  const slot = el("div", { className: "cat-slot" });
+  const close = () => slot.replaceChildren();
+  const showError = (text) => slot.replaceChildren(el("p", { className: "error", attrs: { role: "alert" }, text }));
+  const afterDelete = () => ctx.navigate("categories", data.parent_id === null ? {} : { id: String(data.parent_id) });
+
+  const rename = () => slot.replaceChildren(nameForm({
+    label: "Nouveau nom", value: data.name, submitText: "Renommer", cancel: close,
+    submit: async (name) => {
+      await ctx.api.patch(`/tabs/categories/${data.id}`, { name });
+      await ctx.refresh();
+    },
+  }));
+
+  const addChild = () => slot.replaceChildren(nameForm({
+    label: "Nom de la sous-catégorie", submitText: "Ajouter", cancel: close,
+    submit: async (name) => {
+      const created = await ctx.api.post("/tabs/categories", { name, parent_id: data.id });
+      ctx.navigate("categories", { id: String(created.id) });
+    },
+  }));
+
+  const remove = async () => {
+    if (data.subcategories) {
+      showError(`« ${data.name} » a encore ${plural(data.subcategories, "sous-catégorie")} : supprimez-les d'abord.`);
+      return;
+    }
+    const { transactions, rules, overrides } = data.usage;
+    if (!transactions && !rules && !overrides) {
+      if (!window.confirm(`Supprimer la catégorie « ${data.name} » ? Aucune opération ni règle ne l'utilise.`)) return;
+      try {
+        await ctx.api.delete(`/tabs/categories/${data.id}`);
+        afterDelete();
+      } catch (e) {
+        showError(`Suppression impossible : ${e.message}`);
+      }
+      return;
+    }
+    const used = [plural(transactions, "opération"), plural(rules, "règle"),
+                  plural(overrides, "reclassement manuel", "reclassements manuels")].join(", ");
+    const target = destinationSelect(meta, data);
+    if (!target.options.length) {
+      showError(`« ${data.name} » est utilisée (${used}) et aucune autre catégorie de type ` +
+                `${KIND_TITLES[data.kind].toLowerCase()} ne peut les recevoir : créez-en une d'abord.`);
+      return;
+    }
+    const error = el("p", { className: "error cell-error", attrs: { role: "alert" } });
+    const confirm = el("button", { type: "button", className: "danger", text: "Supprimer et déplacer" });
+    confirm.addEventListener("click", async () => {
+      confirm.disabled = true;
+      error.textContent = "";
+      try {
+        await ctx.api.delete(`/tabs/categories/${data.id}?move_to=${encodeURIComponent(target.value)}`);
+        afterDelete();
+      } catch (e) {
+        error.textContent = `Suppression impossible : ${e.message}`;
+        confirm.disabled = false;
+      }
+    });
+    slot.replaceChildren(el("div", { className: "cat-form" },
+      el("p", { text: `« ${data.name} » est utilisée (${used}). Pour la supprimer, tout sera déplacé vers :` }),
+      el("div", { className: "row-actions" }, target, confirm,
+         el("button", { type: "button", text: "Annuler", on: { click: close } })),
+      error));
+  };
+
+  const buttons = [el("button", { type: "button", text: "Renommer", on: { click: rename } })];
+  if (data.parent_id === null) {
+    buttons.push(el("button", { type: "button", text: "+ Sous-catégorie", on: { click: addChild } }));
+  }
+  buttons.push(el("button", { type: "button", className: "danger", text: "Supprimer", on: { click: remove } }));
+  return el("div", {}, el("div", { className: "row-actions cat-actions" }, buttons), slot);
+}
+
 export async function render(container, ctx) {
   const [tree, meta] = await Promise.all([
     ctx.api.get("/tabs/categories/tree", scopeParams(ctx)),
@@ -139,7 +285,7 @@ export async function render(container, ctx) {
   const selectedId = requested !== null && known.has(requested) ? requested : defaultCategory(tree);
 
   if (selectedId === null) {
-    container.replaceChildren(emptyNote("Aucune catégorie définie."));
+    container.replaceChildren(emptyNote("Aucune catégorie définie."), newRootBlock(ctx));
     return;
   }
   const { panel, draw } = await detailPanel(ctx, selectedId, meta);

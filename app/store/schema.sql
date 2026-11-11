@@ -76,6 +76,14 @@ CREATE TABLE manual_overrides (
     category_id INTEGER NOT NULL REFERENCES categories(id)
 );
 
+-- Catégories du seed supprimées ou renommées par l'utilisateur : le seed ne les recrée pas
+-- (parent_name '' pour une racine).
+CREATE TABLE seed_dismissed (
+    name TEXT NOT NULL,
+    parent_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(name, parent_name)
+);
+
 CREATE INDEX idx_transactions_op_date ON transactions(op_date);
 CREATE INDEX idx_transactions_category_id ON transactions(category_id);
 CREATE INDEX idx_transactions_account_id ON transactions(account_id);
@@ -85,6 +93,6 @@ CREATE INDEX idx_transactions_section_id ON transactions(section_id);
 CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
 CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 COMMIT;

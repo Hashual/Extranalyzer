@@ -2,7 +2,7 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -25,6 +25,18 @@ _MIGRATE_3_TO_4 = """
 BEGIN;
 ALTER TABLE transactions ADD COLUMN suggestion_support INTEGER NULL;
 PRAGMA user_version = 4;
+COMMIT;
+"""
+
+# 4 -> 5 : catégories du seed supprimées ou renommées par l'utilisateur (le seed ne les recrée pas)
+_MIGRATE_4_TO_5 = """
+BEGIN;
+CREATE TABLE IF NOT EXISTS seed_dismissed (
+    name TEXT NOT NULL,
+    parent_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(name, parent_name)
+);
+PRAGMA user_version = 5;
 COMMIT;
 """
 
@@ -55,6 +67,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 3
         if version == 3:    # 3 -> 4 : nombre d'opérations similaires d'une suggestion
             conn.executescript(_MIGRATE_3_TO_4)
+            version = 4
+        if version == 4:    # 4 -> 5 : catégories du seed écartées par l'utilisateur
+            conn.executescript(_MIGRATE_4_TO_5)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

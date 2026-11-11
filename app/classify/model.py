@@ -47,8 +47,12 @@ _NO_NEIGHBOUR = Prediction(None, 0.0, 0, 0.0, "aucune opération similaire")
 
 
 def _trigrams(label: str) -> Counter:
+    """Trigrammes des mots du libellé, sauf les mots purement numériques (numéro de magasin, de remise…) : rares
+    donc très pondérés, ils écarteraient deux libellés courts du même commerce (« LIDL 4521 » / « LIDL 87412 »)."""
     grams: Counter = Counter()
     for word in label.split():
+        if word.isdigit():
+            continue
         padded = f" {word} "
         for i in range(len(padded) - 2):
             grams[padded[i : i + 3]] += 1
