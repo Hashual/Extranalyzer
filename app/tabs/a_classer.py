@@ -1,5 +1,6 @@
-"""Onglet « À classer » : opérations sans catégorie regroupées par libellé normalisé, et classement d'un
-groupe (par une nouvelle règle, ou à la main opération par opération).
+"""Onglet « À classer » : opérations sans catégorie regroupées par libellé normalisé (avec la suggestion du
+modèle), classement d'un groupe (par une nouvelle règle, ou à la main opération par opération) et validation
+groupée des suggestions.
 
 Périmètre : celui de la barre (période, comptes) ; jambes miroir exclues (elles suivent leur source).
 """
@@ -7,7 +8,7 @@ import sqlite3
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.analytics.totals import scope_clause, unclassified_count
 from app.classify.pipeline import reclassify
@@ -33,6 +34,10 @@ class ClassifyBody(BaseModel):
     direction: Literal["debit", "credit"] | None = None
 
 
+class AcceptBody(BaseModel):
+    label_norms: list[str] = Field(min_length=1)
+
+
 def _sign(low: int, high: int) -> str:
     if high < 0:
         return "debit"
@@ -50,8 +55,22 @@ def list_groups(conn: Conn, s: Annotated[Scope, Depends(scope)]):
             {GROUP_FROM} WHERE {where} AND t.category_id IS NULL
             GROUP BY t.label_norm
             ORDER BY COUNT(*) DESC, ABS(SUM(t.amount_cents)) DESC, t.label_norm""", params).fetchall()
+    # Suggestion d'un groupe : celle de sa ligne la plus sûre (à égalité, la plus ancienne).
+    suggestions, suggested_counts = {}, {}
+    for label_norm, category_id, confidence, reason, name, parent in conn.execute(
+            f"""SELECT t.label_norm, t.suggested_category_id, t.confidence, t.suggestion_reason, c.name, p.name
+                {GROUP_FROM} JOIN categories c ON c.id = t.suggested_category_id
+                LEFT JOIN categories p ON p.id = c.parent_id
+                WHERE {where} AND t.category_id IS NULL
+                ORDER BY t.confidence DESC, t.id""", params):
+        suggested_counts[label_norm] = suggested_counts.get(label_norm, 0) + 1
+        suggestions.setdefault(label_norm, {
+            "suggested_category_id": category_id, "suggested_name": f"{parent} › {name}" if parent else name,
+            "confidence": confidence, "reason": reason})
+    none = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None}
     groups = [{"label_norm": label_norm, "count": count, "total": from_cents(total), "sample_label": sample,
-               "first_date": first, "last_date": last, "sign": _sign(low, high)}
+               "first_date": first, "last_date": last, "sign": _sign(low, high),
+               **suggestions.get(label_norm, none), "suggested_count": suggested_counts.get(label_norm, 0)}
               for label_norm, count, total, sample, first, last, low, high in rows]
     return to_jsonable({"groups": groups})
 
@@ -90,6 +109,23 @@ def classify(body: ClassifyBody, conn: Conn, s: Annotated[Scope, Depends(scope)]
             reclassify(conn)                    # un seul passage de la chaîne pour tout le groupe
             classified = len(tx_ids)
     return {"classified": classified, "rule_id": rule_id, "unclassified_count": unclassified_count(conn)}
+
+
+@router.post("/accept_suggestions")
+def accept_suggestions(body: AcceptBody, conn: Conn, s: Annotated[Scope, Depends(scope)]):
+    """Chaque opération à classer des groupes listés qui porte une suggestion en fait une décision manuelle
+    (sans règle), quel que soit le score."""
+    where, params = scope_clause(s.period, s.account_ids)
+    labels = sorted(set(body.label_norms))
+    pending = conn.execute(
+        f"""SELECT t.id, t.suggested_category_id {GROUP_FROM}
+            WHERE {where} AND t.category_id IS NULL AND t.suggested_category_id IS NOT NULL
+              AND t.label_norm IN ({','.join('?' * len(labels))})""", params + labels).fetchall()
+    with conn:
+        for tx_id, category_id in pending:
+            set_manual_category(conn, tx_id, category_id, reclassify_after=False)
+        reclassify(conn)                        # un seul passage de la chaîne pour tout le lot
+    return {"classified": len(pending), "unclassified_count": unclassified_count(conn)}
 
 
 TAB = Tab("a_classer", "À classer", 50, router)

@@ -8,8 +8,11 @@ export const title = "Vue d'ensemble";
 
 // sens : +1 si une hausse est une bonne nouvelle, −1 si c'est une mauvaise.
 const TILES = [
-  { key: "expenses", label: "Dépenses", sense: -1, unclassified: "unclassified_debits" },
-  { key: "income", label: "Revenus", sense: 1, unclassified: "unclassified_credits" },
+  // Les débits à classer comptent dans les Dépenses ; les crédits à classer restent hors des Revenus.
+  { key: "expenses", label: "Dépenses", sense: -1, unclassified: "unclassified_debits",
+    note: (x) => `dont ${money(x)} à classer` },
+  { key: "income", label: "Revenus", sense: 1, unclassified: "unclassified_credits",
+    note: (x) => `+ ${money(x)} de crédits à classer` },
   { key: "savings_net", label: "Épargne", sense: 1 },
   { key: "balance", label: "Solde de la période", sense: 1 },
 ];
@@ -31,7 +34,7 @@ function tiles(data) {
       el("p", { className: "tile-value", text: money(data.totals[t.key]) }));
     if (data.compare_totals) tile.append(variation(data.totals[t.key], data.compare_totals[t.key], t.sense));
     if (t.unclassified && Number(data.totals[t.unclassified]) > 0) {
-      tile.append(el("p", { className: "tile-note", text: `dont ${money(data.totals[t.unclassified])} à classer` }));
+      tile.append(el("p", { className: "tile-note", text: t.note(data.totals[t.unclassified]) }));
     }
     return tile;
   }));

@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import hash_password
+from app.classify.pipeline import reclassify
 from app.config import Settings
 from app.main import create_app
 from app.store.db import connect
@@ -205,7 +206,8 @@ def test_transactions_list_shape_and_default_sort(env):
     first = page["items"][0]
     assert first == {"id": ids["withdraw"], "op_date": "2025-01-25", "label": "VIR DEPUIS LIVRET",
                      "amount": "50.00", "account_id": 1, "category_id": cat["Épargne/Livret Bleu"],
-                     "category_name": "Livret Bleu", "manual": True, "mirror": False}
+                     "category_name": "Livret Bleu", "manual": True, "mirror": False,
+                     "classified_by": "manual", "confidence": None, "suggestion_reason": None}
     dates = [i["op_date"] for i in page["items"]]
     assert dates == sorted(dates, reverse=True)
 
@@ -365,11 +367,13 @@ def test_a_classer_groups_by_label(env):
     _add_unknown(conn, "u3", "2025-01-23", -900, account=2)   # livret : hors vue par défaut
     conn.commit()
     data = get(client, "/a_classer/list", **JAN)
+    no_suggestion = {"suggested_category_id": None, "suggested_name": None, "confidence": None, "reason": None,
+                     "suggested_count": 0}
     assert data["groups"] == [
         {"label_norm": "cb inconnu zeta", "count": 2, "total": "-35.00", "sample_label": "CB INCONNU ZETA",
-         "first_date": "2025-01-20", "last_date": "2025-01-22", "sign": "debit"},
+         "first_date": "2025-01-20", "last_date": "2025-01-22", "sign": "debit", **no_suggestion},
         {"label_norm": "vir inconnu eta", "count": 1, "total": "7.00", "sample_label": "VIR INCONNU ETA",
-         "first_date": "2025-01-21", "last_date": "2025-01-21", "sign": "credit"},
+         "first_date": "2025-01-21", "last_date": "2025-01-21", "sign": "credit", **no_suggestion},
     ]
     assert get(client, "/a_classer/list", **JAN, accounts="1,2")["groups"][0]["count"] == 3
 
@@ -466,6 +470,86 @@ def test_a_classer_classify_errors(env):
     assert _unclassified_count(client) == 2
 
 
+def _teach(conn, cat, label, category, examples, unknowns, cents=-1500, day="2025-01-1"):
+    """`examples` décisions manuelles puis `unknowns` opérations à classer de même libellé ; un passage de la
+    chaîne. Renvoie les ids des opérations à classer."""
+    key = label.lower().replace(" ", "-")
+    for i in range(examples):
+        conn.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, "
+                     "category_id, manual, classified_by) VALUES (1, ?, ?, ?, ?, ?, ?, 1, 'manual')",
+                     (f"{key}-m{i}", f"2024-12-1{i}", label, label.lower(), cents, cat[category]))
+    new = [_add_unknown(conn, f"{key}-{day}{i}", f"{day}{i}", cents, label) for i in range(unknowns)]
+    reclassify(conn)
+    conn.commit()
+    return new
+
+
+def test_transactions_list_exposes_classified_by_and_confidence(env):
+    client, conn, cat, ids = env
+    [auto] = _teach(conn, cat, "PRLV ABONNEMENT OMEGA", "Loisirs", 3, 1)
+    items = {i["id"]: i for i in get(client, "/transactions/list", **JAN)["items"]}
+    assert items[auto]["classified_by"] == "model" and items[auto]["category_id"] == cat["Loisirs"]
+    assert 0.9 <= items[auto]["confidence"] <= 1
+    assert items[auto]["suggestion_reason"] == "3 opération(s) similaire(s) classée(s) ainsi"
+    assert items[auto]["manual"] is False
+    assert items[ids["courses"]]["classified_by"] == "manual" and items[ids["courses"]]["confidence"] is None
+    detail = get(client, f"/categories/{cat['Loisirs']}", **JAN)["transactions"]
+    assert [(t["id"], t["classified_by"]) for t in detail] == [(auto, "model")]
+    assert detail[0]["confidence"] == items[auto]["confidence"]
+
+
+def test_a_classer_group_has_suggestion(env):
+    client, conn, cat, _ = env
+    suggested = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)     # 2 voisins : suggestion seule
+    groups = {g["label_norm"]: g for g in get(client, "/a_classer/list", **JAN)["groups"]}
+    group = groups["prlv club sigma"]
+    assert group["count"] == 2 and group["suggested_count"] == 2
+    assert group["suggested_category_id"] == cat["Transport/Train"]
+    assert group["suggested_name"] == "Transport › Train"
+    assert group["confidence"] == pytest.approx(1.0)
+    assert group["reason"] == "2 opération(s) similaire(s) classée(s) ainsi"
+    # le groupe prend la suggestion de sa ligne la plus sûre
+    conn.execute("UPDATE transactions SET suggested_category_id = ?, confidence = 0.5, suggestion_reason = 'x' "
+                 "WHERE id = ?", (cat["Courses"], suggested[0]))
+    conn.commit()
+    group = {g["label_norm"]: g for g in get(client, "/a_classer/list", **JAN)["groups"]}["prlv club sigma"]
+    assert (group["suggested_category_id"], group["suggested_name"]) == (cat["Transport/Train"], "Transport › Train")
+    for label_norm, g in groups.items():
+        if g["suggested_category_id"] is None:
+            assert g["suggested_name"] is g["confidence"] is g["reason"] is None and g["suggested_count"] == 0
+
+
+def test_accept_suggestions_creates_manual_decisions(env):
+    client, conn, cat, _ = env
+    in_scope = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 2, 2)
+    [out_of_scope] = _teach(conn, cat, "PRLV CLUB SIGMA", "Transport/Train", 0, 1, day="2024-11-1")
+    rules_before = conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0]
+    before = _unclassified_count(client)
+    r = client.post("/api/tabs/a_classer/accept_suggestions", params=JAN, headers=H,
+                    json={"label_norms": ["prlv club sigma", "cb inconnu zeta"]})
+    assert r.status_code == 200, r.text
+    # 4 exemples manuels désormais : le passage unique de la chaîne classe aussi l'opération hors période
+    assert r.json() == {"classified": 2, "unclassified_count": before - 3}
+    assert _unclassified_count(client) == before - 3
+    for tx_id in in_scope:
+        assert conn.execute("SELECT category_id, manual, classified_by FROM transactions WHERE id = ?",
+                            (tx_id,)).fetchone() == (cat["Transport/Train"], 1, "manual")
+    assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] >= 2
+    assert conn.execute("SELECT manual, classified_by FROM transactions WHERE id = ?",
+                        (out_of_scope,)).fetchone() == (0, "model")
+    assert conn.execute("SELECT COUNT(*) FROM rules").fetchone()[0] == rules_before
+    assert "prlv club sigma" not in [g["label_norm"] for g in get(client, "/a_classer/list", **JAN)["groups"]]
+
+
+def test_accept_suggestions_empty_422(env):
+    client = env[0]
+    url = "/api/tabs/a_classer/accept_suggestions"
+    assert client.post(url, params=JAN, headers=H, json={"label_norms": []}).status_code == 422
+    assert client.post(url, params=JAN, headers=H, json={}).status_code == 422
+    assert client.post(url, headers=H, json={"label_norms": ["x"]}).status_code == 422       # période requise
+    assert client.post(url, params=JAN, json={"label_norms": ["x"]}).status_code == 403     # en-tête CSRF
+
+
 # --- Relevés -----------------------------------------------------------------------------------
 
 def _statements(conn, ids):
@@ -540,12 +624,20 @@ def test_regles_create_and_list(env):
     assert conn.execute("SELECT category_id, rule_id FROM transactions WHERE id = ?",
                         (ids["unknown"],)).fetchone() == (cat["Transport/Train"], created["id"])
     low = _rule(client, pattern="^cb", match="regex", category_id=cat["Divers"], priority=-1, direction="debit")
-    rules = client.get("/api/tabs/regles").json()
+    rules = client.get("/api/tabs/regles").json()["rules"]
     assert rules[-1]["id"] == low["id"]
     assert [r["priority"] for r in rules] == sorted((r["priority"] for r in rules), reverse=True)
     assert next(r for r in rules if r["id"] == created["id"]) == created
     seed = next(r for r in rules if r["pattern"] == "INTERETS")
     assert seed["category_path"] == "Épargne › Intérêts" and seed["tx_count"] == 0   # classée sans règle
+
+
+def test_regles_list_auto_info(env, monkeypatch):
+    client, conn, cat, _ = env
+    assert client.get("/api/tabs/regles").json()["auto"] == {"count": 0, "threshold": 0.9}
+    _teach(conn, cat, "PRLV ABONNEMENT OMEGA", "Loisirs", 3, 2)
+    monkeypatch.setenv("EXTRANALYZER_AUTO_THRESHOLD", "0.95")
+    assert client.get("/api/tabs/regles").json()["auto"] == {"count": 2, "threshold": 0.95}
 
 
 def test_regles_create_errors(env):
