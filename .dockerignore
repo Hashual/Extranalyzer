@@ -1,0 +1,7 @@
+*
+!app/
+!pyproject.toml
+**/__pycache__
+**/*.pyc
+**/*.pdf
+**/*.xlsx

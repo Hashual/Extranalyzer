@@ -1,0 +1,155 @@
+# Extranalyzer
+
+Application web personnelle d'analyse de relevés bancaires (FastAPI + SQLite), prévue pour tourner
+sur un Raspberry Pi (linux/arm64), derrière WireGuard. Les relevés réels ne doivent **jamais** être
+versionnés ni copiés dans l'image : ils sont déposés via l'interface web et vivent uniquement dans le
+volume Docker `data`.
+
+## Image Docker
+
+- Build multi-stage sur `python:3.12-alpine` ; l'étape `build` n'accepte que des wheels binaires
+  (`--only-binary=:all:`), aucune compilation. L'image finale ne contient ni pip-cache ni outils de build,
+  tourne en utilisateur non privilégié (uid 10001) avec un système de fichiers racine en lecture seule.
+- Contexte de build minimal (`.dockerignore` en liste blanche : `app/` et `pyproject.toml` seulement).
+- Taille de l'image : environ 122 Mo en arm64 (voir « Tailles mesurées »).
+- Repli : si une dépendance n'avait pas de wheel `musllinux` pour aarch64, passer les deux `FROM` du
+  `Dockerfile` sur `python:3.12-slim` (non nécessaire à ce jour).
+
+## Construire et installer l'image
+
+Deux routes, au choix. Dans les deux cas, le Pi a besoin de Docker et de `docker-compose.yml` (un seul
+fichier à copier, pas besoin du dépôt complet).
+
+**Route A : construire sur le PC, envoyer l'image au Pi** (Docker Desktop, buildx, émulation QEMU) :
+
+```bash
+docker buildx build --platform linux/arm64 -t extranalyzer:arm64 --load .
+docker save extranalyzer:arm64 | gzip > extranalyzer-arm64.tar.gz
+scp extranalyzer-arm64.tar.gz docker-compose.yml pi@<ip-du-pi>:~/extranalyzer/
+# sur le Pi :
+cd ~/extranalyzer && gunzip -c extranalyzer-arm64.tar.gz | docker load
+```
+
+**Route B : construire sur le Pi** (dépôt cloné sur le Pi) :
+
+```bash
+git clone <url-du-depot> ~/extranalyzer && cd ~/extranalyzer
+docker build -t extranalyzer:arm64 .
+```
+
+## Déployer (sur le Pi, dans le dossier contenant `docker-compose.yml`)
+
+1. Créer le secret (dossier ignoré par git, jamais commité). Sous Linux, le secret du compose est monté
+   avec le propriétaire et les droits du fichier hôte : le conteneur tourne en uid 10001, il faut donc
+   que ce soit lui le propriétaire, sinon l'application ne peut pas le lire et redémarre en boucle.
+
+   ```bash
+   mkdir -p secrets && chmod 700 secrets
+   printf '%s' 'votre-mot-de-passe-long' > secrets/password.txt
+   sudo chown 10001:10001 secrets/password.txt && sudo chmod 400 secrets/password.txt
+   ```
+
+   (Le dossier `secrets/` en 700 appartient à votre utilisateur : il reste traversable par Docker, qui
+   lit le fichier en root.)
+
+2. Choisir l'adresse d'écoute dans un fichier `.env` à côté du compose (ignoré par git ; ainsi
+   `docker compose stop/ps/down` fonctionnent aussi dans une nouvelle session SSH) :
+   `BIND_ADDR` = l'IP WireGuard du Pi (par exemple `10.8.0.1`), ou son IP LAN. Elle est obligatoire :
+   `docker compose` refuse de démarrer sans elle. Ne jamais mettre `0.0.0.0`.
+
+   ```bash
+   echo 'BIND_ADDR=10.8.0.1' > .env
+   ```
+
+   `IMAGE_TAG` (facultatif, `arm64` par défaut) permet d'utiliser une autre étiquette d'image, par
+   exemple `IMAGE_TAG=amd64` pour un essai sur un PC x86.
+
+3. Démarrer :
+
+   ```bash
+   docker compose up -d
+   docker compose ps          # l'état doit passer à « healthy »
+   ```
+
+4. Ouvrir `http://<BIND_ADDR>:8000` depuis un appareil connecté au VPN WireGuard.
+
+Le conteneur est durci : système de fichiers en lecture seule (écriture uniquement dans le volume
+`/data` et le tmpfs `/tmp` de 64 Mo), `cap_drop: ALL`, `no-new-privileges`, 256 Mo de mémoire, 1 CPU,
+journaux limités (`max-size: 1m`, `max-file: "3"`). Variable facultative : `EXTRANALYZER_MAX_UPLOAD_MB`
+(20 par défaut).
+
+### Démarrage au boot : attendre WireGuard
+
+Docker ne peut pas publier le port sur l'IP `wg0` tant que l'interface n'existe pas. Méthode recommandée :
+faire démarrer le service Docker après `wg-quick@wg0`.
+
+```bash
+sudo systemctl edit docker.service
+```
+
+puis y coller :
+
+```ini
+[Unit]
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+```
+
+(Sauvegarder, puis `sudo systemctl daemon-reload`.) Avec `restart: unless-stopped`, le conteneur redémarre
+alors tout seul après un reboot, une fois `wg0` monté.
+
+### Dépannage
+
+- `lecture impossible de EXTRANALYZER_PASSWORD_FILE` dans `docker compose logs` : le secret n'est pas
+  lisible par l'uid 10001 ; refaire le `chown 10001:10001` et `chmod 400` ci-dessus, puis
+  `docker compose up -d --force-recreate`.
+- `required variable BIND_ADDR is missing` : le fichier `.env` est absent ou ne se trouve pas à côté du compose.
+
+## Sauvegarde et restauration du volume `data`
+
+Le nom réel du volume est préfixé par le projet (`docker volume ls`, souvent `extranalyzer_data`).
+
+```bash
+docker compose stop
+docker run --rm -v extranalyzer_data:/data:ro -v "$PWD":/backup alpine \
+  tar czf /backup/extranalyzer-data-$(date +%F).tar.gz -C /data .
+docker compose start
+```
+
+Restauration (pile arrêtée, volume créé s'il manque, puis redémarrage) :
+
+```bash
+docker compose down
+docker volume create extranalyzer_data
+docker run --rm -v extranalyzer_data:/data -v "$PWD":/backup alpine \
+  sh -c "tar xzf /backup/extranalyzer-data-AAAA-MM-JJ.tar.gz -C /data && chown -R 10001:10001 /data"
+docker compose up -d
+```
+
+L'archive contient les PDF et la base : la ranger hors du dépôt, chiffrée si elle quitte le Pi.
+
+## Mettre à jour
+
+- **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :
+  `gunzip -c extranalyzer-arm64.tar.gz | docker load && docker compose up -d`.
+- **Route B** (build sur le Pi) : `git pull && docker build -t extranalyzer:arm64 . && docker compose up -d`.
+
+`docker compose up -d` recrée le conteneur ; le volume `data` est conservé.
+
+## Développement local
+
+```bash
+python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"
+.venv/Scripts/python -m pytest
+```
+
+## Tailles mesurées
+
+Mesurées avec `docker image ls extranalyzer` :
+
+| Plateforme   | Taille de l'image |
+|--------------|-------------------|
+| linux/arm64  | 122 Mo            |
+| linux/amd64  | 117 Mo            |
+
+Mémoire au repos (conteneur démarré, un relevé importé) : environ 48 Mo.
