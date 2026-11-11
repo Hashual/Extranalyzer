@@ -1,0 +1,32 @@
+# Versions exactes des dépendances de l'image Docker (étape `build` du Dockerfile : `pip ... -c constraints.txt`).
+# Chaque paquet doit exister en wheel pour linux/arm64 musl (python:3.12-alpine) ; cf. README,
+# « Dépendances figées » pour la vérification et la mise à jour.
+#
+# Outils de build
+setuptools==80.9.0
+wheel==0.45.1
+# Dépendances d'exécution (pyproject.toml) et leurs dépendances transitives
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.16.0
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.1
+cryptography==50.0.2
+fastapi==0.162.3
+h11==0.16.0
+idna==3.20
+itsdangerous==2.2.0
+opentelemetry-api==1.45.2
+pdfminer.six==20260107
+pdfplumber==0.11.10
+pillow==13.0.0
+pycparser==3.12
+pydantic==2.14.3
+pydantic_core==2.50.4
+pypdfium2==5.15.2
+python-multipart==0.0.33
+starlette==1.10.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0
+uvicorn==0.54.0

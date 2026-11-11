@@ -140,3 +140,16 @@ def test_migration_from_v1_adds_section_message(tmp_path):
     c = connect(path)       # deuxième ouverture : rien à migrer
     assert c.execute("PRAGMA user_version").fetchone()[0] == 2
     c.close()
+
+
+def test_move_manual_overrides_never_overwrites(tmp_path):
+    from app.store import repo
+    c = connect(tmp_path / "m.db")
+    cats = [c.execute("INSERT INTO categories(name, kind) VALUES (?, 'expense')", (n,)).lastrowid for n in "abcd"]
+    for key, cat in zip(["k1", "k2", "k3", "k4"], cats):
+        c.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?)", (key, cat))
+    # k1 → k4 (occupé), k2 → k1 (k1 reste en place), k3 → n (libre)
+    assert repo.move_manual_overrides(c, {"k1": "k4", "k2": "k1", "k3": "n"}) == 2
+    assert dict(c.execute("SELECT tx_key, category_id FROM manual_overrides")) == {
+        "k1": cats[0], "k2": cats[1], "n": cats[2], "k4": cats[3]}
+    c.close()

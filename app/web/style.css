@@ -357,6 +357,8 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 }
 .cat-link span:first-child { overflow-wrap: anywhere; }
 .cat-link:hover { background: var(--bg); }
+.cat-link.static { color: var(--muted); font-style: italic; }
+.cat-link.static:hover { background: none; }
 .cat-link[aria-current="true"] { background: var(--bg); color: var(--accent); font-weight: 600; }
 .cat-detail { min-width: 0; }
 .cat-header { margin-bottom: 0.75rem; }

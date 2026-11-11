@@ -133,15 +133,26 @@ def manual_overrides_for(conn: sqlite3.Connection, tx_keys: list[str]) -> dict[s
     return found
 
 
-def move_manual_overrides(conn: sqlite3.Connection, moves: dict[str, str]) -> None:
-    """Reporte chaque reclassement manuel de l'ancienne identité (clé) sur la nouvelle (valeur)."""
+def move_manual_overrides(conn: sqlite3.Connection, moves: dict[str, str]) -> int:
+    """Reporte chaque reclassement manuel de l'ancienne identité (clé) sur la nouvelle (valeur), sans
+    jamais écraser un reclassement qui reste sur sa cible (ni deux reports vers la même cible) : ceux-là
+    restent sur leur ancienne identité. Renvoie le nombre de reclassements non reportés."""
     categories = manual_overrides_for(conn, list(moves))
-    for old_key in categories:
+    staying = set(manual_overrides_for(conn, list(set(moves.values())))) - set(categories)
+    pending = dict(categories)
+    while True:     # un reclassement qui reste en place peut à son tour bloquer celui qui le visait
+        applied: dict[str, str] = {}
+        blocked = [old for old in pending if moves[old] in staying or applied.setdefault(moves[old], old) != old]
+        if not blocked:
+            break
+        for old in blocked:
+            staying.add(old)
+            del pending[old]
+    for old_key in pending:
         conn.execute("DELETE FROM manual_overrides WHERE tx_key = ?", (old_key,))
-    for old_key, category_id in categories.items():
-        conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
-                     "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id",
-                     (moves[old_key], category_id))
+    for old_key, category_id in pending.items():
+        conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?)", (moves[old_key], category_id))
+    return len(categories) - len(pending)
 
 
 def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],

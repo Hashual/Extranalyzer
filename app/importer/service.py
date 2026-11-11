@@ -118,23 +118,29 @@ def _slots(rows: list[tuple[str, str, int]]) -> list[tuple[tuple[str, int, int],
 def _carry_overrides(conn: sqlite3.Connection, old_section_id: int, keyed: list[_KeyedTx]) -> int:
     """Avant de remplacer les opérations de `old_section_id` par `keyed` : reporte les reclassements
     manuels dont l'identité change (libellé relu autrement) sur l'opération de même date, même montant
-    et même rang ; renvoie le nombre de ceux qui ne trouvent aucune correspondance."""
+    et même rang ; renvoie le nombre de ceux qui ne trouvent aucune correspondance.
+
+    Une identité cible déjà occupée (opération conservée telle quelle, ou autre reclassement manuel)
+    n'est jamais écrasée : le reclassement reporté est alors compté comme orphelin."""
     old_rows = repo.section_transactions(conn, old_section_id)
     overrides = repo.manual_overrides_for(conn, [key for key, _, _ in old_rows])
     if not overrides:
         return 0
     new_keys = {k.key for k in keyed}
     new_by_slot = dict(_slots([(k.key, k.tx.op_date.isoformat(), to_cents(k.tx.amount)) for k in keyed]))
+    kept = {key for key, _, _ in old_rows} & new_keys
+    occupied = kept | set(repo.manual_overrides_for(conn, list(new_keys)))
     moves, orphaned = {}, 0
     for slot, old_key in _slots(old_rows):
         if old_key not in overrides or old_key in new_keys:     # identité inchangée : rien à faire
             continue
-        if slot in new_by_slot:
-            moves[old_key] = new_by_slot[slot]
-        else:
+        target = new_by_slot.get(slot)
+        if target is None or target in occupied:
             orphaned += 1
-    repo.move_manual_overrides(conn, moves)
-    return orphaned
+        else:
+            moves[old_key] = target
+            occupied.add(target)
+    return orphaned + repo.move_manual_overrides(conn, moves)
 
 
 def _collision_message(conn: sqlite3.Connection, keyed: list[_KeyedTx],

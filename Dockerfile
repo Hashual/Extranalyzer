@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-alpine AS build
 WORKDIR /src
-RUN pip install --no-cache-dir "setuptools>=68" wheel
+# Versions exactes (outils de build et dépendances) : constraints.txt, cf. README « Dépendances figées ».
+COPY constraints.txt ./
+RUN pip install --no-cache-dir -c constraints.txt setuptools wheel
 COPY pyproject.toml ./
 COPY app ./app
 # Paquet local (Python pur) d'abord, puis ses dépendances en wheels binaires uniquement (aucune compilation).
 RUN pip wheel --no-cache-dir --no-deps --no-build-isolation --wheel-dir /w . \
- && pip wheel --no-cache-dir --only-binary=:all: --wheel-dir /w /w/extranalyzer-*.whl \
+ && pip wheel --no-cache-dir --only-binary=:all: -c constraints.txt --wheel-dir /w /w/extranalyzer-*.whl \
  && pip install --no-cache-dir --no-compile --no-index --find-links /w --prefix=/install /w/extranalyzer-*.whl
 
 FROM python:3.12-alpine

@@ -1,6 +1,7 @@
 *
 !app/
 !pyproject.toml
+!constraints.txt
 **/__pycache__
 **/*.pyc
 **/*.pdf

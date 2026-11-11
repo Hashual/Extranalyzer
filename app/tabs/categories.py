@@ -1,5 +1,10 @@
 """Onglet « Catégories » : montants par catégorie racine, puis détail d'une catégorie
-(sous-catégories, évolution mensuelle, transactions) avec reclassement sur place."""
+(sous-catégories, évolution mensuelle, transactions) avec reclassement sur place.
+
+Les sources non classées de virements internes appariés comptent comme épargne (cf. totals) : elles
+apparaissent en pseudo-ligne sans lien « Virements internes (non classés) » sous la catégorie racine
+d'épargne (s'il n'y en a qu'une ; sinon en pseudo-racine), pour que l'épargne de l'onglet égale
+`savings_net`."""
 import sqlite3
 from decimal import Decimal
 from typing import Annotated
@@ -7,7 +12,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.analytics.periods import month_keys
-from app.analytics.totals import SIGNED_AMOUNT, by_category, scope_clause, totals
+from app.analytics.totals import (ANALYSIS_FROM, INTERNAL_TRANSFERS, PAIRED_UNCLASSIFIED, SIGNED_AMOUNT,
+                                   by_category, scope_clause, totals)
 from app.importer.amounts import from_cents
 from app.deps import get_conn
 from app.tabs._params import Scope, scope
@@ -21,6 +27,31 @@ ZERO = Decimal("0.00")
 
 router = APIRouter()
 Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
+
+
+def _internal_transfers_by_month(conn: sqlite3.Connection, s: Scope) -> dict[str, int]:
+    """{mois: centimes} des virements internes appariés non classés, vus comme épargne."""
+    if s.account_ids is not None and not s.account_ids:
+        return {}
+    where, params = scope_clause(s.period, s.account_ids)
+    return dict(conn.execute(
+        f"SELECT substr(t.op_date, 1, 7), SUM({SIGNED_AMOUNT['savings']}) {ANALYSIS_FROM} "
+        f"WHERE {where} AND {PAIRED_UNCLASSIFIED} GROUP BY 1", params).fetchall())
+
+
+def _internal_transfers_host(conn: sqlite3.Connection) -> int | None:
+    """Catégorie racine d'épargne qui accueille la pseudo-ligne, s'il n'y en a qu'une."""
+    roots = conn.execute("SELECT id FROM categories WHERE parent_id IS NULL AND kind = 'savings'").fetchall()
+    return roots[0][0] if len(roots) == 1 else None
+
+
+def _unclassified_count(conn: sqlite3.Connection, s: Scope) -> int:
+    """Opérations sans catégorie sur le périmètre, virements internes appariés compris."""
+    if s.account_ids is not None and not s.account_ids:
+        return 0
+    where, params = scope_clause(s.period, s.account_ids)
+    return conn.execute(f"SELECT COUNT(*) {ANALYSIS_FROM} WHERE {where} AND t.category_id IS NULL",
+                        params).fetchone()[0]
 
 
 @router.get("/tree")
@@ -38,9 +69,19 @@ def tree(conn: Conn, s: Annotated[Scope, Depends(scope)]):
     for cid, name, parent_id, _ in rows:
         if parent_id in by_id:
             by_id[parent_id]["children"].append({"id": cid, "name": name, "amount": child_amounts.get(cid, ZERO)})
+    internal = from_cents(sum(_internal_transfers_by_month(conn, s).values()))
+    if internal:
+        pseudo = {"id": None, "name": INTERNAL_TRANSFERS, "amount": internal}
+        host = by_id.get(_internal_transfers_host(conn))
+        if host is None:
+            roots.append({**pseudo, "kind": "savings", "children": []})
+        else:
+            host["amount"] += internal
+            host["children"].append(pseudo)
     t = totals(conn, p, accounts)
     return to_jsonable({"roots": roots,
-                        "unclassified": {"debits": t.unclassified_debits, "credits": t.unclassified_credits}})
+                        "unclassified": {"debits": t.unclassified_debits, "credits": t.unclassified_credits,
+                                         "count": _unclassified_count(conn, s)}})
 
 
 @router.get("/{category_id}")
@@ -64,6 +105,12 @@ def detail(category_id: int, conn: Conn, s: Annotated[Scope, Depends(scope)]):
             FROM transactions t JOIN accounts a ON a.id = t.account_id
             JOIN categories c ON c.id = t.category_id
             WHERE {where} GROUP BY 1""", params).fetchall())
+    if category_id == _internal_transfers_host(conn):
+        internal = _internal_transfers_by_month(conn, s)
+        if internal:
+            children.append({"id": None, "name": INTERNAL_TRANSFERS, "amount": from_cents(sum(internal.values()))})
+            children.sort(key=lambda c: (-c["amount"], c["name"]))
+            per_month = {m: per_month.get(m, 0) + internal.get(m, 0) for m in per_month.keys() | internal.keys()}
     monthly = [{"month": m, "amount": from_cents(per_month.get(m, 0))} for m in month_keys(s.period)]
     transactions = conn.execute(f"{ROW_SELECT} WHERE {where} ORDER BY t.op_date DESC, t.id DESC LIMIT ?",
                                 params + [DETAIL_TX_LIMIT]).fetchall()
