@@ -94,21 +94,25 @@ def sync_mirrors(conn: sqlite3.Connection, source_ids: list[int] | None = None) 
 def apply_rules(conn: sqlite3.Connection, tx_ids: list[int] | None = None) -> int:
     """Reclasse les transactions non manuelles (toutes si `tx_ids` est None) ; renvoie le nombre classées."""
     rules = _rules_by_precedence(conn)
-    classified = 0
     rows = _non_manual_rows(conn, tx_ids)
+    hits, misses = [], []
     for tx_id, label_norm, amount_cents, account_id in rows:
         winner = next((r for r in rules if _matches(r, label_norm, amount_cents, account_id)), None)
         if winner is None:
-            conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
-                         "WHERE id = ?", (tx_id,))
+            misses.append((tx_id,))
         else:
-            conn.execute("UPDATE transactions SET category_id = ?, rule_id = ?, classified_by = 'rule', confidence = NULL, "
-                         "suggested_category_id = NULL, suggestion_reason = NULL "
-                         "WHERE id = ?",
-                         (winner.category_id, winner.id, tx_id))
-            classified += 1
+            hits.append((winner.category_id, winner.id, tx_id))
+    conn.executemany("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
+                     "WHERE id = ?", misses)
+    conn.executemany("UPDATE transactions SET category_id = ?, rule_id = ?, classified_by = 'rule', confidence = NULL, "
+                     "suggested_category_id = NULL, suggestion_reason = NULL WHERE id = ?", hits)
     sync_mirrors(conn, None if tx_ids is None else [r[0] for r in rows])
-    return classified
+    return len(hits)
+
+
+def _reclassify(conn: sqlite3.Connection) -> None:
+    from app.classify.pipeline import reclassify      # import tardif : pipeline dépend de ce module
+    reclassify(conn)
 
 
 def create_rule(conn: sqlite3.Connection, pattern: str, match: str, category_id: int,
@@ -122,8 +126,7 @@ def create_rule(conn: sqlite3.Connection, pattern: str, match: str, category_id:
     rule_id = conn.execute(
         "INSERT INTO rules(pattern, match, direction, account_id, category_id, priority) "
         "VALUES (?, ?, ?, ?, ?, ?)", (pattern, match, direction, account_id, category_id, priority)).lastrowid
-    where = "manual = 0" + (" AND category_id IS NULL" if apply_to == "unclassified" else "")
-    apply_rules(conn, [r[0] for r in conn.execute(f"SELECT id FROM transactions WHERE {where}")])
+    _reclassify(conn)
     return rule_id
 
 
@@ -140,39 +143,38 @@ def update_rule(conn: sqlite3.Connection, rule_id: int, **fields) -> None:
     if fields:
         conn.execute(f"UPDATE rules SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
                      (*fields.values(), rule_id))
-    # Concernées : celles déjà classées par cette règle, les non classées et celles que la règle modifiée reconnaît.
-    rule = next(r for r in _rules_by_precedence(conn) if r.id == rule_id)
-    ids = [tx_id for tx_id, label_norm, amount, account_id, current_rule, category in conn.execute(
-               "SELECT id, label_norm, amount_cents, account_id, rule_id, category_id "
-               "FROM transactions WHERE manual = 0")
-           if current_rule == rule_id or category is None or _matches(rule, label_norm, amount, account_id)]
-    apply_rules(conn, ids)
+    _reclassify(conn)
 
 
 def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
-    ids = [r[0] for r in conn.execute("SELECT id FROM transactions WHERE rule_id = ? AND manual = 0", (rule_id,))]
     conn.execute("UPDATE transactions SET category_id = NULL, rule_id = NULL, classified_by = NULL "
                  "WHERE rule_id = ? AND manual = 0", (rule_id,))
     conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
-    apply_rules(conn, ids)
+    _reclassify(conn)
 
 
-def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> None:
+def set_manual_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None, *,
+                        reclassify_after: bool = True) -> None:
+    """Pose (ou efface si `category_id` est None) la décision manuelle d'une opération.
+
+    `reclassify_after=False` laisse l'appelant lancer `reclassify` une seule fois après un lot.
+    """
     row = conn.execute("SELECT tx_key, mirror_of FROM transactions WHERE id = ?", (tx_id,)).fetchone()
     if row is None:
         raise ValueError(f"transaction {tx_id} introuvable")
     if row[1] is not None:       # jambe miroir : le changement porte sur la jambe source
-        return set_manual_category(conn, row[1], category_id)
+        return set_manual_category(conn, row[1], category_id, reclassify_after=reclassify_after)
     tx_key = row[0]
     if category_id is None:
         conn.execute("DELETE FROM manual_overrides WHERE tx_key = ?", (tx_key,))
         conn.execute("UPDATE transactions SET manual = 0, category_id = NULL, rule_id = NULL, "
                      "classified_by = NULL WHERE id = ?", (tx_id,))
-        apply_rules(conn, [tx_id])
-        return
-    conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
-                 "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
-    conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL, "
-                 "classified_by = 'manual', confidence = NULL, suggested_category_id = NULL, "
-                 "suggestion_reason = NULL WHERE id = ?", (category_id, tx_id))
+    else:
+        conn.execute("INSERT INTO manual_overrides(tx_key, category_id) VALUES (?, ?) "
+                     "ON CONFLICT(tx_key) DO UPDATE SET category_id = excluded.category_id", (tx_key, category_id))
+        conn.execute("UPDATE transactions SET manual = 1, category_id = ?, rule_id = NULL, "
+                     "classified_by = 'manual', confidence = NULL, suggested_category_id = NULL, "
+                     "suggestion_reason = NULL WHERE id = ?", (category_id, tx_id))
     sync_mirrors(conn, [tx_id])
+    if reclassify_after:
+        _reclassify(conn)

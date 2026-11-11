@@ -34,12 +34,16 @@ def env(tmp_path):
     n = 0
 
     def tx(acc, day, cents, category, label="LIBELLE FICTIF", mirror=None):
+        # Une ligne classée l'est par une décision manuelle (sa jambe miroir suit : 'pair') ; sans cela,
+        # la chaîne de classement, qui recalcule tout le reste, la remettrait à classer.
         nonlocal n
         n += 1
+        by = None if category is None else "pair" if mirror else "manual"
         cur = conn.execute(
             "INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents, category_id,"
-            " mirror_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (acc, f"k{n}", day, label, label.lower(), cents, cat[category] if category else None, mirror))
+            " mirror_of, manual, classified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (acc, f"k{n}", day, label, label.lower(), cents, cat[category] if category else None, mirror,
+             int(by == "manual"), by))
         return cur.lastrowid
 
     ids = {
@@ -201,7 +205,7 @@ def test_transactions_list_shape_and_default_sort(env):
     first = page["items"][0]
     assert first == {"id": ids["withdraw"], "op_date": "2025-01-25", "label": "VIR DEPUIS LIVRET",
                      "amount": "50.00", "account_id": 1, "category_id": cat["Épargne/Livret Bleu"],
-                     "category_name": "Livret Bleu", "manual": False, "mirror": False}
+                     "category_name": "Livret Bleu", "manual": True, "mirror": False}
     dates = [i["op_date"] for i in page["items"]]
     assert dates == sorted(dates, reverse=True)
 

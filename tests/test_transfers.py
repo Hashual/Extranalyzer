@@ -133,8 +133,9 @@ def test_set_manual_category_resyncs_mirror(conn):
     conn.execute("UPDATE transactions SET mirror_of = ?, category_id = 1 WHERE id = ?", (out, inn))
     set_manual_category(conn, out, 2)
     assert row(conn, inn)[1] == 2
-    set_manual_category(conn, out, None)
-    assert row(conn, inn)[1] is None
+    set_manual_category(conn, out, None)            # retombe sur l'appariement : Épargne / Liv
+    livret = savings_category_for_account(conn, 2)
+    assert row(conn, out)[1] == livret and row(conn, inn)[1] == livret
 
 
 def test_pipeline(conn):
@@ -165,7 +166,8 @@ def test_manual_category_on_mirror_redirects_to_source(conn):
     assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 1
     assert conn.execute("SELECT tx_key FROM manual_overrides").fetchone()[0] ==         conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (out,)).fetchone()[0]
     set_manual_category(conn, inn, None)
-    assert flags(out) == (0, None) and flags(inn) == (0, None)
+    livret = savings_category_for_account(conn, 2)      # retombe sur l'appariement
+    assert flags(out) == (0, livret) and flags(inn) == (0, livret)
     assert conn.execute("SELECT COUNT(*) FROM manual_overrides").fetchone()[0] == 0
 
 

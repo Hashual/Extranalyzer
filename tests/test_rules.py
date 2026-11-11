@@ -113,15 +113,19 @@ def test_no_rule_stays_null(conn, cats):
     assert cat_of(conn, t) is None
 
 
-def test_create_rule_unclassified_vs_all(conn, cats):
+def test_create_rule_reclassifies_by_global_precedence(conn, cats):
+    # Le classement par règle est un état dérivé : toute création repasse la chaîne sur toutes les lignes,
+    # quel que soit `apply_to` (toujours validé) ; la règle de plus haute priorité l'emporte partout.
     t = add_tx(conn, "MAGASIN ALPHA", -100)
     create_rule(conn, "MAGASIN", "contains", cats["Divers"])
     assert cat_of(conn, t) == cats["Divers"]
-    create_rule(conn, "MAGASIN ALPHA", "contains", cats["Courses"])          # unclassified only
-    assert cat_of(conn, t) == cats["Divers"]
+    create_rule(conn, "MAGASIN ALPHA", "contains", cats["Courses"], apply_to="unclassified")
+    assert cat_of(conn, t) == cats["Courses"]
     create_rule(conn, "MAGASIN ALPHA", "contains", cats["Restauration"], priority=1000,
                 apply_to="all_non_manual")
     assert cat_of(conn, t) == cats["Restauration"]
+    with pytest.raises(ValueError):
+        create_rule(conn, "X", "contains", cats["Divers"], apply_to="bogus")
 
 
 def test_update_rule_reclassifies(conn, cats):
@@ -255,7 +259,8 @@ def test_apply_rules_sets_classified_by(conn, cats):
     create_rule(conn, "MAGASIN", "contains", cats["Courses"], apply_to="all_non_manual")
     assert (_by(conn, hit), _by(conn, miss), _by(conn, mirror)) == ("rule", None, "pair")
     delete_rule(conn, conn.execute("SELECT id FROM rules").fetchone()[0])
-    assert (_by(conn, hit), _by(conn, mirror)) == (None, None)
+    assert _by(conn, miss) is None
+    assert (_by(conn, hit), _by(conn, mirror)) == ("pair", "pair")    # retombe sur l'appariement (LIV)
 
 
 def test_manual_sets_and_clears_classified_by(conn, cats):
@@ -265,7 +270,7 @@ def test_manual_sets_and_clears_classified_by(conn, cats):
     set_manual_category(conn, t, cats["Courses"])
     assert (_by(conn, t), _by(conn, mirror)) == ("manual", "pair")
     set_manual_category(conn, t, None)
-    assert _by(conn, t) is None
+    assert _by(conn, t) == "pair"                    # source appariée à un compte d'épargne
     create_rule(conn, "MAGASIN", "contains", cats["Divers"])
     set_manual_category(conn, t, cats["Courses"])
     set_manual_category(conn, t, None)

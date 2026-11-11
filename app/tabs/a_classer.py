@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.analytics.totals import scope_clause, unclassified_count
+from app.classify.pipeline import reclassify
 from app.classify.rules import create_rule, set_manual_category
 from app.deps import get_conn
 from app.importer.amounts import from_cents
@@ -85,7 +86,8 @@ def classify(body: ClassifyBody, conn: Conn, s: Annotated[Scope, Depends(scope)]
                                       (rule_id,)).fetchone()[0]
         else:
             for tx_id in tx_ids:
-                set_manual_category(conn, tx_id, body.category_id)
+                set_manual_category(conn, tx_id, body.category_id, reclassify_after=False)
+            reclassify(conn)                    # un seul passage de la chaîne pour tout le groupe
             classified = len(tx_ids)
     return {"classified": classified, "rule_id": rule_id, "unclassified_count": unclassified_count(conn)}
 
