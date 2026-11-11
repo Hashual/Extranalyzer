@@ -87,7 +87,7 @@ def totals(conn: sqlite3.Connection, p: Period, account_ids: list[int] | None) -
     ).fetchone()
     exp_c, inc_c, sav_c, ud_c, uc_c = row
     expenses = exp_c + ud_c
-    income = inc_c + uc_c
+    income = inc_c  # les crédits non classés restent à part (unclassified_credits)
     return Totals(
         expenses=from_cents(expenses),
         income=from_cents(income),
@@ -110,6 +110,8 @@ def by_category(
         return []
     where, params = scope_clause(p, account_ids)
     amount = SIGNED_AMOUNT[kind]
+    pseudo = {"expense": (UNCLASSIFIED, "IS NULL AND t.amount_cents < 0"),
+              "savings": (INTERNAL_TRANSFERS, "= 'savings'")}
     if level == "parent":
         key, name = "COALESCE(c.parent_id, c.id)", "COALESCE(pc.name, c.name)"
     else:
@@ -135,10 +137,8 @@ def by_category(
         for cid, n, cents in rows
     ]
     # Opérations sans catégorie de ce `kind` effectif : une ligne sans id, dans la vue racine uniquement.
-    if parent_id is None:
-        pseudo = {"expense": (UNCLASSIFIED, "IS NULL AND t.amount_cents < 0"),
-                  "income": (UNCLASSIFIED, "IS NULL AND t.amount_cents > 0"),
-                  "savings": (INTERNAL_TRANSFERS, "= 'savings'")}
+    # Pas de ligne pour les revenus : un crédit non classé n'est pas un revenu.
+    if parent_id is None and kind in pseudo:
         label, condition = pseudo[kind]
         cents = conn.execute(
             f"""

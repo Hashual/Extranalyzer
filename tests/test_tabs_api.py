@@ -98,10 +98,10 @@ def test_tabs_are_registered_in_order(env):
 def test_overview_summary_totals(env):
     client = env[0]
     s = get(client, "/overview/summary", **JAN)
-    # Dépenses : 120 + 60 + 40 + 10 + 25 (à classer) ; revenus : 2000 + 7 (à classer).
-    # Épargne (compte courant seul) : 300 − 50 = 250 ; solde = 2007 − 255 − 250.
-    assert s["totals"] == {"expenses": "255.00", "income": "2007.00", "savings_net": "250.00",
-                           "balance": "1502.00", "unclassified_debits": "25.00", "unclassified_credits": "7.00"}
+    # Dépenses : 120 + 60 + 40 + 10 + 25 (à classer) ; revenus : 2000 (le crédit à classer de 7 reste à part).
+    # Épargne (compte courant seul) : 300 − 50 = 250 ; solde = 2000 − 255 − 250.
+    assert s["totals"] == {"expenses": "255.00", "income": "2000.00", "savings_net": "250.00",
+                           "balance": "1495.00", "unclassified_debits": "25.00", "unclassified_credits": "7.00"}
     assert s["compare_totals"] is None
     assert s["by_category"] == [
         {"id": env[2]["Courses"], "name": "Courses", "amount": "120.00"},
