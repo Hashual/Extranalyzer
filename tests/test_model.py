@@ -260,3 +260,11 @@ def test_pair_only_evidence_never_auto():
 def test_examples_are_trusted_by_default():
     assert ex("MAGASIN ALPHA", COURSES).trusted is True
     assert predict(build_index([]), "X", -1, 1).trusted_support == 0
+
+
+def test_neighbours_cached_per_label_and_direction():
+    idx = build_index([ex("MAGASIN ALPHA", COURSES, -4500), ex("MAGASIN ALPHA", SALAIRE, 4500)])
+    debit = idx.neighbours("MAGASIN ALPHA", -12)
+    assert idx.neighbours("MAGASIN ALPHA", -999999) is debit         # même libellé, même sens : calcul réutilisé
+    credit = idx.neighbours("MAGASIN ALPHA", 12)
+    assert [e.category_id for _, e in debit] == [COURSES] and [e.category_id for _, e in credit] == [SALAIRE]

@@ -82,6 +82,7 @@ class Index:
         for g in grams:
             df.update(g.keys())
         self._df = df
+        self._cache: dict[tuple[str, int], list[tuple[float, Example]]] = {}   # l'index ne change plus
         self._inverted: dict[int, dict[str, list[tuple[int, float]]]] = {1: {}, -1: {}}
         for pos, (example, g) in enumerate(zip(self._examples, grams)):
             sign = _sign(example.amount_cents)
@@ -104,9 +105,17 @@ class Index:
         return {g: v / norm for g, v in vec.items()}
 
     def neighbours(self, label_norm: str, amount_cents: int) -> list[tuple[float, Example]]:
+        """Voisins (similarité, exemple) ; ne dépendent que du libellé et du sens (résultat partagé : ne pas
+        modifier la liste renvoyée)."""
         sign = _sign(amount_cents)
         if sign == 0 or not self._examples:
             return []
+        key = (label_norm, sign)
+        if key not in self._cache:
+            self._cache[key] = self._neighbours(label_norm, sign)
+        return self._cache[key]
+
+    def _neighbours(self, label_norm: str, sign: int) -> list[tuple[float, Example]]:
         qvec = self._vectorize(_trigrams(label_norm))
         postings = self._inverted[sign]
         dots: dict[int, float] = {}
