@@ -159,6 +159,17 @@ def _collision_message(conn: sqlite3.Connection, keyed: list[_KeyedTx],
     return f"opérations déjà importées avec le relevé du compte {number} au {statement_date or 'inconnu'}"
 
 
+def _api_overlap_message(conn: sqlite3.Connection, account_id: int, section: ParsedSection) -> str | None:
+    """Motif d'erreur si la période du relevé contient déjà des opérations d'une source externe (synchro bancaire) :
+    l'intégrer les compterait deux fois. Un relevé sans opération ne peut rien doubler."""
+    if not section.transactions:
+        return None
+    first = min(t.op_date for t in section.transactions).isoformat()
+    if repo.api_overlap(conn, account_id, first, section.statement_date.isoformat()):
+        return API_OVERLAP
+    return None
+
+
 def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, gap: Decimal,
                 digest: str, exclude_id: int | None = None) -> str:
     if gap != 0:
@@ -199,8 +210,8 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
     status = _status_for(conn, account_id, statement_date, gap, digest)
     keyed = _keyed(section)
     message = _collision_message(conn, keyed) if status == "ok" else None
-    if message is None and status == "ok" and repo.api_overlap(conn, account_id, statement_date):
-        message = API_OVERLAP
+    if message is None and status == "ok":
+        message = _api_overlap_message(conn, account_id, section)
     if message is not None:
         status = "error"
     section_id = repo.insert_section(conn, document_id, account_id, statement_date,
@@ -276,7 +287,8 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
             repo.update_section(conn, section_id, opening, closing, 0, "superseded", digest)
             return 0
         keyed = _keyed(section)
-        message = _collision_message(conn, keyed, None if old is None else old[0])
+        message = (_collision_message(conn, keyed, None if old is None else old[0])
+                   or _api_overlap_message(conn, account_id, section))
         if message is not None:
             repo.update_section(conn, section_id, opening, closing, 0, "error", digest, message)
             return 0
@@ -308,7 +320,8 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     if old_status == "superseded":       # déjà tranché : on n'y touche pas
         return _report(section, "superseded", gap, section_id), False
     if old_status == "ok":
-        message = KEPT_OLD_VERSION if gap != 0 else _collision_message(conn, keyed, section_id)
+        message = KEPT_OLD_VERSION if gap != 0 else (_collision_message(conn, keyed, section_id)
+                                                     or _api_overlap_message(conn, account_id, section))
         if message is not None:
             if message != KEPT_OLD_VERSION:
                 message = f"{message} ; {KEPT_OLD_VERSION}"
@@ -319,7 +332,8 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     else:                                # error ou conflict : réévaluée comme à l'import
         orphaned, unmirrored = 0, []
         status = _status_for(conn, account_id, statement_date, gap, digest, exclude_id=section_id)
-        message = _collision_message(conn, keyed, section_id) if status == "ok" else None
+        message = (_collision_message(conn, keyed, section_id)
+                   or _api_overlap_message(conn, account_id, section)) if status == "ok" else None
         if message is not None:
             status = "error"
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),

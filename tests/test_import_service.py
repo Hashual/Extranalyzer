@@ -625,3 +625,19 @@ def test_pdf_before_first_bank_operation_is_imported(tmp_path, conn, pdf_dir):
     _api_tx(conn, "00000000001", "2024-04-11")      # après le relevé du 10/04/2024
     report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
     assert [s.status for s in report.sections] == ["ok"]
+
+
+def test_reanalyse_keeps_api_overlap_guard(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    reports = reanalyse_all(conn, pdf_dir, PARSERS, Recorder())
+    assert [(s.status, s.message) for r in reports for s in r.sections] == \
+        [("error", "période déjà couverte par la synchronisation bancaire")]
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 0
+
+
+def test_pdf_fills_hole_between_synced_periods(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-01-15")      # synchro ancienne, puis consentement expiré
+    _api_tx(conn, "00000000001", "2024-05-02")      # reprise après le trou
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]

@@ -15,6 +15,8 @@ from app.sources.enablebanking.link import (Runner, SyncSummary, complete_connec
 
 log = logging.getLogger(__name__)
 
+FINISH_WAIT_S = 120      # attente maximale d'une synchro en cours au retour de la banque
+
 
 class NotConfigured(RuntimeError):
     pass
@@ -64,7 +66,7 @@ class BankRuntime:
 
     def start(self) -> str:
         client = self._client()
-        return self._write(_committed(lambda conn: start_connection(conn, client, self.bank, self._clock())))
+        return start_connection(self._write, client, self.bank, self._clock())
 
     def finish(self, code: str, state: str) -> SyncSummary:
         """Retour de la banque : `state` vérifié et consommé, session ouverte, comptes rattachés, première synchro
@@ -74,15 +76,17 @@ class BankRuntime:
         session = client.create_session(code)
         connected = self._write(_committed(lambda conn: complete_connection(conn, client, session, self._clock())))
         self._close_sessions(connected.replaced_sessions)
-        return self.sync("connexion")
+        # la connexion est établie : attendre une synchro planifiée en cours plutôt que d'échouer
+        return self.sync("connexion", wait_s=FINISH_WAIT_S)
 
     def reject(self, state: str) -> None:
         """Retour en erreur : le `state` est consommé (vérifié) sans ouvrir de session."""
         self._write(_committed(lambda conn: consume_state(conn, state, self._clock())))
 
-    def sync(self, trigger: str) -> SyncSummary:
+    def sync(self, trigger: str, wait_s: float = 0) -> SyncSummary:
         client = self._client()
-        if not self._sync_lock.acquire(blocking=False):
+        acquired = self._sync_lock.acquire(timeout=wait_s) if wait_s > 0 else self._sync_lock.acquire(blocking=False)
+        if not acquired:
             raise SyncBusy("une synchronisation est déjà en cours")
         try:
             return sync(self._read, self._write, client, trigger, self._on_new, self._clock)

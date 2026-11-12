@@ -106,8 +106,16 @@ def test_balance_gap_without_pdf_is_impossible(conn):
 def test_api_overlap(conn):
     _section(conn, "2025-01-10")
     store_fetch(conn, "enablebanking", AccountFetch(1, [_tx("2025-03-05", "-1.00")]))
-    assert repo.api_overlap(conn, 1, "2025-03-10")           # période 11/01 → 10/03 : contient le 05/03
-    assert not repo.api_overlap(conn, 1, "2025-02-10")       # trou antérieur : importable
+    assert repo.api_overlap(conn, 1, "2025-02-11", "2025-03-10")      # période 11/02 → 10/03 : contient le 05/03
+    assert not repo.api_overlap(conn, 1, "2025-01-11", "2025-02-10")  # trou antérieur : importable
+    assert not repo.api_overlap(conn, 1, "2025-03-06", "2025-04-10")  # trou postérieur (synchro interrompue)
     _section(conn, "2025-03-04")
-    assert not repo.api_overlap(conn, 1, "2025-03-04")       # relevé du 04/03 : opération API après
-    assert repo.api_overlap(conn, 1, "2025-04-10")           # période 05/03 → 10/04
+    assert not repo.api_overlap(conn, 1, "2025-02-05", "2025-03-04")  # relevé du 04/03 : opération API après
+    assert repo.api_overlap(conn, 1, "2025-02-05", "2025-04-10")      # bornée par le relevé précédent (04/03)
+
+
+def test_pdf_number_joins_account_created_by_bank(conn):
+    bank_account = conn.execute("INSERT INTO accounts(number, label, kind, source) VALUES "
+                                "('FR7600000000000000000000399', 'Livret', 'savings', 'enablebanking')").lastrowid
+    assert repo.upsert_account(conn, "00000000003", "LIVRET BLEU") == bank_account
+    assert repo.upsert_account(conn, "123", "COURT") not in (bank_account, 1)

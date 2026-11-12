@@ -68,6 +68,7 @@ def test_transactions_follow_continuation_key():
 
 @pytest.mark.parametrize("status, body, kind", [
     (401, {"error": "EXPIRED_SESSION", "message": "Session expired"}, SessionExpired),
+    (403, {"error": "CONSENT_REVOKED", "message": "Revoked"}, SessionExpired),
     (429, {"error": "ASPSP_RATE_LIMIT_EXCEEDED", "message": "Too many"}, RateLimited),
     (500, {"message": "boom"}, EnableBankingError),
     (502, "pas du json", EnableBankingError),

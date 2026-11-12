@@ -70,7 +70,7 @@ def test_start_connection_registers_state_and_returns_bank_url(conn):
         {"name": "Autre banque", "country": "FR"},
         {"name": "Credit Mutuel", "country": "FR", "maximum_consent_validity": 15552000}]})
     bank.on("POST", "/auth", {"url": "https://banque.example/auth?x=1", "authorization_id": "a"})
-    url = start_connection(conn, _client(bank), BANK, NOW)
+    url = start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
     assert url == "https://banque.example/auth?x=1"
     body = bank.calls("POST", "/auth")[0]["body"]
     assert body["aspsp"] == {"name": "Credit Mutuel", "country": "FR"}
@@ -83,7 +83,7 @@ def test_start_connection_registers_state_and_returns_bank_url(conn):
 def test_start_connection_unknown_bank(conn):
     bank = FakeBank().on("GET", "/aspsps", {"aspsps": [{"name": "Autre banque"}]})
     with pytest.raises(EnableBankingError, match="absente"):
-        start_connection(conn, _client(bank), BANK, NOW)
+        start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
 
 
 def test_state_is_single_use_and_expires(conn):
@@ -318,3 +318,48 @@ def test_bank_settings_from_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("EXTRANALYZER_SYNC_HOURS", "-1")
     with pytest.raises(ConfigError):
         _sync_hours()
+
+
+def test_failed_auth_request_drops_state(conn):
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [{"name": "Crédit Mutuel"}]})
+    bank.on("POST", "/auth", (500, {"message": "panne"}))
+    with pytest.raises(EnableBankingError):
+        start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
+    assert conn.execute("SELECT COUNT(*) FROM bank_auth_states").fetchone()[0] == 0
+
+
+def test_renewal_restarts_with_longest_history(conn):
+    _connected(conn, _account("u-cc", IBAN_CC, id_hash="H1"))
+    _run(conn, _client(_bank_for("u-cc", [booked("2025-03-03", "1.00", "CB")])))
+    complete_connection(conn, _client(FakeBank()),
+                        _session(_account("u-cc-2", IBAN_CC, id_hash="H1"), session_id="sess-2"), NOW)
+    conn.commit()
+    bank = _bank_for("u-cc-2", [])
+    _run(conn, _client(bank))
+    assert bank.calls("GET", "/accounts/u-cc-2/transactions")[0]["query"]["strategy"] == "longest"
+
+
+def test_old_window_uses_longest(conn):
+    _connected(conn, _account("u-cc", IBAN_CC))
+    _run(conn, _client(_bank_for("u-cc", [booked("2025-03-03", "1.00", "CB")])))
+    bank = _bank_for("u-cc", [])
+    _run(conn, _client(bank), now=NOW + timedelta(days=120))
+    assert bank.calls("GET", "/accounts/u-cc/transactions")[0]["query"]["strategy"] == "longest"
+
+
+def test_manual_sync_during_pause_says_so(conn):
+    _connected(conn, _account("u-cc", IBAN_CC))
+    _run(conn, _client(FakeBank().on("GET", "/accounts/u-cc/transactions", (429, {"error": "ASPSP_RATE_LIMIT"}))))
+    summary = _run(conn, _client(_bank_for("u-cc", [])), now=NOW + timedelta(hours=1))
+    assert summary.added == 0 and "limite de consultations" in summary.message
+
+
+def test_expiry_of_replaced_link_is_ignored(conn):
+    from app.sources.enablebanking.client import SessionExpired
+    from app.sources.enablebanking.link import Fetched, write_sync
+    _connected(conn, _account("u-cc", IBAN_CC))
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-2", IBAN_CC), session_id="sess-2"), NOW)
+    write_sync(conn, [Fetched(1, 1, None, SessionExpired(401, "EXPIRED_SESSION", "x"))], "planifiée", Recorder(),
+               NOW, NOW)
+    assert conn.execute("SELECT session_id, status FROM bank_links ORDER BY id").fetchall() == \
+        [("sess-1", "replaced"), ("sess-2", "active")]

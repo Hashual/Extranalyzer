@@ -180,3 +180,14 @@ def test_scheduler_runs_tick():
         assert ticked.wait(2)
     finally:
         scheduler.stop()
+
+
+def test_return_waits_for_running_sync(env):
+    import threading
+    client, conn, fake = env
+    runtime = client.app.state.bank
+    state = _connect(client, fake)
+    runtime._sync_lock.acquire()                    # une synchro planifiée est en cours
+    threading.Timer(0.3, runtime._sync_lock.release).start()
+    response = client.post("/api/tabs/banque/session", json={"code": "c", "state": state}, headers=H)
+    assert response.status_code == 200 and response.json()["added"] == 1
