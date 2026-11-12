@@ -1,4 +1,5 @@
-"""Assemble l'application web : authentification, onglets déclarés, dépôt et ré-analyse des relevés.
+"""Assemble l'application web : authentification, onglets déclarés, dépôt, suppression et ré-analyse des
+relevés.
 
 Lancement : `uvicorn --factory app.main:get_app` (rien n'est construit à l'import du module).
 """
@@ -25,11 +26,11 @@ from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
-from app.importer.service import ImportReport, import_pdf, reanalyse_all, resolve_conflict
+from app.importer.service import ImportReport, delete_document, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
 from app.store.db import connect
 from app.tabs import ENABLED_TABS, load_tabs
-from app.web_json import mask_numbers, report_to_json
+from app.web_json import delete_report_to_json, mask_numbers, report_to_json
 
 log = logging.getLogger(__name__)
 
@@ -220,6 +221,13 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
         except (ValueError, ParseError) as exc:
             raise HTTPException(409, mask_numbers(str(exc))) from None
         return {"id": section_id, "status": status, "orphaned_overrides": orphaned}
+
+    @api.delete("/documents/{document_id}")
+    def delete(document_id: int):
+        report = write(lambda conn: delete_document(conn, document_id, pdf_dir, on_new_transactions))
+        if report is None:
+            raise HTTPException(404, f"relevé {document_id} introuvable")
+        return delete_report_to_json(report)
 
     @api.post("/reanalyse")
     def reanalyse():

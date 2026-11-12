@@ -831,9 +831,9 @@ def test_releves_list(env):
         "filename": "releve-janvier.pdf", "statement_date": "2025-01-31", "imported_at": "2025-02-01T10:00:00"}
     assert docs[1]["sections"] == [
         {"id": 10, "account_label": "Courant fictif", "number_tail": "8901", "statement_date": "2025-01-31",
-         "status": "ok", "gap": "0.00", "tx_count": 2, "message": None},
+         "status": "ok", "gap": "0.00", "tx_count": 2, "other_ok": False, "message": None},
         {"id": 11, "account_label": "Livret fictif", "number_tail": "A2", "statement_date": "2025-01-31",
-         "status": "conflict", "gap": "0.00", "tx_count": 0, "message": None},
+         "status": "conflict", "gap": "0.00", "tx_count": 0, "other_ok": False, "message": None},
     ]
     error = docs[0]["sections"][0]
     assert (error["status"], error["gap"], error["message"]) == ("error", "-12.34", "écart de -12,34 €")

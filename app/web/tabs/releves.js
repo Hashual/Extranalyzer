@@ -1,5 +1,6 @@
-// Onglet « Relevés » : relevés importés, statut de réconciliation de chaque section, conflits à trancher
-// et ré-analyse de tous les relevés (routes du cœur /sections/{id}/resolve et /reanalyse).
+// Onglet « Relevés » : relevés importés, statut de réconciliation de chaque section, conflits à trancher,
+// suppression d'un relevé et ré-analyse de tous les relevés (routes du cœur /sections/{id}/resolve,
+// DELETE /documents/{id} et /reanalyse).
 import { el, emptyNote, formatDate, money, section } from "../ui.js";
 
 export const id = "releves";
@@ -13,7 +14,7 @@ const STATUS = {
 };
 
 let lastReports = null;      // résultat de la dernière ré-analyse, affiché une fois après le rafraîchissement
-let lastNotice = null;       // avertissement d'une action (conflit tranché), affiché une fois
+let lastNotice = null;       // compte rendu d'une action ({ kind, lines }), affiché une fois
 
 function orphanedNote(n) {
   return n > 0 ? `${n} reclassement(s) manuel(s) sans opération correspondante (à refaire)` : "";
@@ -25,6 +26,9 @@ function account(s) {
 
 function sectionNote(s) {
   if (s.status === "error") return s.message || "écart de réconciliation";
+  if (s.status === "conflict" && !s.other_ok) {
+    return "Aucune version de ce relevé n'est retenue (la précédente a été supprimée).";
+  }
   if (s.status === "conflict") return "Diffère d'une version déjà importée de ce relevé.";
   if (s.status === "superseded") return "Version non retenue : aucune opération importée.";
   return "";
@@ -32,24 +36,27 @@ function sectionNote(s) {
 
 function conflictActions(s, ctx, error) {
   const resolve = async (accept, button) => {
-    const question = accept
-      ? `Remplacer les opérations de ${account(s)} au ${formatDate(s.statement_date)} par cette nouvelle version ?`
-      : `Garder la version déjà importée de ${account(s)} au ${formatDate(s.statement_date)} et écarter celle-ci ?`;
+    const where = `${account(s)} au ${formatDate(s.statement_date)}`;
+    const question = !s.other_ok
+      ? (accept ? `Importer les opérations de cette version de ${where} ?` : `Écarter cette version de ${where} ?`)
+      : accept
+        ? `Remplacer les opérations de ${where} par cette nouvelle version ?`
+        : `Garder la version déjà importée de ${where} et écarter celle-ci ?`;
     if (!window.confirm(question)) return;
     button.disabled = true;
     error.textContent = "";
     try {
       const result = await ctx.api.post(`/sections/${s.id}/resolve`, { accept });
       const note = orphanedNote(result.orphaned_overrides);
-      if (note) lastNotice = `${account(s)} au ${formatDate(s.statement_date)} : ${note}`;
+      if (note) lastNotice = { kind: "error", lines: [`${account(s)} au ${formatDate(s.statement_date)} : ${note}`] };
       await ctx.refresh();
     } catch (e) {
       error.textContent = `Action impossible : ${e.message}`;
       button.disabled = false;
     }
   };
-  const replace = el("button", { type: "button", className: "primary", text: "Remplacer" });
-  const keep = el("button", { type: "button", text: "Garder l'ancien" });
+  const replace = el("button", { type: "button", className: "primary", text: s.other_ok ? "Remplacer" : "Importer" });
+  const keep = el("button", { type: "button", text: s.other_ok ? "Garder l'ancien" : "Écarter" });
   replace.addEventListener("click", () => resolve(true, replace));
   keep.addEventListener("click", () => resolve(false, keep));
   return el("div", { className: "row-actions" }, replace, keep);
@@ -74,12 +81,57 @@ function sectionsTable(doc, ctx) {
   return el("div", { className: "table-wrap scroll-x" }, el("table", { className: "data-table" }, head, body));
 }
 
+function plural(n, one, many) {
+  return `${n} ${n > 1 ? many : one}`;
+}
+
+function deletionLines(name, result) {
+  const lines = [`« ${name} » supprimé : ${plural(result.deleted_transactions, "opération retirée", "opérations retirées")}.`];
+  if (result.reclassified_mirrors > 0) {
+    lines.push(result.reclassified_mirrors > 1
+      ? `${result.reclassified_mirrors} virements internes d'autres relevés ont perdu leur contrepartie et ont été reclassés.`
+      : "1 virement interne d'un autre relevé a perdu sa contrepartie et a été reclassé.");
+  }
+  for (const v of result.pending_versions) {
+    lines.push(`Une autre version de ••${v.number_tail} au ${formatDate(v.statement_date)} est à trancher `
+      + "(rien n'a été importé à sa place).");
+  }
+  return lines;
+}
+
+function deleteAction(doc, ctx) {
+  const name = doc.filename || `Document ${doc.id}`;
+  const count = doc.sections.reduce((n, s) => n + s.tx_count, 0);
+  const button = el("button", { type: "button", className: "danger", text: "Supprimer" });
+  const error = el("p", { className: "error", attrs: { role: "alert" } });
+  button.addEventListener("click", async () => {
+    const question = `Supprimer le relevé « ${name} » et ${plural(count, "opération", "opérations")} ?
+
+`
+      + "Le PDF conservé est effacé. Vos reclassements manuels sont gardés : ils se ré-appliqueront "
+      + "si vous réimportez ce relevé.";
+    if (!window.confirm(question)) return;
+    button.disabled = true;
+    error.textContent = "";
+    try {
+      const result = await ctx.api.delete(`/documents/${doc.id}`);
+      lastNotice = { kind: result.pending_versions.length ? "error" : "muted", lines: deletionLines(name, result) };
+      await ctx.refresh();     // pastille « À classer », comptes et plage de dates, puis cet onglet
+    } catch (e) {
+      error.textContent = `Suppression impossible : ${e.message}`;
+      button.disabled = false;
+    }
+  });
+  return el("div", { className: "row-actions" }, button, error);
+}
+
 function documentCard(doc, ctx) {
   const dated = doc.statement_date ? `Relevé du ${formatDate(doc.statement_date)}` : "Relevé sans date";
   const imported = doc.imported_at ? ` · importé le ${formatDate(doc.imported_at.slice(0, 10))}` : "";
   return section(doc.filename || `Document ${doc.id}`,
     el("p", { className: "muted", text: dated + imported }),
-    doc.sections.length ? sectionsTable(doc, ctx) : emptyNote("Aucune section reconnue."));
+    doc.sections.length ? sectionsTable(doc, ctx) : emptyNote("Aucune section reconnue."),
+    deleteAction(doc, ctx));
 }
 
 function reportsCard(reports, documents) {
@@ -131,7 +183,10 @@ export async function render(container, ctx) {
   lastReports = null;
   lastNotice = null;
   const nodes = [toolbar(ctx)];
-  if (notice) nodes.push(el("p", { className: "error", attrs: { role: "status" }, text: notice }));
+  if (notice) {
+    nodes.push(el("div", { className: notice.kind, attrs: { role: "status" } },
+      notice.lines.map((text) => el("p", { text }))));
+  }
   if (reports) nodes.push(reportsCard(reports, documents));
   if (documents.length) nodes.push(...documents.map((d) => documentCard(d, ctx)));
   else nodes.push(emptyNote("Aucun relevé importé. Utilisez « Déposer un relevé »."));
