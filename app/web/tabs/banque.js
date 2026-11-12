@@ -1,10 +1,17 @@
-// Onglet « Banque » : connexion Enable Banking, comptes bancaires (rattachement, contrôle de solde), synchros.
+// Onglet « Banque » : connexions Enable Banking (une par banque), comptes bancaires (rattachement, type, contrôle
+// de solde), ajout d'une banque choisie dans la liste d'Enable Banking, synchros.
 import { el, emptyNote, formatDate, money, section } from "../ui.js";
 
 export const id = "banque";
 export const title = "Banque";
 
 const LINK_STATUS = { active: "Connectée", expired: "Consentement expiré" };
+const KIND_LABELS = { checking: "Courant", savings: "Épargne", exchange: "Change", wallet: "Portefeuille" };
+// Pays couverts par Enable Banking les plus probables ; FR par défaut
+const COUNTRIES = [["FR", "France"], ["BE", "Belgique"], ["LU", "Luxembourg"], ["DE", "Allemagne"],
+  ["ES", "Espagne"], ["IT", "Italie"], ["NL", "Pays-Bas"], ["PT", "Portugal"], ["IE", "Irlande"],
+  ["AT", "Autriche"], ["FI", "Finlande"], ["SE", "Suède"], ["DK", "Danemark"], ["NO", "Norvège"],
+  ["PL", "Pologne"], ["EE", "Estonie"], ["LV", "Lettonie"], ["LT", "Lituanie"]];
 const ALERT_TEXT = {
   ok: "",
   expiring: (a) => `Le consentement expire dans ${a.days_left} jour(s) : renouvelez la connexion.`,
@@ -47,11 +54,18 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
   return el("span", { className: "row-actions" }, button, error);
 }
 
-function connectButton(ctx, label) {
-  return action(label, async () => {
-    const { url } = await ctx.api.post("/tabs/banque/connect");
-    window.location.assign(url);
-  }, ctx, { className: "primary" });
+async function goToBank(ctx, aspspName, country) {
+  const { url } = await ctx.api.post("/tabs/banque/connect", { aspsp_name: aspspName, country });
+  window.location.assign(url);
+}
+
+function connectButton(ctx, label, link) {
+  return action(label, () => goToBank(ctx, link.aspsp_name, link.country), ctx, { className: "primary" });
+}
+
+/** Normalisation de recherche : minuscules, sans accents. */
+function fold(text) {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
 function notConfigured() {
@@ -64,36 +78,91 @@ function notConfigured() {
     el("p", { className: "muted", text: "Marche à suivre détaillée : README, section « Récupération bancaire »." }));
 }
 
-function linkCard(data, ctx) {
-  const link = data.link;
-  if (!link) {
-    return section("Connexion",
-      el("p", { text: `Aucune banque connectée. La connexion vous redirige vers ${data.aspsp_name} pour autoriser `
-        + "la lecture de vos comptes." }),
-      el("p", { className: "muted", text: "Importez d'abord tous vos relevés PDF jusqu'au plus récent : les opérations "
-        + "de la banque ne sont reprises qu'après le dernier relevé de chaque compte." }),
-      connectButton(ctx, "Connecter ma banque"));
-  }
-  const alert = data.alert && ALERT_TEXT[data.alert.status];
-  const lines = [
+function linkCard(link, data, ctx) {
+  const state = link.state;
+  const alert = state && ALERT_TEXT[state.status];
+  return section(link.aspsp_name,
     el("p", {}, el("span", { className: `status ${link.status === "active" ? "ok" : "error"}`,
       text: LINK_STATUS[link.status] || link.status }),
-      ` ${link.aspsp_name} — consentement valable jusqu'au ${formatDate(link.valid_until.slice(0, 10))}`),
-    alert ? el("p", { className: "error", attrs: { role: "status" }, text: alert(data.alert) }) : null,
+      ` — consentement valable jusqu'au ${formatDate(link.valid_until.slice(0, 10))}`),
+    alert ? el("p", { className: "error", attrs: { role: "status" }, text: alert(state) }) : null,
     link.error ? el("p", { className: "muted", text: `Dernière erreur : ${link.error}` }) : null,
     link.retry_after ? el("p", { className: "muted",
       text: `Limite de la banque atteinte : prochaine synchro planifiée après ${dateTime(link.retry_after)}.` }) : null,
-    el("p", { className: "muted", text: `Dernière synchronisation : ${dateTime(data.alert?.last_sync)}` }),
+    el("p", { className: "muted", text: `Dernière synchronisation : ${dateTime(state?.last_sync)}` }),
     el("div", { className: "filters" },
       link.status === "active"
-        ? action("Synchroniser maintenant", async () => summaryText(await ctx.api.post("/tabs/banque/sync")), ctx,
-          { className: "primary" })
+        ? action("Synchroniser", async () => summaryText(await ctx.api.post("/tabs/banque/sync",
+          { link_id: link.id })), ctx, { className: "primary" })
         : null,
-      connectButton(ctx, link.status === "active" ? "Renouveler le consentement" : "Reconnecter la banque"),
-      action("Déconnecter", () => ctx.api.post("/tabs/banque/disconnect"), ctx,
-        { confirm: "Déconnecter la banque ? Les opérations déjà importées sont conservées." })),
-  ];
-  return section("Connexion", ...lines);
+      connectButton(ctx, link.status === "active" ? "Renouveler le consentement" : "Reconnecter", link),
+      action("Déconnecter", () => ctx.api.post(`/tabs/banque/links/${link.id}/disconnect`), ctx,
+        { confirm: `Déconnecter ${link.aspsp_name} ? Les opérations déjà importées sont conservées.` })),
+    accountsTable(link, data, ctx));
+}
+
+/** Ajout d'une banque : pays, recherche par nom dans la liste d'Enable Banking, puis autorisation. */
+function addBankCard(data, ctx) {
+  const hasLinks = data.links.length > 0;
+  const country = el("select", { attrs: { "aria-label": "Pays de la banque" } },
+    COUNTRIES.map(([code, name]) => el("option", { value: code, text: `${name} (${code})` })));
+  country.value = COUNTRIES.some(([code]) => code === data.country) ? data.country : "FR";
+  const search = el("input", { type: "search", placeholder: "Rechercher une banque…",
+    attrs: { "aria-label": "Rechercher une banque" } });
+  const list = el("select", { size: 8, className: "bank-list", attrs: { "aria-label": "Banques proposées" } });
+  const info = el("p", { className: "muted", attrs: { role: "status" } });
+  const connected = new Set(data.links.map((l) => `${fold(l.aspsp_name)}|${l.country}`));
+  let banks = [];
+
+  function fill() {
+    const wanted = fold(search.value.trim());
+    const shown = banks.filter((b) => fold(b.name).includes(wanted));
+    list.replaceChildren(...shown.slice(0, 300).map((b) => el("option", { value: b.name,
+      text: connected.has(`${fold(b.name)}|${b.country}`) ? `${b.name} (déjà connectée)` : b.name })));
+    const preferred = shown.find((b) => fold(b.name) === fold(data.aspsp_name || ""));
+    if (preferred && !wanted) list.value = preferred.name;
+    else if (shown.length === 1) list.value = shown[0].name;
+    info.textContent = banks.length ? `${shown.length} banque(s) sur ${banks.length}` : "";
+  }
+
+  async function load() {
+    info.textContent = "Chargement de la liste des banques…";
+    list.replaceChildren();
+    try {
+      banks = (await ctx.api.get("/tabs/banque/aspsps", { country: country.value })).aspsps;
+      fill();
+    } catch (e) {
+      banks = [];
+      info.textContent = e.message;
+    }
+  }
+
+  country.addEventListener("change", load);
+  search.addEventListener("input", fill);
+  const connect = action("Connecter cette banque", async () => {
+    if (!list.value) throw new Error("choisissez une banque dans la liste");
+    await goToBank(ctx, list.value, country.value);
+  }, ctx, { className: "primary" });
+  const details = el("details", { className: "card", open: !hasLinks },
+    el("summary", { text: hasLinks ? "Ajouter une banque" : "Connecter une banque" }),
+    el("p", { text: "Choisissez votre banque : la connexion vous redirige vers elle pour autoriser la lecture de "
+      + "vos comptes (lecture seule)." }),
+    el("p", { className: "muted", text: "Application Enable Banking en mode restreint : liez aussi cette banque "
+      + "dans le Control Panel d'Enable Banking (« Link accounts ») avant de vous connecter." }),
+    el("p", { className: "muted", text: "Si vous avez des relevés PDF de cette banque, importez-les d'abord jusqu'au "
+      + "plus récent. Sans relevé, ses comptes sont créés automatiquement (« API seulement »)." }),
+    el("div", { className: "filters" }, country, search),
+    list, info, connect);
+  let loaded = false;
+  const ensure = () => {
+    if (details.open && !loaded) {
+      loaded = true;
+      load();
+    }
+  };
+  details.addEventListener("toggle", ensure);
+  queueMicrotask(ensure);
+  return details;
 }
 
 function balanceCell(a, ctx) {
@@ -143,21 +212,50 @@ function attachCell(a, data, ctx) {
   return el("span", { className: "row-actions" }, ...nodes);
 }
 
-function accountsCard(data, ctx) {
-  if (!data.accounts.length) return section("Comptes", emptyNote("Aucun compte renvoyé par la banque."));
+/** Type du compte : modifiable (courant ou épargne) pour un compte « API seulement », sinon celui des relevés. */
+function kindCell(a, ctx) {
+  if (!a.account_id) return el("span", { className: "muted", text: "—" });
+  if (!a.api_only) return el("span", { text: KIND_LABELS[a.account_kind] || a.account_kind });
+  const select = el("select", { attrs: { "aria-label": "Type du compte" } },
+    el("option", { value: "checking", text: "Courant" }), el("option", { value: "savings", text: "Épargne" }));
+  select.value = a.account_kind;
+  const error = el("span", { className: "error", attrs: { role: "alert" } });
+  select.addEventListener("change", async () => {
+    try {
+      await ctx.api.post(`/tabs/banque/accounts/${a.id}/kind`, { kind: select.value });
+      await ctx.refresh();
+    } catch (e) {
+      error.textContent = e.message;
+    }
+  });
+  return el("span", { className: "row-actions" }, select, el("span", { className: "muted", text: "API seulement" }),
+    error);
+}
+
+function accountsTable(link, data, ctx) {
+  if (!link.accounts.length) return emptyNote("Aucun compte renvoyé par la banque.");
   const head = el("thead", {}, el("tr", {},
-    ["Compte bancaire", "Rattaché à", "Contrôle de solde", "Dernière synchro"].map((h) =>
+    ["Compte bancaire", "Rattaché à", "Type", "Contrôle de solde", "Dernière synchro"].map((h) =>
       el("th", { scope: "col", text: h }))));
-  const body = el("tbody", {}, data.accounts.map((a) => el("tr", {},
+  const body = el("tbody", {}, link.accounts.map((a) => el("tr", {},
     el("td", {}, `${a.name} ••${a.iban_tail}`, a.error ? el("p", { className: "error", text: a.error }) : null),
     el("td", {}, attachCell(a, data, ctx)),
+    el("td", {}, kindCell(a, ctx)),
     el("td", {}, balanceCell(a, ctx)),
     el("td", { text: dateTime(a.last_sync) }))));
-  const unattached = data.accounts.some((a) => !a.account_id && !a.ignored);
-  return section("Comptes",
+  const unattached = link.accounts.some((a) => !a.account_id && !a.ignored);
+  return el("div", {},
     unattached ? el("p", { className: "muted", text: "Un compte « à rattacher » n'est pas synchronisé : au-delà de "
       + "90 jours, son historique peut être perdu si le choix tarde." }) : null,
     el("div", { className: "table-wrap scroll-x" }, el("table", { className: "data-table" }, head, body)));
+}
+
+function globalActions(data, ctx) {
+  const active = data.links.filter((l) => l.status === "active");
+  if (active.length < 2) return null;
+  return el("div", { className: "filters" },
+    action("Synchroniser toutes les banques", async () => summaryText(await ctx.api.post("/tabs/banque/sync")), ctx,
+      { className: "primary" }));
 }
 
 function runsCard(data) {
@@ -186,15 +284,16 @@ export async function render(container, ctx) {
   const data = await ctx.api.get("/tabs/banque/status");
   const notice = lastNotice;
   lastNotice = null;
-  if (!data.configured && !data.link) {
+  if (!data.configured && !data.links.length) {
     container.replaceChildren(notConfigured());
     return;
   }
   container.replaceChildren(...[
     notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
     data.configured ? null : notConfigured(),
-    linkCard(data, ctx),
-    data.link ? accountsCard(data, ctx) : null,
+    globalActions(data, ctx),
+    ...data.links.map((link) => linkCard(link, data, ctx)),
+    data.configured ? addBankCard(data, ctx) : null,
     runsCard(data),
     data.configured ? pasteCard(ctx) : null,
   ].filter(Boolean));
