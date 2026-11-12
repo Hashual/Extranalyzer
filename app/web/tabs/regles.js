@@ -147,15 +147,17 @@ function ruleRow(rule, meta, ctx) {
     }
   });
 
+  // `data-label` : intitulé de colonne affiché devant chaque champ quand le tableau passe en fiches (téléphone).
+  const cell = (label, className, ...children) => el("td", { className, attrs: { "data-label": label } }, ...children);
   return el("tr", {},
-    el("td", { className: "pattern" }, fields.pattern, box),
-    el("td", {}, fields.match),
-    el("td", {}, fields.direction),
-    el("td", {}, fields.account),
-    el("td", {}, fields.category),
-    el("td", { className: "num" }, fields.priority),
-    el("td", { className: "num", text: String(rule.tx_count) }),
-    el("td", {}, el("div", { className: "row-actions" }, previewButton, save, remove), error));
+    cell("Motif", "pattern", fields.pattern, box),
+    cell("Correspondance", "", fields.match),
+    cell("Sens", "", fields.direction),
+    cell("Compte", "", fields.account),
+    cell("Catégorie", "", fields.category),
+    cell("Priorité", "num", fields.priority),
+    el("td", { className: "num", attrs: { "data-label": "Opérations" }, text: String(rule.tx_count) }),
+    el("td", { className: "actions" }, el("div", { className: "row-actions" }, previewButton, save, remove), error));
 }
 
 function rulesTable(rules, meta, ctx) {

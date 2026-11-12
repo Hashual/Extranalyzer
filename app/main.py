@@ -190,6 +190,10 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         response.headers.update(SECURITY_HEADERS)
         if is_api:
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            # Revalidation à chaque chargement (304 si inchangé) : après un déploiement, un téléphone ne garde
+            # pas d'anciens modules JS face à un index.html neuf.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     api = APIRouter(prefix="/api")
