@@ -29,6 +29,13 @@
           Déposer un relevé
           <input id="upload-input" type="file" accept="application/pdf,.pdf" multiple hidden>
         </label>
+        <div class="privacy" role="group" aria-label="Masquage des montants">
+          <button id="privacy-toggle" type="button" class="privacy-toggle" aria-pressed="false">Masquer les montants</button>
+          <details id="privacy-menu" class="privacy-menu">
+            <summary aria-label="Choisir les montants affichés" title="Choisir les montants affichés">▾</summary>
+            <div id="privacy-list" class="privacy-list"></div>
+          </details>
+        </div>
         <button id="logout" type="button" class="link">Déconnexion</button>
       </div>
       <div class="bar-row period">

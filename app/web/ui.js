@@ -1,14 +1,24 @@
 // Petits utilitaires d'affichage partagés par les onglets.
 // Tout texte venant du serveur passe par textContent (les libellés viennent des relevés bancaires).
+import { isMasked, MASK, signKind } from "./privacy.js";
 
 const EUR = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
 const PCT = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 1, signDisplay: "exceptZero" });
 const SCORE = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 0 });
 const MONTH = new Intl.DateTimeFormat("fr-FR", { month: "short", year: "numeric", timeZone: "UTC" });
 
-/** Montant (chaîne "123.45" de l'API) → « 123,45 € ». */
-export function money(value) {
-  return EUR.format(Number(value));
+/**
+ * Montant (chaîne "123.45" de l'API) → « 123,45 € », ou « ****** » si son type est masqué.
+ * `kind` : expense, income, savings ou balance (voir privacy.js) ; par défaut, selon le signe.
+ */
+export function money(value, kind = signKind(value)) {
+  return isMasked(kind) ? MASK : EUR.format(Number(value));
+}
+
+/** Variation signée (« +12,00 € », « -3,00 € »), masquée comme un montant. */
+export function signedMoney(value, kind) {
+  if (isMasked(kind)) return MASK;
+  return `${Number(value) > 0 ? "+" : ""}${EUR.format(Number(value))}`;
 }
 
 export function percent(ratio) {
@@ -55,10 +65,11 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
-/** Montant coloré : négatif en rouge, positif en vert (classes CSS). */
-export function amount(value, tag = "span") {
+/** Montant coloré : négatif en rouge, positif en vert (classes CSS) ; masqué, sans couleur (le signe se lirait). */
+export function amount(value, kind = signKind(value), tag = "span") {
   const n = Number(value);
-  return el(tag, { className: `amount ${n < 0 ? "neg" : n > 0 ? "pos" : ""}`.trim(), text: money(value) });
+  if (isMasked(kind)) return el(tag, { className: "amount masked", text: MASK, title: "Montant masqué" });
+  return el(tag, { className: `amount ${n < 0 ? "neg" : n > 0 ? "pos" : ""}`.trim(), text: money(value, kind) });
 }
 
 /** Vrai si l'onglet `tabId` est activé (les liens vers un onglet désactivé sont masqués). */
@@ -108,6 +119,9 @@ export function categorySelect(categories, selectedId, onChange, label = "Catég
 /** Tableau de transactions ; `reclass(tx, categoryId)` est appelé quand la catégorie change. */
 export function transactionsTable(rows, { categories, accounts, reclass }) {
   const accountLabel = new Map((accounts || []).map((a) => [a.id, `${a.label} ••${a.number_tail}`]));
+  // Type de montant selon la catégorie (une sous-catégorie a le type de sa racine), sinon selon le signe.
+  const kindOf = new Map(categories.flatMap((root) =>
+    [[root.id, root.kind], ...root.children.map((child) => [child.id, root.kind])]));
   const head = el("thead", {}, el("tr", {},
     ["Date", "Libellé", "Compte", "Montant", "Catégorie"].map((h) =>
       el("th", { scope: "col", className: h === "Montant" ? "num" : "", text: h }))));
@@ -137,7 +151,7 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
       el("td", { className: "date", text: formatDate(tx.op_date) }),
       labelCell,
       el("td", { className: "account", text: accountLabel.get(tx.account_id) || `#${tx.account_id}` }),
-      el("td", { className: "num" }, amount(tx.amount)),
+      el("td", { className: "num" }, amount(tx.amount, kindOf.get(tx.category_id) || signKind(tx.amount))),
       el("td", { className: "category" }, select, error)));
   }
   return el("div", { className: "table-wrap" }, el("table", { className: "tx-table" }, head, body));

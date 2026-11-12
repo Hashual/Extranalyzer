@@ -142,7 +142,7 @@ function reportsCard(reports, documents) {
     if (r.error) lines.push(`${name} : ${r.error}`);
     for (const s of r.sections) {
       const status = STATUS[s.status] || s.status;
-      const gap = s.status === "error" ? ` (${s.message || `écart ${money(s.gap)}`})` : "";
+      const gap = s.status === "error" ? ` (${s.message || `écart ${money(s.gap, "balance")}`})` : "";
       const orphaned = s.orphaned_overrides > 0 ? ` — ${orphanedNote(s.orphaned_overrides)}` : "";
       lines.push(`${name} — ••${s.number_tail} au ${formatDate(s.statement_date)} : ${status}${gap}${orphaned}`);
     }
