@@ -30,7 +30,9 @@ EXPIRY_WARNING_DAYS = 14
 RATE_LIMIT_PAUSE = timedelta(hours=6)
 LOOKBACK_DAYS = 10
 LONG_WINDOW_DAYS = 89
-DEFAULT_CONSENT_S = 90 * 86400
+DEFAULT_CONSENT_S = 90 * 86400   # durée retenue si la banque n'annonce pas son maximum
+WANTED_CONSENT_S = 180 * 86400   # durée souhaitée, plafonnée par le maximum de la banque
+CONSENT_MARGIN_S = 3600          # marge sous le maximum : décalage d'horloge et latence (sinon refus de la banque)
 MIN_NUMBER_DIGITS = 8        # un numéro de compte PDF plus court ne sert pas au rattachement automatique
 
 T = TypeVar("T")
@@ -64,13 +66,20 @@ def start_connection(write: Runner, client: Client, bank: BankSettings, now: dat
     if aspsp is None:
         raise EnableBankingError(0, "ASPSP_NOT_FOUND",
                                  f"banque « {bank.aspsp_name} » absente de la liste d'Enable Banking ({bank.country})")
-    validity = aspsp.get("maximum_consent_validity")
-    seconds = validity if isinstance(validity, int) and validity > 0 else DEFAULT_CONSENT_S
+    seconds = consent_seconds(aspsp.get("maximum_consent_validity"))
     state = secrets.token_urlsafe(32)
     write(lambda conn: _save_state(conn, state, now))
     try:
-        answer = client.start_auth(str(aspsp["name"]), bank.country, _iso(now + timedelta(seconds=seconds)), state,
-                                   bank.redirect_url)
+        try:
+            answer = client.start_auth(str(aspsp["name"]), bank.country, _iso(now + timedelta(seconds=seconds)),
+                                       state, bank.redirect_url)
+        except EnableBankingError as exc:
+            # la banque annonce une limite plus courte que /aspsps : une seule nouvelle tentative sous cette limite
+            stated = _stated_limit(exc)
+            if stated is None or consent_seconds(stated) >= seconds:
+                raise
+            answer = client.start_auth(str(aspsp["name"]), bank.country,
+                                       _iso(now + timedelta(seconds=consent_seconds(stated))), state, bank.redirect_url)
         url = answer.get("url")
         if not isinstance(url, str) or not url.startswith("https://"):
             raise EnableBankingError(0, "INVALID_AUTH_URL",
@@ -79,6 +88,26 @@ def start_connection(write: Runner, client: Client, bank: BankSettings, now: dat
         write(lambda conn: _drop_state(conn, state))
         raise
     return url
+
+
+def consent_seconds(maximum) -> int:
+    """Durée de consentement à demander : min(souhaitée, maximum annoncé par la banque) moins une marge.
+
+    Demander exactement le maximum est refusé dès que l'horloge locale avance d'une seconde sur celle de la banque
+    (WRONG_REQUEST_PARAMETERS). Un maximum absent ou illisible vaut 90 jours."""
+    try:
+        limit = int(float(maximum)) if not isinstance(maximum, bool) else 0
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        limit = DEFAULT_CONSENT_S
+    return max(min(WANTED_CONSENT_S, limit) - CONSENT_MARGIN_S, 60)
+
+
+def _stated_limit(exc: EnableBankingError) -> int | None:
+    """Durée maximale (secondes) citée par un refus « consent validity more than N seconds »."""
+    found = re.search(r"more than (\d+) seconds", exc.message)
+    return int(found.group(1)) if found else None
 
 
 def _save_state(conn: sqlite3.Connection, state: str, now: datetime) -> None:

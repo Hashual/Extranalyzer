@@ -74,7 +74,7 @@ def test_start_connection_registers_state_and_returns_bank_url(conn):
     assert url == "https://banque.example/auth?x=1"
     body = bank.calls("POST", "/auth")[0]["body"]
     assert body["aspsp"] == {"name": "Credit Mutuel", "country": "FR"}
-    assert body["access"]["valid_until"] == "2025-09-06T08:00:00+00:00"          # 180 jours
+    assert body["access"]["valid_until"] == "2025-09-06T07:00:00+00:00"          # 180 jours moins 1 h de marge
     assert body["redirect_url"] == BANK.redirect_url
     assert conn.execute("SELECT state FROM bank_auth_states").fetchone()[0] == body["state"]
     assert len(body["state"]) >= 40
@@ -363,3 +363,54 @@ def test_expiry_of_replaced_link_is_ignored(conn):
                NOW, NOW)
     assert conn.execute("SELECT session_id, status FROM bank_links ORDER BY id").fetchall() == \
         [("sess-1", "replaced"), ("sess-2", "active")]
+
+
+@pytest.mark.parametrize("maximum, expected", [
+    (7776000, "2025-06-08T07:00:00+00:00"),       # banque limitée à 90 jours
+    (15552000, "2025-09-06T07:00:00+00:00"),      # 180 jours
+    (31536000, "2025-09-06T07:00:00+00:00"),      # au-delà de 180 jours : 180 jours souhaités suffisent
+    ("7776000", "2025-06-08T07:00:00+00:00"),     # nombre transmis en texte
+    (None, "2025-06-08T07:00:00+00:00"),          # maximum absent : 90 jours
+])
+def test_consent_validity_respects_bank_maximum(conn, maximum, expected):
+    aspsp = {"name": "Crédit Mutuel", "country": "FR"}
+    if maximum is not None:
+        aspsp["maximum_consent_validity"] = maximum
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [aspsp]})
+    bank.on("POST", "/auth", {"url": "https://banque.example/auth", "authorization_id": "a"})
+    start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
+    valid_until = bank.calls("POST", "/auth")[0]["body"]["access"]["valid_until"]
+    assert valid_until == expected
+    limit = datetime.fromisoformat(valid_until) - NOW
+    assert limit.total_seconds() < int(maximum or 7776000)        # toujours strictement sous le maximum
+
+
+def test_alert_follows_validity_granted_by_bank(conn):
+    # la banque accorde moins que demandé : l'alerte suit la date réellement accordée (renvoyée par /sessions)
+    complete_connection(conn, _client(FakeBank()),
+                        _session(_account("u-cc", IBAN_CC), valid_until="2025-03-20T08:00:00+00:00"), NOW)
+    assert bank_status(conn, NOW)["status"] == "expiring"
+    assert bank_status(conn, NOW)["days_left"] == 10
+
+
+def test_retries_once_under_limit_stated_by_bank(conn):
+    # /aspsps annonce 180 jours mais la banque refuse au-delà de 90 : une nouvelle demande sous cette limite
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [{"name": "Crédit Mutuel", "maximum_consent_validity": 15552000}]})
+    bank.on("POST", "/auth",
+            (422, {"error": "WRONG_REQUEST_PARAMETERS",
+                   "message": "ASPSP does not support consent validity more than 7776000 seconds in the future"}),
+            {"url": "https://banque.example/auth", "authorization_id": "a"})
+    assert start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW) == "https://banque.example/auth"
+    sent = [c["body"]["access"]["valid_until"] for c in bank.calls("POST", "/auth")]
+    assert sent == ["2025-09-06T07:00:00+00:00", "2025-06-08T07:00:00+00:00"]
+    assert conn.execute("SELECT COUNT(*) FROM bank_auth_states").fetchone()[0] == 1
+
+
+def test_refusal_without_shorter_limit_is_reported(conn):
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [{"name": "Crédit Mutuel", "maximum_consent_validity": 7776000}]})
+    bank.on("POST", "/auth", (422, {"error": "WRONG_REQUEST_PARAMETERS",
+                                    "message": "consent validity more than 7776000 seconds in the future"}))
+    with pytest.raises(EnableBankingError):
+        start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
+    assert len(bank.calls("POST", "/auth")) == 1      # même limite : pas de nouvelle tentative inutile
+    assert conn.execute("SELECT COUNT(*) FROM bank_auth_states").fetchone()[0] == 0
