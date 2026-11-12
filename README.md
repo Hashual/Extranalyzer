@@ -158,16 +158,21 @@ Conception : `docs/superpowers/specs/2026-11-12-enable-banking-design.md`.
    ```
 
    Facultatif : `SYNC_HOURS` (12 par défaut ; 0 désactive la synchro planifiée, le bouton reste) et
-   `EB_ASPSP` (nom de la banque dans la liste d'Enable Banking, « Crédit Mutuel » par défaut).
+   `EB_ASPSP` (banque proposée par défaut dans la liste d'Enable Banking, « Crédit Mutuel » par défaut).
    Le conteneur doit pouvoir joindre `https://api.enablebanking.com` en sortie.
-5. Onglet **Banque** → « Connecter ma banque » : authentification sur le site de la banque, retour dans l'appli,
-   rattachement des comptes (automatique quand l'IBAN contient le numéro des relevés) et première synchro.
-   Regarder ensuite le contrôle de solde de chaque compte.
+5. Onglet **Banque** → « Connecter une banque » : choisir le pays et la banque dans la liste d'Enable Banking,
+   authentification sur le site de la banque, retour dans l'appli, rattachement des comptes (automatique quand
+   l'IBAN contient le numéro des relevés) et première synchro. Regarder ensuite le contrôle de solde de chaque compte.
+   Plusieurs banques peuvent être connectées (« Ajouter une banque ») : chacune a son consentement, son
+   renouvellement et sa déconnexion ; la synchro planifiée les parcourt toutes, la panne de l'une n'arrête pas les
+   autres. En mode restreint, chaque nouvelle banque doit aussi être liée dans le Control Panel (« Link accounts »).
+   Les comptes d'une banque sans relevé PDF sont créés « API seulement » ; leur type (courant ou épargne) est déduit
+   de la banque et de leur nom, et se corrige dans l'onglet.
 6. Repli : si la page de retour ne s'ouvre pas, copier l'adresse complète affichée par le navigateur (avec
    `code=` et `state=`) dans « Le retour de la banque n'a pas abouti ? », dans les 30 minutes.
 
-Le consentement dure en général 180 jours ; une pastille « Banque : renouveler » apparaît 14 jours avant son
-échéance (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
+Le consentement dure en général 180 jours ; une pastille « Banque : renouveler » apparaît 14 jours avant
+l'échéance de la première banque concernée (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
 identifiant de session ni IBAN complet n'est journalisé ou affiché.
 
 ### Dépannage

@@ -24,8 +24,7 @@ Kraken (session ultérieure, hors périmètre ici).
 
 **Non-objectifs**
 - Paiements ou toute écriture vers la banque : lecture seule (service AIS uniquement).
-- Plusieurs banques ou plusieurs utilisateurs simultanés : une seule banque connectée suffit (le modèle de données
-  n'interdit pas d'en ajouter une).
+- Plusieurs utilisateurs simultanés. (Plusieurs banques : ajouté ensuite, voir § « Plusieurs banques ».)
 - Kraken, portefeuilles crypto, vue des actifs.
 - Fusion approximative d'opérations PDF et API (rapprochement par libellé ou date voisine) : rendue inutile par la
   frontière de date (§ 5.5).
@@ -342,3 +341,18 @@ Aucun appel réseau : un faux transport rejoue des réponses JSON fictives.
 - Nom exact de la banque renvoyé par `/aspsps` et prise en charge des comptes de particuliers.
 - Forme des libellés API : après la première synchro, vérifier dans « À classer » si les règles existantes les
   reconnaissent ; sinon ajuster les règles (ou la composition du libellé, recalculable grâce au JSON brut gardé).
+
+## Plusieurs banques (ajout du 2026-11-12)
+
+- L'onglet Banque liste les banques d'Enable Banking d'un pays (`GET /aspsps`, cache d'une heure, FR par défaut,
+  recherche sans accents) ; `EXTRANALYZER_EB_ASPSP` n'est plus que la banque présélectionnée.
+- Un lien `bank_links` par banque. Une nouvelle session ne remplace que les liens (actifs ou expirés) dont elle
+  reprend un compte (même `identification_hash` ou IBAN), ou un lien de la même banque resté sans compte : connecter
+  une deuxième banque ne touche pas la première, renouveler une banque remplace son seul lien.
+- Synchro : tous les liens actifs (planifiée, bouton « toutes ») ou un seul ; une session expirée, une limite ou une
+  réponse inattendue n'arrête que le lien ou le compte concerné.
+- Comptes d'une banque sans relevé : comptes `source = 'enablebanking'` (« API seulement ») ; type épargne si
+  `cash_account_type = SVGS` ou nom évocateur (livret, épargne, LDDS, LEP, PEL, CEL), sinon courant ; modifiable
+  dans l'onglet pour ces seuls comptes. Libellé complété du nom de la banque s'il existe déjà.
+- Pastille : l'état le plus grave de tous les liens (expiré > à renouveler > erreur), nommant la banque quand il y
+  en a plusieurs ; comptes à rattacher additionnés.

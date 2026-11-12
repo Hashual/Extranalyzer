@@ -470,3 +470,6 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 .privacy-title { margin: 0; font-weight: 600; }
 .privacy-note { margin: 0; font-size: 0.85em; }
 .amount.masked { color: var(--muted); letter-spacing: 0.08em; }
+
+/* Onglet Banque : liste des banques proposées par Enable Banking */
+.bank-list { display: block; width: 100%; max-width: 28rem; margin: 0.5rem 0; }
