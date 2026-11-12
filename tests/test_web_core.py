@@ -199,7 +199,7 @@ def test_security_headers(client):
         assert r.headers["referrer-policy"] == "no-referrer"
     assert client.get("/api/tabs").headers["cache-control"] == "no-store"
     assert client.post("/api/logout").headers["cache-control"] == "no-store"      # réponse 403 du garde
-    assert "no-store" not in client.get("/static/app.js").headers.get("cache-control", "")
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"     # revalidé, jamais périmé
 
 
 def test_healthz_is_public_and_carries_security_headers(settings):

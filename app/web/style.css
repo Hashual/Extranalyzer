@@ -53,7 +53,8 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  overflow-x: hidden;
+  /* `clip` et non `hidden` : `hidden` fait du body un conteneur de défilement et casse la barre collante. */
+  overflow-x: clip;
 }
 
 [hidden] { display: none !important; }
@@ -132,6 +133,7 @@ input, select {
 }
 
 .brand { margin-right: auto; }
+.bar-toggle { display: none; }      /* bouton de période : téléphone seulement */
 
 .link { border: none; background: none; color: var(--muted); text-decoration: underline; }
 
@@ -415,6 +417,41 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 }
 
 @media (max-width: 720px) {
+  /* 16 px minimum : en dessous, iOS zoome la page à chaque champ touché. */
+  input, select { font-size: 16px; }
+
+  /* Barre repliée : marque, « À classer » et bouton de période ; le reste se déplie au besoin. */
+  .bar-toggle { display: inline-block; }
+  .bar-toggle::after { content: " ▾"; }
+  .bar.open .bar-toggle::after { content: " ▴"; }
+  .bar:not(.open) .upload,
+  .bar:not(.open) .privacy,
+  .bar:not(.open) #logout,
+  .bar:not(.open) .period { display: none; }
+  .bar.open { max-height: 100vh; overflow-y: auto; }
+  .bar-row { gap: 0.4rem; }
+  .pill, .bar-toggle { padding: 0.3rem 0.6rem; }
+
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile { padding: 0.6rem 0.7rem; }
+  .tile-value { font-size: 1.15rem; overflow-wrap: anywhere; }
+
+  /* Règles : une fiche par règle, intitulé de colonne devant chaque champ. */
+  .rules-table thead { display: none; }
+  .rules-table, .rules-table tbody, .rules-table tr, .rules-table td { display: block; width: 100%; }
+  .rules-table tr { padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+  .rules-table td { border: none; padding: 0.15rem 0; text-align: left; }
+  .rules-table td.num { text-align: left; }
+  .rules-table td[data-label] {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .rules-table td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 0.85rem; }
+  .rules-table td[data-label] > * { grid-column: 2; }
+  .rules-table input[type="text"], .rules-table select { width: 100%; min-width: 0; max-width: none; }
+
   .split { grid-template-columns: minmax(0, 1fr); }
   .bar-row-button { grid-template-columns: minmax(0, 7rem) minmax(0, 1fr) auto; }
 

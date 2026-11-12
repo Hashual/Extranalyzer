@@ -26,6 +26,7 @@
         <strong class="brand">Extranalyzer</strong>
         <button id="unclassified" type="button" class="pill" disabled>À classer (0)</button>
         <button id="bank-alert" type="button" class="pill alert" hidden></button>
+        <button id="bar-toggle" type="button" class="bar-toggle" aria-expanded="false" aria-controls="bar-extra">Période</button>
         <label class="button upload">
           Déposer un relevé
           <input id="upload-input" type="file" accept="application/pdf,.pdf" multiple hidden>
@@ -39,7 +40,7 @@
         </div>
         <button id="logout" type="button" class="link">Déconnexion</button>
       </div>
-      <div class="bar-row period">
+      <div id="bar-extra" class="bar-row period">
         <label>Du <input id="period-from" type="date"></label>
         <label>au <input id="period-to" type="date"></label>
         <div class="shortcuts" role="group" aria-label="Raccourcis de période">

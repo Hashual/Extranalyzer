@@ -241,6 +241,7 @@ function renderBar(route) {
   $("period-from").value = route.from;
   $("period-to").value = route.to;
   $("compare").value = route.cmp;
+  $("bar-toggle").textContent = `${shortDate(route.from)} – ${shortDate(route.to)}`;
 
   const list = $("accounts-list");
   list.replaceChildren();
@@ -302,7 +303,19 @@ function updateRoute(changes) {
   go({ ...readRoute(), ...changes });
 }
 
+/** « 2026-10-01 » → « 01/10/26 » (bouton de période de la barre repliée sur téléphone). */
+function shortDate(value) {
+  const m = /^(\d{2})(\d{2})-(\d{2})-(\d{2})$/.exec(value || "");
+  return m ? `${m[4]}/${m[3]}/${m[2]}` : "Période";
+}
+
 function setupBar() {
+  // Sur téléphone, la barre est repliée : ce bouton affiche la période et déplie les autres commandes.
+  $("bar-toggle").addEventListener("click", () => {
+    const open = document.querySelector(".bar").classList.toggle("open");
+    $("bar-toggle").setAttribute("aria-expanded", String(open));
+  });
+
   const onDates = () => {
     const from = $("period-from").value;
     const to = $("period-to").value;
