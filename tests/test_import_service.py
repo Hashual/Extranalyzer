@@ -595,3 +595,33 @@ def test_reanalyse_final_pass_reraises_second_failure(tmp_path, conn, pdf_dir):
         reanalyse_all(conn, pdf_dir, PARSERS, flaky)
     assert flaky.calls == 2 and not conn.in_transaction
     assert {r[0] for r in conn.execute("SELECT suggestion_reason FROM transactions")} == {None}
+
+
+def _api_tx(conn, account_number, day):
+    from app.sources.base import AccountFetch, FetchedTransaction
+    from app.sources.service import store_fetch
+    account_id = repo_upsert(conn, account_number)
+    store_fetch(conn, "enablebanking", AccountFetch(account_id, [
+        FetchedTransaction(date.fromisoformat(day), None, "CB API FICTIVE", Decimal("-1.00"))]))
+    conn.commit()
+
+
+def repo_upsert(conn, number):
+    from app.store import repo
+    return repo.upsert_account(conn, number, "C/C EUROCOMPTE TEST")
+
+
+def test_pdf_period_already_covered_by_bank_sync_is_error(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")      # dans la période du relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+                        PARSERS, Recorder())
+    statuses = {s.account_number: (s.status, s.message) for s in report.sections}
+    assert statuses["00000000001"] == ("error", "période déjà couverte par la synchronisation bancaire")
+    assert statuses["00000000002"] == ("ok", None)
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 1
+
+
+def test_pdf_before_first_bank_operation_is_imported(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-11")      # après le relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]

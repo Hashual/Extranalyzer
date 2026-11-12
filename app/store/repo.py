@@ -176,6 +176,16 @@ def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],
     return None
 
 
+def api_overlap(conn: sqlite3.Connection, account_id: int, statement_date: str) -> bool:
+    """Le compte a-t-il des opérations d'une source externe dans la période d'un relevé daté `statement_date`
+    (après le relevé `ok` précédent du même compte, sans borne s'il n'y en a pas, jusqu'à `statement_date`) ?"""
+    previous = conn.execute("SELECT MAX(statement_date) FROM sections WHERE account_id = ? AND status = 'ok' "
+                            "AND statement_date < ?", (account_id, statement_date)).fetchone()[0]
+    return conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND section_id IS NULL AND source != 'pdf' "
+                        "AND op_date <= ? AND (? IS NULL OR op_date > ?) LIMIT 1",
+                        (account_id, statement_date, previous, previous)).fetchone() is not None
+
+
 def list_document_sections(conn: sqlite3.Connection, document_id: int) -> list[tuple]:
     """(id, numéro de compte, statement_date, status, gap_cents) des sections du document."""
     return conn.execute(
