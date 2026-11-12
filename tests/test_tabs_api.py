@@ -91,7 +91,8 @@ def test_invalid_periods_are_rejected(env, path):
 
 def test_tabs_are_registered_in_order(env):
     assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "categories", "transactions",
-                                                                 "epargne", "a_classer", "releves", "regles"]
+                                                                 "epargne", "a_classer", "releves", "banque",
+                                                                 "regles"]
 
 
 # --- Vue d'ensemble ----------------------------------------------------------------------------
