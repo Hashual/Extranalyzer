@@ -269,10 +269,12 @@ function renderBar(route) {
   }
 }
 
+// Pastille commune à toutes les banques connectées : la plus urgente, nommée s'il y en a plusieurs.
+const bankName = (b) => (b.links > 1 && b.aspsp_name ? ` ${b.aspsp_name}` : "");
 const BANK_ALERTS = {
-  expiring: (b) => `Banque : renouveler (${b.days_left} j)`,
-  expired: () => "Banque : connexion expirée",
-  error: () => "Banque : erreur de synchro",
+  expiring: (b) => `Banque : renouveler${bankName(b)} (${b.days_left} j)`,
+  expired: (b) => `Banque${bankName(b)} : connexion expirée`,
+  error: (b) => `Banque${bankName(b)} : erreur de synchro`,
 };
 
 /** Pastille de la connexion bancaire : consentement à renouveler, expiré, erreur ou compte à rattacher. */

@@ -58,27 +58,54 @@ def _digits(text: str | None) -> str:
 
 # --- Connexion -------------------------------------------------------------------------------------------------
 
-def start_connection(write: Runner, client: Client, bank: BankSettings, now: datetime) -> str:
-    """Prépare l'autorisation et renvoie l'URL de la banque. Le `state` (usage unique) est enregistré dans une
-    écriture courte et validée ; aucun appel réseau n'a lieu pendant une transaction."""
-    wanted = fold(bank.aspsp_name)
-    aspsp = next((a for a in client.aspsps(bank.country) if fold(str(a.get("name", ""))) == wanted), None)
+COUNTRY_RE = re.compile(r"[A-Z]{2}")
+
+
+def check_country(country: str | None) -> str:
+    """Code pays ISO à deux lettres (FR, BE…), sinon ValueError."""
+    country = (country or "").strip().upper()
+    if not COUNTRY_RE.fullmatch(country):
+        raise ValueError(f"code pays invalide : {country[:10]!r} (deux lettres attendues, ex. FR)")
+    return country
+
+
+def list_aspsps(client: Client, country: str) -> list[dict]:
+    """Banques proposées par Enable Banking dans un pays : noms uniques, triés sans tenir compte des accents."""
+    country = check_country(country)
+    names: dict[str, str] = {}
+    for aspsp in client.aspsps(country):
+        name = aspsp.get("name")
+        if isinstance(name, str) and name.strip():
+            names.setdefault(fold(name), name.strip())
+    return [{"name": names[key], "country": country} for key in sorted(names)]
+
+
+def start_connection(write: Runner, client: Client, bank: BankSettings, now: datetime,
+                     aspsp_name: str | None = None, country: str | None = None) -> str:
+    """Prépare l'autorisation auprès d'une banque (par défaut celle de la configuration) et renvoie son URL.
+
+    Le `state` (usage unique) est enregistré dans une écriture courte et validée ; aucun appel réseau n'a lieu
+    pendant une transaction."""
+    name = (aspsp_name or "").strip() or bank.aspsp_name
+    country = check_country(country or bank.country)
+    wanted = fold(name)
+    aspsp = next((a for a in client.aspsps(country) if fold(str(a.get("name", ""))) == wanted), None)
     if aspsp is None:
         raise EnableBankingError(0, "ASPSP_NOT_FOUND",
-                                 f"banque « {bank.aspsp_name} » absente de la liste d'Enable Banking ({bank.country})")
+                                 f"banque « {name[:80]} » absente de la liste d'Enable Banking ({country})")
     seconds = consent_seconds(aspsp.get("maximum_consent_validity"))
     state = secrets.token_urlsafe(32)
     write(lambda conn: _save_state(conn, state, now))
     try:
         try:
-            answer = client.start_auth(str(aspsp["name"]), bank.country, _iso(now + timedelta(seconds=seconds)),
+            answer = client.start_auth(str(aspsp["name"]), country, _iso(now + timedelta(seconds=seconds)),
                                        state, bank.redirect_url)
         except EnableBankingError as exc:
             # la banque annonce une limite plus courte que /aspsps : une seule nouvelle tentative sous cette limite
             stated = _stated_limit(exc)
             if stated is None or consent_seconds(stated) >= seconds:
                 raise
-            answer = client.start_auth(str(aspsp["name"]), bank.country,
+            answer = client.start_auth(str(aspsp["name"]), country,
                                        _iso(now + timedelta(seconds=consent_seconds(stated))), state, bank.redirect_url)
         url = answer.get("url")
         if not isinstance(url, str) or not url.startswith("https://"):
@@ -136,7 +163,10 @@ class Connected:
 
 
 def complete_connection(conn: sqlite3.Connection, client: Client, session: dict, now: datetime) -> Connected:
-    """Enregistre la session ouverte par `POST /sessions` et ses comptes, puis les rattache."""
+    """Enregistre la session ouverte par `POST /sessions` et ses comptes, puis les rattache.
+
+    Plusieurs banques peuvent être connectées en même temps. Un lien n'est remplacé (renouvellement) que s'il
+    partage un compte avec la nouvelle session, ou s'il vise la même banque et n'a plus aucun compte."""
     session_id = session.get("session_id")
     if not isinstance(session_id, str) or not session_id:
         raise EnableBankingError(0, "INVALID_SESSION", "session invalide renvoyée par Enable Banking")
@@ -146,20 +176,31 @@ def complete_connection(conn: sqlite3.Connection, client: Client, session: dict,
         valid_until = _iso(_parse(str(access.get("valid_until"))))
     except ValueError:
         valid_until = _iso(now + timedelta(seconds=DEFAULT_CONSENT_S))
-    replaced = [r[0] for r in conn.execute("SELECT session_id FROM bank_links WHERE status = 'active'")]
-    conn.execute("UPDATE bank_links SET status = 'replaced' WHERE status = 'active'")
+    aspsp_name, aspsp_country = str(aspsp.get("name", "")), str(aspsp.get("country", ""))
     link_id = conn.execute(
         "INSERT INTO bank_links(provider, session_id, aspsp_name, aspsp_country, valid_until, status, created_at) "
         "VALUES (?, ?, ?, ?, ?, 'active', ?)",
-        (SOURCE, session_id, str(aspsp.get("name", "")), str(aspsp.get("country", "")), valid_until, _iso(now))
-    ).lastrowid
+        (SOURCE, session_id, aspsp_name, aspsp_country, valid_until, _iso(now))).lastrowid
+    previous_links: set[int] = set()
     for account in session.get("accounts") or []:
         if isinstance(account, dict) and isinstance(account.get("uid"), str):
-            _register_account(conn, link_id, account)
+            previous = _register_account(conn, link_id, account)
+            if previous is not None and previous != link_id:
+                previous_links.add(previous)
+    replaced: list[str] = []
+    for old_id, old_session, old_name, old_country in conn.execute(
+            "SELECT id, session_id, aspsp_name, aspsp_country FROM bank_links "
+            "WHERE status IN ('active', 'expired') AND id != ? ORDER BY id", (link_id,)).fetchall():
+        same_bank = fold(old_name) == fold(aspsp_name) and old_country == aspsp_country
+        empty = conn.execute("SELECT 1 FROM external_accounts WHERE link_id = ? LIMIT 1", (old_id,)).fetchone() is None
+        if old_id in previous_links or (same_bank and empty):
+            conn.execute("UPDATE bank_links SET status = 'replaced' WHERE id = ?", (old_id,))
+            replaced.append(old_session)
     return Connected(link_id, replaced)
 
 
-def _register_account(conn: sqlite3.Connection, link_id: int, account: dict) -> None:
+def _register_account(conn: sqlite3.Connection, link_id: int, account: dict) -> int | None:
+    """Enregistre un compte renvoyé par la banque ; renvoie le lien d'origine d'un compte déjà connu (renouvellement)."""
     ident = account.get("account_id") if isinstance(account.get("account_id"), dict) else {}
     iban = ident.get("iban") if isinstance(ident.get("iban"), str) else None
     id_hash = account.get("identification_hash") if isinstance(account.get("identification_hash"), str) else None
@@ -168,19 +209,21 @@ def _register_account(conn: sqlite3.Connection, link_id: int, account: dict) -> 
               account.get("currency"), account.get("cash_account_type"))
     previous = None
     if id_hash:
-        previous = conn.execute("SELECT id FROM external_accounts WHERE identification_hash = ? ORDER BY id DESC",
-                                (id_hash,)).fetchone()
+        previous = conn.execute("SELECT id, link_id FROM external_accounts WHERE identification_hash = ? "
+                                "ORDER BY id DESC", (id_hash,)).fetchone()
     if previous is None and iban:
-        previous = conn.execute("SELECT id FROM external_accounts WHERE iban = ? ORDER BY id DESC", (iban,)).fetchone()
+        previous = conn.execute("SELECT id, link_id FROM external_accounts WHERE iban = ? ORDER BY id DESC",
+                                (iban,)).fetchone()
     if previous is not None:      # renouvellement : le rattachement et l'historique de synchro sont conservés
         conn.execute("UPDATE external_accounts SET link_id = ?, uid = ?, identification_hash = ?, iban = ?, name = ?, "
                      "currency = ?, cash_account_type = ?, last_error = NULL, last_sync_at = NULL WHERE id = ?",
                      (*values, previous[0]))     # last_sync_at NULL : historique long à la première synchro
-        return
+        return previous[1]
     external_id = conn.execute(
         "INSERT INTO external_accounts(link_id, uid, identification_hash, iban, name, currency, cash_account_type) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)", values).lastrowid
     _auto_attach(conn, external_id)
+    return None
 
 
 def _candidates(conn: sqlite3.Connection, iban: str | None) -> list[int]:
@@ -203,17 +246,47 @@ def _auto_attach(conn: sqlite3.Connection, external_id: int) -> None:
                      (_create_account(conn, external_id), external_id))
 
 
+SAVINGS_NAME_RE = re.compile(r"livret|[eé]pargne|\b(?:ldds?|lep|pel|cel)\b", re.IGNORECASE)
+API_KINDS = ("checking", "savings")
+
+
+def account_kind(cash_account_type: str | None, name: str | None) -> str:
+    """Type d'un compte « API seulement » : épargne si la banque le dit (SVGS) ou si son nom l'indique
+    (livret, LDDS, PEL…), sinon courant."""
+    if (cash_account_type or "").upper() == "SVGS" or SAVINGS_NAME_RE.search(name or ""):
+        return "savings"
+    return "checking"
+
+
 def _create_account(conn: sqlite3.Connection, external_id: int) -> int:
-    uid, id_hash, iban, name, kind = conn.execute(
-        "SELECT uid, identification_hash, iban, name, cash_account_type FROM external_accounts WHERE id = ?",
-        (external_id,)).fetchone()
+    """Compte « API seulement » (sans relevé PDF) pour un compte bancaire. Son libellé est celui de la banque,
+    complété du nom de l'établissement s'il existe déjà (deux « Compte courant » de banques différentes)."""
+    uid, id_hash, iban, name, kind, bank_name = conn.execute(
+        "SELECT e.uid, e.identification_hash, e.iban, e.name, e.cash_account_type, l.aspsp_name "
+        "FROM external_accounts e JOIN bank_links l ON l.id = e.link_id WHERE e.id = ?", (external_id,)).fetchone()
     number = iban or f"EB-{id_hash or uid}"
     existing = conn.execute("SELECT id FROM accounts WHERE number = ?", (number,)).fetchone()
     if existing is not None:
         return existing[0]
+    label = (name or "").strip() or "Compte bancaire"
+    if bank_name and conn.execute("SELECT 1 FROM accounts WHERE label = ?", (label,)).fetchone() is not None:
+        label = f"{label} ({bank_name})"
     return conn.execute("INSERT INTO accounts(number, label, kind, source) VALUES (?, ?, ?, ?)",
-                        (number, name or "Compte bancaire", "savings" if kind == "SVGS" else "checking",
-                         SOURCE)).lastrowid
+                        (number, label, account_kind(kind, name), SOURCE)).lastrowid
+
+
+def set_kind(conn: sqlite3.Connection, external_id: int, kind: str) -> None:
+    """Change le type (courant ou épargne) du compte « API seulement » rattaché à un compte bancaire.
+    Un compte issu des relevés PDF garde le type donné par ses relevés."""
+    if kind not in API_KINDS:
+        raise ValueError(f"type de compte invalide : {str(kind)[:20]!r}")
+    row = conn.execute("SELECT a.id, a.source FROM external_accounts e JOIN accounts a ON a.id = e.account_id "
+                       "WHERE e.id = ?", (external_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"compte bancaire {external_id} introuvable ou non rattaché")
+    if row[1] != SOURCE:
+        raise ValueError("le type d'un compte issu des relevés PDF ne se change pas ici")
+    conn.execute("UPDATE accounts SET kind = ? WHERE id = ?", (kind, row[0]))
 
 
 def attach(conn: sqlite3.Connection, external_id: int, account_id: int | None, *, ignore: bool = False) -> None:
@@ -250,11 +323,16 @@ def accept_gap(conn: sqlite3.Connection, external_id: int) -> None:
         raise LookupError(f"aucun écart à accepter pour le compte bancaire {external_id}")
 
 
-def revoke(conn: sqlite3.Connection) -> list[str]:
-    """Déconnecte la banque : liens actifs ou expirés passés `revoked` ; renvoie les sessions à fermer.
-    Les opérations importées restent."""
-    sessions = [r[0] for r in conn.execute("SELECT session_id FROM bank_links WHERE status IN ('active', 'expired')")]
-    conn.execute("UPDATE bank_links SET status = 'revoked' WHERE status IN ('active', 'expired')")
+def revoke(conn: sqlite3.Connection, link_id: int | None = None) -> list[str]:
+    """Déconnecte une banque (`link_id`) ou toutes : liens actifs ou expirés passés `revoked` ; renvoie les sessions
+    à fermer. Les opérations importées restent."""
+    where, params = "status IN ('active', 'expired')", ()
+    if link_id is not None:
+        where, params = where + " AND id = ?", (link_id,)
+    sessions = [r[0] for r in conn.execute(f"SELECT session_id FROM bank_links WHERE {where}", params)]
+    if link_id is not None and not sessions:
+        raise LookupError(f"connexion bancaire {link_id} introuvable")
+    conn.execute(f"UPDATE bank_links SET status = 'revoked' WHERE {where}", params)
     return sessions
 
 
@@ -286,14 +364,17 @@ def _date_from(conn: sqlite3.Connection, account_id: int) -> date | None:
     return max(starts) if starts else None
 
 
-def fetch_all(conn: sqlite3.Connection, client: Client, now: datetime) -> list[Fetched]:
-    """Récupère les comptes rattachés des liens actifs (lecture seule de la base, appels réseau).
+def fetch_all(conn: sqlite3.Connection, client: Client, now: datetime,
+              only_link: int | None = None) -> list[Fetched]:
+    """Récupère les comptes rattachés des liens actifs, ou d'un seul (lecture seule de la base, appels réseau).
 
-    Une session expirée ou une limite de la banque arrête les autres comptes du même lien."""
+    Chaque lien est indépendant : une session expirée ou une limite de la banque n'arrête que les autres comptes du
+    même lien ; une erreur inattendue sur un compte est enregistrée sans interrompre les autres."""
+    only, params = ("", (_iso(now),)) if only_link is None else (" AND l.id = ?", (_iso(now), only_link))
     rows = conn.execute(
         "SELECT e.id, e.link_id, e.uid, e.account_id, e.last_sync_at FROM external_accounts e "
         "JOIN bank_links l ON l.id = e.link_id WHERE l.status = 'active' AND e.account_id IS NOT NULL "
-        "AND e.ignored = 0 AND (l.retry_after IS NULL OR l.retry_after <= ?) ORDER BY e.id", (_iso(now),)).fetchall()
+        f"AND e.ignored = 0 AND (l.retry_after IS NULL OR l.retry_after <= ?){only} ORDER BY e.id", params).fetchall()
     results: list[Fetched] = []
     stopped: set[int] = set()
     for external_id, link_id, uid, account_id, last_sync in rows:
@@ -309,6 +390,11 @@ def fetch_all(conn: sqlite3.Connection, client: Client, now: datetime) -> list[F
             results.append(Fetched(external_id, link_id, None, exc))
             if isinstance(exc, (SessionExpired, RateLimited)):
                 stopped.add(link_id)
+            continue
+        except Exception as exc:      # noqa: BLE001 — réponse inattendue : ce compte seul est en erreur
+            log.warning("compte bancaire %d : récupération impossible (%s)", external_id, type(exc).__name__)
+            results.append(Fetched(external_id, link_id, None,
+                                   EnableBankingError(0, "UNEXPECTED", f"réponse inattendue ({type(exc).__name__})")))
             continue
         booked = [t for t in raw if is_booked(t)]
         converted = [convert_transaction(t) for t in booked]
@@ -368,10 +454,11 @@ def write_sync(conn: sqlite3.Connection, results: list[Fetched], trigger: str, o
 
 
 def sync(read: Runner, write: Runner, client: Client, trigger: str, on_new: OnNewTransactions,
-         clock: Callable[[], datetime]) -> SyncSummary:
-    """Une synchronisation complète : récupération (sans verrou d'écriture) puis une transaction d'écriture."""
+         clock: Callable[[], datetime], link_id: int | None = None) -> SyncSummary:
+    """Une synchronisation (tous les liens actifs, ou un seul) : récupération sans verrou d'écriture, puis une
+    transaction d'écriture."""
     started = clock()
-    results = read(lambda conn: fetch_all(conn, client, started))
+    results = read(lambda conn: fetch_all(conn, client, started, link_id))
 
     def run(conn: sqlite3.Connection) -> SyncSummary:
         conn.execute("BEGIN")
@@ -391,18 +478,19 @@ def sync(read: Runner, write: Runner, client: Client, trigger: str, on_new: OnNe
 
 # --- État pour l'interface ---------------------------------------------------------------------------------
 
-def bank_status(conn: sqlite3.Connection, now: datetime) -> dict | None:
-    """Alerte de la barre commune : None sans connexion, sinon statut, jours restants, dernière synchro."""
-    link = conn.execute("SELECT id, status, valid_until, last_error FROM bank_links "
-                        "WHERE status IN ('active', 'expired') ORDER BY id DESC LIMIT 1").fetchone()
-    if link is None:
-        return None
-    link_id, status, valid_until, link_error = link
+STATE_RANK = {"expired": 3, "expiring": 2, "error": 1, "ok": 0}
+
+
+def link_state(conn: sqlite3.Connection, link_id: int, now: datetime) -> dict:
+    """État d'un lien : statut (ok, error, expiring, expired), jours restants, comptes à rattacher, dernière synchro."""
+    status, valid_until, link_error = conn.execute(
+        "SELECT status, valid_until, last_error FROM bank_links WHERE id = ?", (link_id,)).fetchone()
     days_left = (_parse(valid_until) - now).days
     account_error = conn.execute("SELECT 1 FROM external_accounts WHERE link_id = ? AND ignored = 0 "
                                  "AND last_error IS NOT NULL LIMIT 1", (link_id,)).fetchone()
-    to_attach = conn.execute("SELECT COUNT(*) FROM external_accounts WHERE link_id = ? AND ignored = 0 "
-                             "AND account_id IS NULL", (link_id,)).fetchone()[0]
+    to_attach, last_sync = conn.execute(
+        "SELECT COALESCE(SUM(account_id IS NULL AND ignored = 0), 0), MAX(last_sync_at) FROM external_accounts "
+        "WHERE link_id = ?", (link_id,)).fetchone()
     if status == "expired" or _parse(valid_until) <= now:
         state = "expired"
     elif days_left <= EXPIRY_WARNING_DAYS:
@@ -411,6 +499,23 @@ def bank_status(conn: sqlite3.Connection, now: datetime) -> dict | None:
         state = "error"
     else:
         state = "ok"
+    return {"status": state, "days_left": max(days_left, 0), "valid_until": valid_until, "to_attach": to_attach,
+            "last_sync": last_sync}
+
+
+def bank_status(conn: sqlite3.Connection, now: datetime) -> dict | None:
+    """Alerte de la barre commune, toutes banques confondues : None sans connexion ; sinon le statut le plus grave et
+    la banque concernée, les jours restants (de cette banque si elle expire, sinon avant la première échéance), les
+    comptes à rattacher et la dernière synchro."""
+    links = conn.execute("SELECT id, aspsp_name FROM bank_links WHERE status IN ('active', 'expired') "
+                         "ORDER BY id").fetchall()
+    if not links:
+        return None
+    states = [(link_state(conn, link_id, now), name) for link_id, name in links]
+    worst, worst_name = max(states, key=lambda s: (STATE_RANK[s[0]["status"]], -s[0]["days_left"]))
+    soonest = min((s[0] for s in states), key=lambda s: s["valid_until"])
+    shown = worst if worst["status"] in ("expired", "expiring") else soonest
     last_sync = conn.execute("SELECT MAX(finished_at) FROM sync_runs").fetchone()[0]
-    return {"status": state, "days_left": max(days_left, 0), "valid_until": valid_until, "last_sync": last_sync,
-            "to_attach": to_attach}
+    return {"status": worst["status"], "aspsp_name": worst_name, "links": len(links),
+            "days_left": shown["days_left"], "valid_until": shown["valid_until"], "last_sync": last_sync,
+            "to_attach": sum(s[0]["to_attach"] for s in states)}
