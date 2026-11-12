@@ -6,8 +6,9 @@ import pytest
 from app.classify.pipeline import on_new_transactions
 from app.config import BankSettings
 from app.sources.enablebanking.client import Client, EnableBankingError
-from app.sources.enablebanking.link import (StateError, accept_gap, attach, bank_status, complete_connection,
-                                            consume_state, revoke, start_connection, sync)
+from app.sources.enablebanking.link import (StateError, accept_gap, account_kind, attach, bank_status,
+                                            complete_connection, consume_state, list_aspsps, revoke, set_kind,
+                                            start_connection, sync)
 from app.store.db import connect
 from fakebank import FakeBank, booked, rsa_key_pem
 
@@ -414,3 +415,134 @@ def test_refusal_without_shorter_limit_is_reported(conn):
         start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW)
     assert len(bank.calls("POST", "/auth")) == 1      # même limite : pas de nouvelle tentative inutile
     assert conn.execute("SELECT COUNT(*) FROM bank_auth_states").fetchone()[0] == 0
+
+
+# --- Plusieurs banques ----------------------------------------------------------------------------------------
+
+IBAN_OTHER = "FR7699999000000000000000777"
+
+
+def _other_session(*accounts, session_id="sess-b", valid_until="2025-06-08T08:00:00+00:00"):
+    return {**_session(*accounts, session_id=session_id, valid_until=valid_until),
+            "aspsp": {"name": "Banque Fictive", "country": "FR"}}
+
+
+def _links(conn):
+    return conn.execute("SELECT session_id, aspsp_name, status FROM bank_links ORDER BY id").fetchall()
+
+
+def test_list_aspsps_unique_sorted_and_country_checked():
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [
+        {"name": "Crédit Mutuel"}, {"name": "Banque Fictive"}, {"name": "banque fictive"}, {"name": ""}, "x"]})
+    assert list_aspsps(_client(bank), "fr") == [{"name": "Banque Fictive", "country": "FR"},
+                                                {"name": "Crédit Mutuel", "country": "FR"}]
+    assert bank.calls("GET", "/aspsps")[0]["query"]["country"] == "FR"
+    with pytest.raises(ValueError):
+        list_aspsps(_client(bank), "FRA")
+
+
+def test_start_connection_with_chosen_bank(conn):
+    bank = FakeBank().on("GET", "/aspsps", {"aspsps": [{"name": "Banque Fictive", "country": "BE"}]})
+    bank.on("POST", "/auth", {"url": "https://banque.example/auth"})
+    start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW, "banque fictive", "be")
+    assert bank.calls("POST", "/auth")[0]["body"]["aspsp"] == {"name": "Banque Fictive", "country": "BE"}
+    with pytest.raises(ValueError):
+        start_connection(lambda fn: fn(conn), _client(bank), BANK, NOW, "Banque Fictive", "Belgique")
+
+
+def test_second_bank_does_not_replace_first(conn):
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-cc", IBAN_CC)), NOW)
+    done = complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER)), NOW)
+    assert done.replaced_sessions == []
+    assert _links(conn) == [("sess-1", "Crédit Mutuel", "active"), ("sess-b", "Banque Fictive", "active")]
+    # compte « API seulement » créé pour la nouvelle banque
+    assert conn.execute("SELECT number, kind, source FROM accounts WHERE number = ?", (IBAN_OTHER,)).fetchone() == \
+        (IBAN_OTHER, "checking", "enablebanking")
+
+
+def test_same_bank_without_accounts_is_replaced(conn):
+    complete_connection(conn, _client(FakeBank()), _other_session(session_id="sess-b"), NOW)
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-cc", IBAN_CC)), NOW)
+    done = complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER),
+                                                                         session_id="sess-c"), NOW)
+    assert done.replaced_sessions == ["sess-b"]
+    assert [status for _, _, status in _links(conn)] == ["replaced", "active", "active"]
+
+
+def test_renewing_expired_link_replaces_it(conn):
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER, id_hash="HO")), NOW)
+    conn.execute("UPDATE bank_links SET status = 'expired'")
+    done = complete_connection(conn, _client(FakeBank()),
+                               _other_session(_account("u-o2", IBAN_OTHER, id_hash="HO"), session_id="sess-c"), NOW)
+    assert done.replaced_sessions == ["sess-b"]
+    assert bank_status(conn, NOW)["status"] == "ok"
+
+
+@pytest.mark.parametrize("kind, name, expected", [
+    ("SVGS", "Compte", "savings"), ("CACC", "Livret A", "savings"), ("CACC", "LDDS fictif", "savings"),
+    ("CACC", "Compte Épargne", "savings"), ("CACC", "Compte chèques", "checking"), (None, None, "checking"),
+    ("CARD", "Carte", "checking")])
+def test_account_kind(kind, name, expected):
+    assert account_kind(kind, name) == expected
+
+
+def test_set_kind_only_for_api_accounts(conn):
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-cc", IBAN_CC)), NOW)
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER)), NOW)
+    set_kind(conn, 2, "savings")
+    assert conn.execute("SELECT kind FROM accounts WHERE number = ?", (IBAN_OTHER,)).fetchone()[0] == "savings"
+    with pytest.raises(ValueError):
+        set_kind(conn, 1, "savings")          # compte des relevés PDF
+    with pytest.raises(ValueError):
+        set_kind(conn, 2, "exchange")
+    with pytest.raises(LookupError):
+        set_kind(conn, 99, "savings")
+
+
+def test_bank_status_takes_all_links_into_account(conn):
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-cc", IBAN_CC)), NOW)        # 180 jours
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER),
+                                                                  valid_until="2025-03-20T08:00:00+00:00"), NOW)
+    found = bank_status(conn, NOW)
+    assert (found["status"], found["aspsp_name"], found["days_left"], found["links"]) == \
+        ("expiring", "Banque Fictive", 10, 2)
+    conn.execute("UPDATE bank_links SET status = 'expired' WHERE session_id = 'sess-b'")
+    assert bank_status(conn, NOW)["status"] == "expired"
+    revoke(conn, 2)
+    assert bank_status(conn, NOW)["status"] == "ok" and bank_status(conn, NOW)["links"] == 1
+
+
+def test_revoke_one_link(conn):
+    complete_connection(conn, _client(FakeBank()), _session(_account("u-cc", IBAN_CC)), NOW)
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER)), NOW)
+    assert revoke(conn, 2) == ["sess-b"]
+    assert _links(conn) == [("sess-1", "Crédit Mutuel", "active"), ("sess-b", "Banque Fictive", "revoked")]
+    with pytest.raises(LookupError):
+        revoke(conn, 2)
+
+
+def test_errors_of_one_bank_do_not_block_the_other(conn, monkeypatch):
+    _connected(conn, _account("u-cc", IBAN_CC))
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER)), NOW)
+    conn.commit()
+    bank = FakeBank().on("GET", "/accounts/u-cc/transactions", (401, {"error": "EXPIRED_SESSION"}))
+    bank.on("GET", "/accounts/u-o/transactions", {"transactions": [booked("2025-03-03", "5.00", "CB AUTRE BANQUE")]})
+    bank.on("GET", "/accounts/u-o/balances", {"balances": []})
+    summary = _run(conn, _client(bank))
+    assert (summary.added, summary.errors) == (1, 1)
+    assert [status for _, _, status in _links(conn)] == ["expired", "active"]
+    # une exception imprévue reste limitée à son compte : la synchro aboutit et l'enregistre
+    from app.sources.enablebanking import link as link_module
+    monkeypatch.setattr(link_module, "pick_balance", lambda balances: 1 / 0)
+    summary = _run(conn, _client(bank), now=NOW + timedelta(hours=1))
+    assert summary.errors == 1 and "ZeroDivisionError" in summary.message
+
+
+def test_sync_one_link_only(conn):
+    _connected(conn, _account("u-cc", IBAN_CC))
+    complete_connection(conn, _client(FakeBank()), _other_session(_account("u-o", IBAN_OTHER)), NOW)
+    conn.commit()
+    bank = _bank_for("u-o", [booked("2025-03-03", "5.00", "CB")])
+    summary = sync(lambda fn: fn(conn), lambda fn: fn(conn), _client(bank), "manuelle", Recorder(), lambda: NOW,
+                   link_id=2)
+    assert summary.added == 1 and not bank.calls("GET", "/accounts/u-cc/transactions")
