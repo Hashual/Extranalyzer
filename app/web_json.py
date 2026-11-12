@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from app.importer.service import ImportReport
+from app.importer.service import DeleteReport, ImportReport
 
 _LONG_NUMBER = re.compile(r"\d{5,}")
 
@@ -33,3 +33,12 @@ def report_to_json(report: ImportReport) -> dict:
         sections.append(data)
     return to_jsonable({"document_id": report.document_id, "duplicate_file": report.duplicate_file,
                         "sections": sections, "error": mask_numbers(report.error)})
+
+
+def delete_report_to_json(report: DeleteReport) -> dict:
+    """Rapport de suppression : `account_number` des autres versions remplacé par `number_tail`."""
+    versions = [{"section_id": v.section_id, "number_tail": v.account_number[-4:],
+                 "statement_date": v.statement_date, "previous_status": v.previous_status}
+                for v in report.pending_versions]
+    return to_jsonable({"document_id": report.document_id, "deleted_transactions": report.deleted_transactions,
+                        "reclassified_mirrors": report.reclassified_mirrors, "pending_versions": versions})

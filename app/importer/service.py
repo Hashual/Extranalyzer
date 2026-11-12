@@ -54,6 +54,24 @@ class ImportReport:
     error: str | None
 
 
+@dataclass
+class PendingVersion:
+    """Autre version d'un relevé dont la version retenue vient d'être supprimée : rien n'est importé
+    automatiquement, elle repasse en `conflict` pour être tranchée dans l'onglet Relevés."""
+    account_number: str
+    statement_date: date
+    section_id: int
+    previous_status: str     # conflict | superseded
+
+
+@dataclass
+class DeleteReport:
+    document_id: int
+    deleted_transactions: int
+    reclassified_mirrors: int       # jambes miroir d'autres relevés désappariées puis reclassées
+    pending_versions: list[PendingVersion]
+
+
 @dataclass(frozen=True)
 class _KeyedTx:
     tx: ParsedTransaction
@@ -288,6 +306,54 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
         _insert_transactions(conn, section_id, account_id, keyed, pending, unmirrored)
         _classify(conn, on_new_transactions, pending)
     return orphaned
+
+
+def delete_document(conn: sqlite3.Connection, document_id: int, pdf_dir: Path,
+                    on_new_transactions: OnNewTransactions) -> DeleteReport | None:
+    """Supprime un document importé, ses sections et leurs transactions ; None si le document n'existe pas.
+
+    - les jambes miroir appariées à ces transactions dans d'autres relevés sont désappariées puis reclassées
+      (une seule passe de classement) ;
+    - si une section `ok` supprimée avait d'autres versions (`conflict` ou `superseded`) dans d'autres
+      documents, aucune n'est importée automatiquement : elles passent en `conflict` (à trancher) et sont
+      signalées dans le rapport ;
+    - les reclassements manuels (`manual_overrides`) sont conservés : ils se ré-appliquent à la réimportation.
+
+    Tout se fait dans une seule transaction ; le PDF conservé n'est effacé qu'après la validation.
+    """
+    stored_path = repo.get_document_path(conn, document_id)
+    if stored_path is None:
+        return None
+    sections = conn.execute(
+        "SELECT s.id, s.account_id, a.number, s.statement_date, s.status FROM sections s "
+        "JOIN accounts a ON a.id = s.account_id WHERE s.document_id = ? ORDER BY s.id", (document_id,)).fetchall()
+    with _transaction(conn):
+        deleted = _count_document_transactions(conn, document_id)
+        unmirrored: list[int] = []
+        pending_versions: list[PendingVersion] = []
+        for section_id, account_id, number, statement_date, status in sections:
+            unmirrored += repo.delete_section_transactions(conn, section_id)
+            if status != "ok":
+                continue
+            for other_id, other_status in repo.other_versions(conn, account_id, statement_date, document_id):
+                if other_status in ("conflict", "superseded"):
+                    repo.set_section_status(conn, other_id, "conflict")
+                    pending_versions.append(PendingVersion(number, date.fromisoformat(statement_date), other_id,
+                                                           other_status))
+        repo.delete_document_rows(conn, document_id)
+        existing = {row[0] for row in conn.execute("SELECT id FROM transactions")}
+        reclassified = [i for i in dict.fromkeys(unmirrored) if i in existing]
+        _classify(conn, on_new_transactions, reclassified)
+    try:
+        (pdf_dir / stored_path).unlink(missing_ok=True)
+    except OSError as exc:      # base déjà validée : le fichier orphelin est sans conséquence
+        log.warning("PDF conservé non supprimé (%s)", type(exc).__name__)
+    return DeleteReport(document_id, deleted, len(reclassified), pending_versions)
+
+
+def _count_document_transactions(conn: sqlite3.Connection, document_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM transactions WHERE section_id IN "
+                        "(SELECT id FROM sections WHERE document_id = ?)", (document_id,)).fetchone()[0]
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,

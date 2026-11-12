@@ -198,3 +198,25 @@ def insert_transaction(conn: sqlite3.Connection, section_id: int, account_id: in
          category_id, manual, 'manual' if manual else None),
     )
     return cur.lastrowid
+
+
+def get_document_path(conn: sqlite3.Connection, document_id: int) -> str | None:
+    """`stored_path` du document, ou None s'il n'existe pas."""
+    row = conn.execute("SELECT stored_path FROM documents WHERE id = ?", (document_id,)).fetchone()
+    return None if row is None else row[0]
+
+
+def other_versions(conn: sqlite3.Connection, account_id: int, statement_date: str,
+                   exclude_document_id: int) -> list[tuple[int, str]]:
+    """(id, status) des sections du même compte et de la même date dans les autres documents."""
+    return conn.execute(
+        "SELECT id, status FROM sections WHERE account_id = ? AND statement_date = ? AND document_id != ? "
+        "ORDER BY id",
+        (account_id, statement_date, exclude_document_id),
+    ).fetchall()
+
+
+def delete_document_rows(conn: sqlite3.Connection, document_id: int) -> None:
+    """Supprime les sections puis le document (leurs transactions doivent déjà avoir été supprimées)."""
+    conn.execute("DELETE FROM sections WHERE document_id = ?", (document_id,))
+    conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
