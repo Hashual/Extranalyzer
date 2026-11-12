@@ -1,6 +1,6 @@
 # Extranalyzer — récupération automatique des comptes via Enable Banking (design)
 
-Date : 2026-11-12 · Statut : **brouillon, à valider par l'utilisateur**
+Date : 2026-11-12 · Statut : **validé par l'utilisateur** (2026-11-12)
 
 ## 1. Intention
 
