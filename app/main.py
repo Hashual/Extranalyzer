@@ -8,6 +8,8 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -28,6 +30,10 @@ from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
 from app.importer.service import ImportReport, delete_document, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
+from app.sources.enablebanking.client import Transport, urllib_transport
+from app.sources.enablebanking.link import bank_status
+from app.sources.enablebanking.runtime import BankRuntime
+from app.sources.scheduler import Scheduler
 from app.store.db import connect
 from app.tabs import ENABLED_TABS, load_tabs
 from app.web_json import delete_report_to_json, mask_numbers, report_to_json
@@ -114,10 +120,11 @@ def _meta(conn: sqlite3.Connection) -> dict:
     unclassified = unclassified_count(conn)
     low, high = conn.execute("SELECT MIN(op_date), MAX(op_date) FROM transactions").fetchone()
     return {"accounts": accounts, "categories": list(roots.values()), "unclassified_count": unclassified,
-            "data_range": {"min": low, "max": high}}
+            "data_range": {"min": low, "max": high}, "bank": bank_status(conn, datetime.now(timezone.utc))}
 
 
-def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> FastAPI:
+def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
+               bank_transport: Transport = urllib_transport) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
@@ -134,8 +141,31 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
             finally:
                 conn.close()
 
-    app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None)
+    def read(fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Lecture sans le verrou d'écriture (récupération bancaire avant écriture)."""
+        conn = connect(db_path)
+        try:
+            return fn(conn)
+        finally:
+            conn.close()
+
+    bank = BankRuntime(settings.bank, read, write, on_new_transactions, transport=bank_transport)
+    scheduler = (Scheduler(bank.scheduled_tick, settings.sync_hours * 3600)
+                 if bank.configured and settings.sync_hours > 0 else None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if scheduler is not None:
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
+
+    app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
+    app.state.bank = bank
 
     def api_guard(request: Request) -> JSONResponse | None:
         """Refus éventuel d'une requête /api avant routage (CSRF, session, taille du dépôt)."""
@@ -245,6 +275,12 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/bank/callback", include_in_schema=False)
+    def bank_callback():
+        """Retour de la banque : page statique sans donnée (le cookie SameSite=Strict n'accompagne pas une
+        navigation venue de la banque) ; son script renvoie `code` et `state` à l'API depuis l'appli."""
+        return FileResponse(WEB_DIR / "bank-callback.html")
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     return app

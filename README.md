@@ -124,8 +124,56 @@ Wants=wg-quick@wg0.service
 (Sauvegarder, puis `sudo systemctl daemon-reload`.) Avec `restart: unless-stopped`, le conteneur redémarre
 alors tout seul après un reboot, une fois `wg0` monté.
 
+### Récupération bancaire (Enable Banking)
+
+Facultative : sans elle, l'appli fonctionne avec les seuls relevés PDF. Avec elle, les opérations des comptes
+arrivent seules, via l'open banking (DSP2, lecture seule), **après le dernier relevé PDF de chaque compte**.
+Conception : `docs/superpowers/specs/2026-11-12-enable-banking-design.md`.
+
+1. **Importer d'abord tous les relevés PDF** jusqu'au plus récent : la banque ne fournit souvent que 90 jours
+   d'historique, et un relevé dont la période contient déjà des opérations de la banque est refusé.
+2. Créer un compte sur enablebanking.com, puis une application **Production** dans le Control Panel
+   (`https://enablebanking.com/cp/applications`) :
+   - adresse de retour (liste blanche) : `http://<BIND_ADDR>:8000/bank/callback` ; si elle est refusée,
+     déclarer par exemple `https://localhost/bank/callback` et utiliser le repli par copier-coller (étape 6) ;
+   - la clé privée est téléchargée par le navigateur sous le nom `<identifiant>.pem` ;
+   - « Activate by linking accounts » : lier ses propres comptes Crédit Mutuel (mode restreint, usage
+     personnel). Vérifier au passage les conditions tarifaires affichées.
+3. Déposer la clé en secret, lisible par l'uid du conteneur :
+
+   ```bash
+   cp <identifiant>.pem secrets/enablebanking.pem
+   sudo chown 10001:10001 secrets/enablebanking.pem && sudo chmod 400 secrets/enablebanking.pem
+   ```
+
+4. Compléter `.env` :
+
+   ```bash
+   cat >> .env <<'EOF'
+   COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml
+   EB_APP_ID=<identifiant de l'application>
+   EB_REDIRECT_URL=http://10.8.0.1:8000/bank/callback
+   EOF
+   docker compose up -d
+   ```
+
+   Facultatif : `SYNC_HOURS` (12 par défaut ; 0 désactive la synchro planifiée, le bouton reste) et
+   `EB_ASPSP` (nom de la banque dans la liste d'Enable Banking, « Crédit Mutuel » par défaut).
+   Le conteneur doit pouvoir joindre `https://api.enablebanking.com` en sortie.
+5. Onglet **Banque** → « Connecter ma banque » : authentification sur le site de la banque, retour dans l'appli,
+   rattachement des comptes (automatique quand l'IBAN contient le numéro des relevés) et première synchro.
+   Regarder ensuite le contrôle de solde de chaque compte.
+6. Repli : si la page de retour ne s'ouvre pas, copier l'adresse complète affichée par le navigateur (avec
+   `code=` et `state=`) dans « Le retour de la banque n'a pas abouti ? », dans les 30 minutes.
+
+Le consentement dure en général 180 jours ; une pastille « Banque : renouveler » apparaît 14 jours avant son
+échéance (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
+identifiant de session ni IBAN complet n'est journalisé ou affiché.
+
 ### Dépannage
 
+- Onglet Banque « non configurée » alors que `.env` est rempli : `docker compose logs` indique la cause
+  (`clé privée illisible` : refaire le `chown`/`chmod` de `secrets/enablebanking.pem`).
 - `lecture impossible de EXTRANALYZER_PASSWORD_FILE` dans `docker compose logs` : le secret n'est pas
   lisible par l'uid 10001 ; refaire le `chown 10001:10001` et `chmod 400` ci-dessus, puis
   `docker compose up -d --force-recreate`.

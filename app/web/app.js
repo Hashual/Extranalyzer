@@ -262,9 +262,27 @@ function renderBar(route) {
   badge.disabled = !state.tabs.some((t) => t.id === "a_classer");
   badge.classList.toggle("alert", count > 0);
 
+  renderBankAlert();
+
   for (const button of $("tabs").querySelectorAll("button")) {
     button.setAttribute("aria-current", button.dataset.tab === route.tab ? "page" : "false");
   }
+}
+
+const BANK_ALERTS = {
+  expiring: (b) => `Banque : renouveler (${b.days_left} j)`,
+  expired: () => "Banque : connexion expirée",
+  error: () => "Banque : erreur de synchro",
+};
+
+/** Pastille de la connexion bancaire : consentement à renouveler, expiré, erreur ou compte à rattacher. */
+function renderBankAlert() {
+  const bank = state.meta?.bank;
+  const pill = $("bank-alert");
+  const text = bank && BANK_ALERTS[bank.status] ? BANK_ALERTS[bank.status](bank)
+    : bank?.to_attach ? `Banque : ${bank.to_attach} compte(s) à rattacher` : "";
+  pill.textContent = text;
+  pill.hidden = !text || !state.tabs.some((t) => t.id === "banque");
 }
 
 function accountsLabel(selected) {
@@ -323,6 +341,8 @@ function setupBar() {
     const acc = (state.meta?.accounts || []).map((a) => a.id);
     go({ ...readRoute(), ...everything, acc, tab: "a_classer", params: {} });
   });
+
+  $("bank-alert").addEventListener("click", () => navigate("banque"));
 
   $("upload-input").addEventListener("change", async (event) => {
     const input = event.target;
