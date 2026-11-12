@@ -153,10 +153,13 @@ est fermée (`DELETE /sessions/{id}`, échec toléré).
   libellés n'est nécessaire.
 - Compte sans aucun relevé PDF (nouveau compte) : pas de frontière, tout l'historique disponible est importé.
 - **Garde-fou dans l'autre sens** : l'import d'un PDF dont une section porte sur un compte ayant déjà des opérations
-  API **dans la période de la section** — après la date du relevé `ok` précédent du même compte (sans borne s'il n'y
-  en a pas) et jusqu'à `statement_date` incluse — met cette section **en erreur** (« période déjà couverte par la
-  synchronisation bancaire »), comme une collision d'identité aujourd'hui. Seul ajout dans `importer/service.py`.
-  Un PDF qui comble un trou antérieur à la première opération API reste donc importable. *(choix du concepteur)*
+  API **dans la période de la section** — de sa première opération à `statement_date` incluse, et après la date du
+  relevé `ok` précédent du même compte — met cette section **en erreur** (« période déjà couverte par la
+  synchronisation bancaire »), comme une collision d'identité aujourd'hui. Le contrôle s'applique à l'import, à
+  l'acceptation d'un conflit et à la ré-analyse. Un PDF qui comble un trou (avant la première opération API, ou entre
+  deux périodes synchronisées après une interruption du consentement) reste donc importable. *(choix du concepteur)*
+- Un relevé PDF d'un compte créé d'abord par la synchro (numéro = IBAN) rejoint ce compte quand son numéro figure
+  dans l'IBAN (un seul candidat). *(choix du concepteur, après relecture)*
 - **Trou d'historique** : si le dernier PDF d'un compte est plus ancien que ce que la banque fournit (souvent 90
   jours), la période manquante n'est récupérable que par les PDF. D'où la consigne : importer tous les relevés PDF
   disponibles **avant** de connecter la banque (§ 7). Le trou se verrait sinon dans le contrôle de solde.

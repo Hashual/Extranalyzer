@@ -2,6 +2,7 @@
 
 Aucun jeton, identifiant de session ni corps de réponse n'est journalisé.
 """
+import http.client
 import json
 import time
 import urllib.error
@@ -42,7 +43,7 @@ def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
         raise EnableBankingError(0, "NETWORK", f"Enable Banking injoignable ({type(exc).__name__})") from None
 
 
@@ -58,7 +59,7 @@ def _error(status: int, body: bytes) -> EnableBankingError:
     message = f"{message} ({code})"[:300]
     if status == 429:
         return RateLimited(status, code, message)
-    if status == 401 and "SESSION" in code.upper():
+    if status in (401, 403) and any(word in code.upper() for word in ("SESSION", "CONSENT", "REVOKED")):
         return SessionExpired(status, code, message)
     return EnableBankingError(status, code, message)
 

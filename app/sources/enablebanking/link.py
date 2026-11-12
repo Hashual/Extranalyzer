@@ -29,6 +29,7 @@ STATE_TTL = timedelta(minutes=30)
 EXPIRY_WARNING_DAYS = 14
 RATE_LIMIT_PAUSE = timedelta(hours=6)
 LOOKBACK_DAYS = 10
+LONG_WINDOW_DAYS = 89
 DEFAULT_CONSENT_S = 90 * 86400
 MIN_NUMBER_DIGITS = 8        # un numéro de compte PDF plus court ne sert pas au rattachement automatique
 
@@ -55,8 +56,9 @@ def _digits(text: str | None) -> str:
 
 # --- Connexion -------------------------------------------------------------------------------------------------
 
-def start_connection(conn: sqlite3.Connection, client: Client, bank: BankSettings, now: datetime) -> str:
-    """Prépare l'autorisation : enregistre un `state` à usage unique et renvoie l'URL de la banque."""
+def start_connection(write: Runner, client: Client, bank: BankSettings, now: datetime) -> str:
+    """Prépare l'autorisation et renvoie l'URL de la banque. Le `state` (usage unique) est enregistré dans une
+    écriture courte et validée ; aucun appel réseau n'a lieu pendant une transaction."""
     wanted = fold(bank.aspsp_name)
     aspsp = next((a for a in client.aspsps(bank.country) if fold(str(a.get("name", ""))) == wanted), None)
     if aspsp is None:
@@ -65,14 +67,29 @@ def start_connection(conn: sqlite3.Connection, client: Client, bank: BankSetting
     validity = aspsp.get("maximum_consent_validity")
     seconds = validity if isinstance(validity, int) and validity > 0 else DEFAULT_CONSENT_S
     state = secrets.token_urlsafe(32)
+    write(lambda conn: _save_state(conn, state, now))
+    try:
+        answer = client.start_auth(str(aspsp["name"]), bank.country, _iso(now + timedelta(seconds=seconds)), state,
+                                   bank.redirect_url)
+        url = answer.get("url")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise EnableBankingError(0, "INVALID_AUTH_URL",
+                                     "adresse d'autorisation invalide renvoyée par Enable Banking")
+    except BaseException:
+        write(lambda conn: _drop_state(conn, state))
+        raise
+    return url
+
+
+def _save_state(conn: sqlite3.Connection, state: str, now: datetime) -> None:
     conn.execute("DELETE FROM bank_auth_states WHERE created_at < ?", (_iso(now - STATE_TTL),))
     conn.execute("INSERT INTO bank_auth_states(state, created_at) VALUES (?, ?)", (state, _iso(now)))
-    answer = client.start_auth(str(aspsp["name"]), bank.country, _iso(now + timedelta(seconds=seconds)), state,
-                               bank.redirect_url)
-    url = answer.get("url")
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise EnableBankingError(0, "INVALID_AUTH_URL", "adresse d'autorisation invalide renvoyée par Enable Banking")
-    return url
+    conn.commit()
+
+
+def _drop_state(conn: sqlite3.Connection, state: str) -> None:
+    conn.execute("DELETE FROM bank_auth_states WHERE state = ?", (state,))
+    conn.commit()
 
 
 def consume_state(conn: sqlite3.Connection, state: str, now: datetime) -> None:
@@ -128,7 +145,8 @@ def _register_account(conn: sqlite3.Connection, link_id: int, account: dict) -> 
         previous = conn.execute("SELECT id FROM external_accounts WHERE iban = ? ORDER BY id DESC", (iban,)).fetchone()
     if previous is not None:      # renouvellement : le rattachement et l'historique de synchro sont conservés
         conn.execute("UPDATE external_accounts SET link_id = ?, uid = ?, identification_hash = ?, iban = ?, name = ?, "
-                     "currency = ?, cash_account_type = ?, last_error = NULL WHERE id = ?", (*values, previous[0]))
+                     "currency = ?, cash_account_type = ?, last_error = NULL, last_sync_at = NULL WHERE id = ?",
+                     (*values, previous[0]))     # last_sync_at NULL : historique long à la première synchro
         return
     external_id = conn.execute(
         "INSERT INTO external_accounts(link_id, uid, identification_hash, iban, name, currency, cash_account_type) "
@@ -252,8 +270,11 @@ def fetch_all(conn: sqlite3.Connection, client: Client, now: datetime) -> list[F
     for external_id, link_id, uid, account_id, last_sync in rows:
         if link_id in stopped:
             continue
+        start = _date_from(conn, account_id)
+        # « longest » : première synchro d'un lien, ou fenêtre plus ancienne que ce que la banque garde (~90 jours)
+        old = start is None or start < now.date() - timedelta(days=LONG_WINDOW_DAYS)
         try:
-            raw = client.transactions(uid, _date_from(conn, account_id), "longest" if last_sync is None else "default")
+            raw = client.transactions(uid, start, "longest" if last_sync is None or old else "default")
             balance = pick_balance(client.balances(uid))
         except EnableBankingError as exc:
             results.append(Fetched(external_id, link_id, None, exc))
@@ -280,11 +301,11 @@ def write_sync(conn: sqlite3.Connection, results: list[Fetched], trigger: str, o
             errors += 1
             failed_links.add(r.link_id)
             messages.append(r.error.message)
-            if isinstance(r.error, SessionExpired):
-                conn.execute("UPDATE bank_links SET status = 'expired', last_error = ? WHERE id = ?",
-                             (r.error.message, r.link_id))
+            if isinstance(r.error, SessionExpired):     # un lien remplacé entre-temps n'est pas touché
+                conn.execute("UPDATE bank_links SET status = 'expired', last_error = ? WHERE id = ? "
+                             "AND status = 'active'", (r.error.message, r.link_id))
             elif isinstance(r.error, RateLimited):
-                conn.execute("UPDATE bank_links SET retry_after = ?, last_error = ? WHERE id = ?",
+                conn.execute("UPDATE bank_links SET retry_after = ?, last_error = ? WHERE id = ? AND status = 'active'",
                              (_iso(now + RATE_LIMIT_PAUSE), r.error.message, r.link_id))
             conn.execute("UPDATE external_accounts SET last_error = ? WHERE id = ?", (r.error.message, r.external_id))
             continue
@@ -304,6 +325,10 @@ def write_sync(conn: sqlite3.Connection, results: list[Fetched], trigger: str, o
                       None if gap is None else gap - accepted, r.external_id))
     for link_id in {r.link_id for r in results} - failed_links:
         conn.execute("UPDATE bank_links SET last_error = NULL, retry_after = NULL WHERE id = ?", (link_id,))
+    paused = conn.execute("SELECT MIN(retry_after) FROM bank_links WHERE status = 'active' AND retry_after > ?",
+                          (_iso(now),)).fetchone()[0]
+    if paused is not None:
+        messages.append(f"limite de consultations de la banque : pas de nouvelle tentative avant {paused}")
     if pending:
         on_new(conn, pending)
     message = " ; ".join(dict.fromkeys(messages))[:500] or None
