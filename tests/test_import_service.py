@@ -734,3 +734,49 @@ def test_delete_failure_rolls_back_and_keeps_file(tmp_path, conn, pdf_dir):
     assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before
     assert _doc_count(conn) == 2
     assert (pdf_dir / f"{hashlib.sha256(data).hexdigest()}.pdf").exists()
+
+
+def _api_tx(conn, account_number, day):
+    from app.sources.base import AccountFetch, FetchedTransaction
+    from app.sources.service import store_fetch
+    account_id = repo_upsert(conn, account_number)
+    store_fetch(conn, "enablebanking", AccountFetch(account_id, [
+        FetchedTransaction(date.fromisoformat(day), None, "CB API FICTIVE", Decimal("-1.00"))]))
+    conn.commit()
+
+
+def repo_upsert(conn, number):
+    from app.store import repo
+    return repo.upsert_account(conn, number, "C/C EUROCOMPTE TEST")
+
+
+def test_pdf_period_already_covered_by_bank_sync_is_error(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")      # dans la période du relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+                        PARSERS, Recorder())
+    statuses = {s.account_number: (s.status, s.message) for s in report.sections}
+    assert statuses["00000000001"] == ("error", "période déjà couverte par la synchronisation bancaire")
+    assert statuses["00000000002"] == ("ok", None)
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 1
+
+
+def test_pdf_before_first_bank_operation_is_imported(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-11")      # après le relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]
+
+
+def test_reanalyse_keeps_api_overlap_guard(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    reports = reanalyse_all(conn, pdf_dir, PARSERS, Recorder())
+    assert [(s.status, s.message) for r in reports for s in r.sections] == \
+        [("error", "période déjà couverte par la synchronisation bancaire")]
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 0
+
+
+def test_pdf_fills_hole_between_synced_periods(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-01-15")      # synchro ancienne, puis consentement expiré
+    _api_tx(conn, "00000000001", "2024-05-02")      # reprise après le trou
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]

@@ -14,10 +14,25 @@ def account_kind_from_label(label: str) -> str:
     return "checking"
 
 
+MIN_NUMBER_DIGITS = 8     # numéro trop court pour être reconnu dans un IBAN sans ambiguïté
+
+
+def _digits(text: str) -> str:
+    return "".join(c for c in text if c.isdigit())
+
+
 def upsert_account(conn: sqlite3.Connection, number: str, label: str) -> int:
+    """Compte du numéro `number`, sinon le compte créé par une source externe dont l'IBAN contient ce numéro (un
+    seul candidat), sinon un nouveau compte."""
     row = conn.execute("SELECT id FROM accounts WHERE number = ?", (number,)).fetchone()
     if row is not None:
         return row[0]
+    digits = _digits(number)
+    if len(digits) >= MIN_NUMBER_DIGITS:
+        found = [i for i, n in conn.execute("SELECT id, number FROM accounts WHERE source != 'pdf' ORDER BY id")
+                 if digits in _digits(n)]
+        if len(found) == 1:
+            return found[0]
     cur = conn.execute(
         "INSERT INTO accounts(number, label, kind) VALUES (?, ?, ?)",
         (number, label, account_kind_from_label(label)),
@@ -176,6 +191,18 @@ def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],
     return None
 
 
+def api_overlap(conn: sqlite3.Connection, account_id: int, first_date: str, statement_date: str) -> bool:
+    """Le compte a-t-il des opérations d'une source externe dans la période d'un relevé : de sa première opération
+    (`first_date`, incluse) à `statement_date` (incluse), et après le relevé `ok` précédent du même compte ?
+
+    Bornée par la période propre du relevé, pour qu'un relevé comble un trou entre deux périodes synchronisées."""
+    previous = conn.execute("SELECT MAX(statement_date) FROM sections WHERE account_id = ? AND status = 'ok' "
+                            "AND statement_date < ?", (account_id, statement_date)).fetchone()[0]
+    return conn.execute("SELECT 1 FROM transactions WHERE account_id = ? AND section_id IS NULL AND source != 'pdf' "
+                        "AND op_date >= ? AND op_date <= ? AND (? IS NULL OR op_date > ?) LIMIT 1",
+                        (account_id, first_date, statement_date, previous, previous)).fetchone() is not None
+
+
 def list_document_sections(conn: sqlite3.Connection, document_id: int) -> list[tuple]:
     """(id, numéro de compte, statement_date, status, gap_cents) des sections du document."""
     return conn.execute(
@@ -185,17 +212,19 @@ def list_document_sections(conn: sqlite3.Connection, document_id: int) -> list[t
     ).fetchall()
 
 
-def insert_transaction(conn: sqlite3.Connection, section_id: int, account_id: int, tx_key: str,
-                       op_date: str, value_date: str, label: str, label_norm: str,
-                       amount_cents: int) -> int:
-    """Insère une transaction ; un reclassement manuel existant pour `tx_key` est ré-appliqué."""
+def insert_transaction(conn: sqlite3.Connection, section_id: int | None, account_id: int, tx_key: str,
+                       op_date: str, value_date: str | None, label: str, label_norm: str,
+                       amount_cents: int, source: str = "pdf") -> int:
+    """Insère une transaction ; un reclassement manuel existant pour `tx_key` est ré-appliqué.
+
+    `section_id` None : opération d'une source externe (`source`), sans relevé."""
     row = conn.execute("SELECT category_id FROM manual_overrides WHERE tx_key = ?", (tx_key,)).fetchone()
     category_id, manual = (None, 0) if row is None else (row[0], 1)
     cur = conn.execute(
         "INSERT INTO transactions(section_id, account_id, tx_key, op_date, value_date, label, label_norm, "
-        "amount_cents, category_id, manual, classified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "amount_cents, category_id, manual, classified_by, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (section_id, account_id, tx_key, op_date, value_date, label, label_norm, amount_cents,
-         category_id, manual, 'manual' if manual else None),
+         category_id, manual, 'manual' if manual else None, source),
     )
     return cur.lastrowid
 
