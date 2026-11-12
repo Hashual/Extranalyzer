@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 OnNewTransactions = Callable[[sqlite3.Connection, list[int]], None]
 
 KEPT_OLD_VERSION = "ancienne version conservée"
+API_OVERLAP = "période déjà couverte par la synchronisation bancaire"
 
 
 @dataclass
@@ -198,6 +199,8 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
     status = _status_for(conn, account_id, statement_date, gap, digest)
     keyed = _keyed(section)
     message = _collision_message(conn, keyed) if status == "ok" else None
+    if message is None and status == "ok" and repo.api_overlap(conn, account_id, statement_date):
+        message = API_OVERLAP
     if message is not None:
         status = "error"
     section_id = repo.insert_section(conn, document_id, account_id, statement_date,
