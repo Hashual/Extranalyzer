@@ -1,0 +1,17 @@
+# Récupération bancaire Enable Banking (facultative) : à activer en ajoutant dans .env
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml
+# Voir README, « Récupération bancaire (Enable Banking) ».
+services:
+  extranalyzer:
+    secrets:
+      - enablebanking_key
+    environment:
+      EXTRANALYZER_EB_APP_ID: ${EB_APP_ID:?EB_APP_ID requis (identifiant de l'application Enable Banking)}
+      EXTRANALYZER_EB_REDIRECT_URL: ${EB_REDIRECT_URL:?EB_REDIRECT_URL requis (adresse de retour déclarée)}
+      EXTRANALYZER_EB_KEY_FILE: /run/secrets/enablebanking_key
+      EXTRANALYZER_SYNC_HOURS: ${SYNC_HOURS:-12}
+      EXTRANALYZER_EB_ASPSP: ${EB_ASPSP:-Crédit Mutuel}
+
+secrets:
+  enablebanking_key:
+    file: ./secrets/enablebanking.pem
