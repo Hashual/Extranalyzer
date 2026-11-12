@@ -106,6 +106,9 @@ journaux limités (`max-size: 1m`, `max-file: "3"`). Variable facultative : `EXT
 
 ### Démarrage au boot : attendre WireGuard
 
+> Le Pi actuel n'utilise pas WireGuard mais un VPN maillé (`<BIND_ADDR>`, `<service VPN>`). Son réseau réel est décrit
+> dans [docs/reseau.md](docs/reseau.md).
+
 Docker ne peut pas publier le port sur l'IP `wg0` tant que l'interface n'existe pas. Méthode recommandée :
 faire démarrer le service Docker après `wg-quick@wg0`.
 
