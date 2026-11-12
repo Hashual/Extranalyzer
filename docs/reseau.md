@@ -58,14 +58,17 @@ docker0   172.17.0.1/16     + bridges br-* en 172.18–20.0.1/16
   | Pair | Adresse | État |
   |---|---|---|
   | PC Windows | `10.10.0.2/32` | Handshake récent **[vérifié]** |
-  | telephone1 | `10.10.0.3/32` | Handshake OK, mais n'atteint pas Extranalyzer |
-  | telephone2 | `10.10.0.4/32` | Jamais connecté (config pas encore importée) |
+  | telephone1 | `10.10.0.3/32` | Atteint Extranalyzer (confirmé par l'utilisateur le 2026-11-13) **[vérifié]** |
+  | telephone2 | `10.10.0.4/32` | Config prête, import non confirmé |
 
 - Les configs clientes des téléphones sont dans `/etc/wireguard/clients/telephone{1,2}.conf`. Elles utilisent
-  `AllowedIPs = 10.10.0.0/24` (split tunnel) et `PersistentKeepalive = 25`. La sauvegarde
-  `wg0.conf.bak-20261112-182051` a été faite avant l'ajout des téléphones.
-- proxyServer porte aussi des éléments **WolfStack** (ipset `wolfstack_block4`, règles FORWARD sur `wolfnet0`). Que
-  `wolfnet0` y existe et avec quelle IP n'a pas été vérifié.
+  `AllowedIPs = 10.10.0.0/24, 10.10.10.95/32` (split tunnel : le sous-réseau WireGuard plus le seul Pi) et
+  `PersistentKeepalive = 25`. La sauvegarde `wg0.conf.bak-20261112-182051` a été faite avant l'ajout des
+  téléphones. QR code en PNG : `ssh proxyServer "sudo cat /etc/wireguard/clients/telephone1.conf | qrencode -o - -t PNG -s 8" > telephone1.png`
+  (`qrencode` est installé ; en mode texte, le QR est souvent tronqué par un terminal trop petit).
+- proxyServer est aussi un nœud **WolfNet** : `wolfnet0` = `10.10.10.47/24`, route `10.10.10.0/24 dev wolfnet0`,
+  et une règle NAT `POSTROUTING ! -s 10.10.10.0/24 -o wolfnet0 -j MASQUERADE`. Le Pi voit donc le trafic des
+  clients WireGuard comme venant de `10.10.10.47` et n'a besoin d'aucune route vers `10.10.0.0/24`. **[vérifié]**
 - **ufw** est actif. Il autorise 22, 80, 443 (Nginx Full), 8553/tcp, 9600/udp et 51820/udp. La politique FORWARD
   est DROP, sauf `-i wg0`, `-i/-o wolfnet0` et RELATED,ESTABLISHED. **[vérifié]**
 - **Bug connu, non corrigé** : le `PostDown` de `wg0.conf` fait `iptables -t nat -A POSTROUTING …` au lieu de
@@ -75,15 +78,13 @@ docker0   172.17.0.1/16     + bridges br-* en 172.18–20.0.1/16
 ## Chemins
 
 ```
-Navigateur du PC ──WireGuard (10.10.0.2 → 10.10.0.1)──► proxyServer ──WolfNet──► Pi 10.10.10.95:8000
+PC ou téléphone ──WireGuard (10.10.0.x → 10.10.0.1)──► proxyServer ──NAT, WolfNet (10.10.10.47)──► Pi 10.10.10.95:8000
 ```
-Le PC atteint bien `http://10.10.10.95:8000` (réponse 200) et le SSH du Pi. **[vérifié]**
-Le passage de `wg0` à WolfNet par proxyServer est **[supposé]** : les AllowedIPs du PC et le routage de proxyServer
-n'ont pas été lus.
+Le PC et telephone1 atteignent `http://10.10.10.95:8000`, et proxyServer lui-même aussi (réponse 200). **[vérifié]**
 
-Une configuration WireGuard n'envoie dans le tunnel que les plages de ses `AllowedIPs`. Avec
-`AllowedIPs = 10.10.0.0/24`, `10.10.10.95` n'y est pas. C'est la cause probable du blocage de telephone1.
-**[supposé]**
+Une configuration WireGuard n'envoie dans le tunnel que les plages de ses `AllowedIPs`. Avec seulement
+`AllowedIPs = 10.10.0.0/24`, `10.10.10.95` partait hors du tunnel : c'était la cause du blocage de telephone1,
+corrigée en ajoutant `10.10.10.95/32`. **[vérifié]**
 
 ## Pour une session Claude
 
@@ -98,10 +99,6 @@ Une configuration WireGuard n'envoie dans le tunnel que les plages de ses `Allow
 
 ## Questions ouvertes
 
-- Par quel chemin exact le PC atteint-il `10.10.10.0/24` (AllowedIPs du PC, `wolfnet0` et routage sur
-  proxyServer) ?
-- Faut-il ajouter `10.10.10.0/24` aux `AllowedIPs` des téléphones, et le Pi sait-il répondre à `10.10.0.x` (route
-  ou NAT WolfNet) ?
 - Il faut encore importer la config de telephone2, puis supprimer les fichiers `clients/*.conf` du serveur.
 - Quel est le rôle de frpc/frps, du port 2222, de 8553/tcp, de 9600/udp et du VPS `portfolcraft` ?
 - Quels sont le hostname du Pi et son pare-feu (jamais inspecté) ?
