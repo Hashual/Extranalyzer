@@ -2,6 +2,8 @@
 // avec catégorie → sous-catégorie pré-remplies par la suggestion du modèle (et son score), création d'une
 // règle (cochée par défaut, sauf sur une suggestion), et validation groupée de ce qui est affiché (sauf les
 // suggestions fondées sur une seule opération similaire, tant que l'utilisateur ne les a pas choisies lui-même).
+// Le bouton « Suggestions seulement » masque les libellés sans suggestion ; la validation groupée ne prend
+// que les lignes visibles.
 import { amount, el, emptyNote, formatDate, scopeParams, suggestionScore } from "../ui.js";
 
 export const id = "a_classer";
@@ -118,7 +120,7 @@ function groupRow(group, categories, ctx) {
  * suggestion fondée sur une seule opération similaire n'est prise que si l'utilisateur a touché son choix.
  */
 function acceptAll(rows, ctx) {
-  const chosen = () => rows.filter((r) => r.bulk());
+  const chosen = () => rows.filter((r) => !r.node.hidden && r.bulk());     // seulement les lignes visibles
   const button = el("button", { type: "button", className: "primary" });
   let n = 0;
   const update = () => {
@@ -132,7 +134,7 @@ function acceptAll(rows, ctx) {
   button.addEventListener("click", async () => {
     const items = chosen().map((r) => ({ label_norm: r.group.label_norm, category_id: r.picker.value() }));
     if (!items.length) return;
-    const skipped = rows.filter((r) => r.picker.value() !== null && !r.bulk()).length;
+    const skipped = rows.filter((r) => !r.node.hidden && r.picker.value() !== null && !r.bulk()).length;
     const question = `Classer ${n} opération(s) dans les catégories affichées ? ` +
                      "Chacune devient une décision manuelle ; aucune règle n'est créée." +
                      (skipped ? ` ${skipped} libellé(s) dont la suggestion ne repose que sur une opération ` +
@@ -149,7 +151,31 @@ function acceptAll(rows, ctx) {
       update();
     }
   });
-  return el("div", { className: "accept-all" }, button, error);
+  return { node: el("div", { className: "accept-all" }, suggestionsFilter(rows, update), button, error) };
+}
+
+const ONLY_SUGGESTIONS_KEY = "extranalyzer.a_classer.onlySuggestions";
+
+/** Bouton bascule « Suggestions seulement » : masque les libellés sans suggestion (choix gardé dans le navigateur). */
+function suggestionsFilter(rows, onChange) {
+  const withSuggestion = rows.filter((r) => r.group.suggested_category_id !== null).length;
+  const button = el("button", { type: "button", className: "toggle" });
+  let only = false;
+  try { only = localStorage.getItem(ONLY_SUGGESTIONS_KEY) === "1"; } catch { /* stockage indisponible */ }
+  const apply = () => {
+    rows.forEach((r) => { r.node.hidden = only && r.group.suggested_category_id === null; });
+    button.textContent = only ? `Tout afficher (${rows.length})` : `Suggestions seulement (${withSuggestion})`;
+    button.setAttribute("aria-pressed", only ? "true" : "false");
+    onChange();
+  };
+  button.addEventListener("click", () => {
+    only = !only;
+    try { localStorage.setItem(ONLY_SUGGESTIONS_KEY, only ? "1" : "0"); } catch { /* stockage indisponible */ }
+    apply();
+  });
+  button.disabled = withSuggestion === 0 && !only;
+  apply();
+  return button;
 }
 
 export async function render(container, ctx) {
@@ -165,6 +191,6 @@ export async function render(container, ctx) {
     el("p", { className: "muted",
               text: `${count} opération(s) à classer sur la période, en ${data.groups.length} libellé(s). ` +
                     "Une règle classe aussi les opérations à classer des autres périodes." }),
-    acceptAll(rows, ctx),
+    acceptAll(rows, ctx).node,
     el("ul", { className: "group-list" }, rows.map((r) => r.node)));
 }

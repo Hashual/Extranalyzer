@@ -273,7 +273,9 @@ input, select {
 
 .tag.auto { border-color: var(--accent); color: var(--accent); cursor: help; }
 .tag.suggestion { margin-left: 0; border-color: var(--accent); color: var(--accent); cursor: help; white-space: nowrap; }
-.accept-all { margin-bottom: 0.6rem; }
+.accept-all { margin-bottom: 0.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.accept-all .error { flex-basis: 100%; }
+.toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
 /* Tableaux */
 .table-wrap { max-width: 100%; }
