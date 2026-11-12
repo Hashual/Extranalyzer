@@ -185,16 +185,18 @@ def list_document_sections(conn: sqlite3.Connection, document_id: int) -> list[t
     ).fetchall()
 
 
-def insert_transaction(conn: sqlite3.Connection, section_id: int, account_id: int, tx_key: str,
-                       op_date: str, value_date: str, label: str, label_norm: str,
-                       amount_cents: int) -> int:
-    """Insère une transaction ; un reclassement manuel existant pour `tx_key` est ré-appliqué."""
+def insert_transaction(conn: sqlite3.Connection, section_id: int | None, account_id: int, tx_key: str,
+                       op_date: str, value_date: str | None, label: str, label_norm: str,
+                       amount_cents: int, source: str = "pdf") -> int:
+    """Insère une transaction ; un reclassement manuel existant pour `tx_key` est ré-appliqué.
+
+    `section_id` None : opération d'une source externe (`source`), sans relevé."""
     row = conn.execute("SELECT category_id FROM manual_overrides WHERE tx_key = ?", (tx_key,)).fetchone()
     category_id, manual = (None, 0) if row is None else (row[0], 1)
     cur = conn.execute(
         "INSERT INTO transactions(section_id, account_id, tx_key, op_date, value_date, label, label_norm, "
-        "amount_cents, category_id, manual, classified_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "amount_cents, category_id, manual, classified_by, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (section_id, account_id, tx_key, op_date, value_date, label, label_norm, amount_cents,
-         category_id, manual, 'manual' if manual else None),
+         category_id, manual, 'manual' if manual else None, source),
     )
     return cur.lastrowid
