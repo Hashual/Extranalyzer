@@ -420,17 +420,51 @@ button.danger { border-color: var(--danger); color: var(--danger); }
   /* 16 px minimum : en dessous, iOS zoome la page à chaque champ touché. */
   input, select { font-size: 16px; }
 
-  /* Barre repliée : marque, « À classer » et bouton de période ; le reste se déplie au besoin. */
-  .bar-toggle { display: inline-block; }
-  .bar-toggle::after { content: " ▾"; }
-  .bar.open .bar-toggle::after { content: " ▴"; }
+  /* Barre repliée, sur une ligne : marque, bouton de période, « À classer » ; le reste se déplie au besoin. */
+  .bar { padding: 0.4rem 0.75rem 0; }
+  .bar-row { gap: 0.4rem; margin-bottom: 0.4rem; }
+  /* Base nulle : la marque ne fait jamais passer les boutons à la ligne, elle prend la place restante (tronquée). */
+  .brand { order: 0; flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+           font-size: 1rem; }
+  .bar-toggle { order: 1; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+  #unclassified { order: 2; }
+  #bank-alert { order: 3; flex-basis: 100%; text-align: center; }
+  .bar-toggle::after { content: "▾"; font-size: 0.75em; color: var(--muted); }
+  .bar.open .bar-toggle::after { content: "▴"; }
+  .bar.open .bar-toggle { border-color: var(--accent); color: var(--accent); }
+  .pill, .bar-toggle { padding: 0.3rem 0.65rem; white-space: nowrap; }
+
   .bar:not(.open) .upload,
   .bar:not(.open) .privacy,
   .bar:not(.open) #logout,
   .bar:not(.open) .period { display: none; }
   .bar.open { max-height: 100vh; overflow-y: auto; }
-  .bar-row { gap: 0.4rem; }
-  .pill, .bar-toggle { padding: 0.3rem 0.6rem; }
+
+  /* Volet déplié : actions sur une ligne (passage à la ligne forcé), puis les filtres en grille pleine largeur. */
+  .bar.open .bar-row:first-child::after { content: ""; order: 4; flex-basis: 100%; }
+  .bar-row:first-child .upload { order: 5; flex: 1 1 auto; text-align: center; }
+  .bar-row:first-child .privacy { order: 6; }
+  .bar-row:first-child #logout { order: 7; margin-left: auto; padding: 0 0.25rem; font-size: 0.9rem; }
+
+  .period { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
+  .period > label { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+  .period input[type="date"], .period select { flex: 1 1 auto; width: auto; min-width: 0; }
+  .period .shortcuts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .period .shortcuts button { padding: 0.35rem 0.2rem; }
+  .period > label:has(#compare), .period .accounts { grid-column: 1 / -1; }
+  .period .accounts summary { text-align: center; }
+  .period .accounts-list { left: 0; right: 0; }
+
+  /* Onglets : défilement sans barre visible, fondu au bord droit pour signaler la suite. */
+  .tabs {
+    scrollbar-width: none;
+    margin: 0 -0.75rem;
+    padding: 0 0.75rem;
+    mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+  }
+  .tabs.at-end { mask-image: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { padding: 0.5rem 0.6rem; }
 
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tile { padding: 0.6rem 0.7rem; }
