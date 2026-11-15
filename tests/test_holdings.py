@@ -157,3 +157,48 @@ def test_category_lookup_does_not_create(conn):
     before = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
     assert savings_category_for_account(conn, a, create=False) is None
     assert conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == before
+
+
+def test_wallet_without_category_has_unknown_deposit(conn):
+    cat = savings_category_for_account(conn, _account(conn, label="LIVRET A"))
+    w1 = _wallet(conn, "sans catégorie")
+    _snap(conn, w1, "2026-02-01T08:00:00+00:00", 7_000)
+    d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))
+    place = next(p for p in d["places"] if p["kind"] == "wallet")
+    assert place["deposited"] is None and place["gap"] is None
+    assert d["crypto"]["deposited"] is None and d["crypto"]["gap"] is None
+    w2 = _wallet(conn, "avec catégorie", category_id=cat)
+    _snap(conn, w2, "2026-02-01T08:00:00+00:00", 3_000)
+    d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))
+    assert d["crypto"]["value"] == 10_000
+    assert d["crypto"]["deposited"] == 0 and d["crypto"]["gap"] == 3_000
+
+
+def test_savings_balance_uses_latest_ok_statement_and_ignores_error(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-01-31", 100_000)
+    _statement(conn, a, "2026-02-28", 120_000)
+    _statement(conn, a, "2026-03-31", 999_999, status="error")
+    _tx(conn, a, "2026-02-10", 5_000)          # déjà dans la clôture du 02-28
+    assert h.savings_balance(conn, a, date(2026, 3, 15)) == 120_000
+    assert h.savings_balance(conn, a, date(2026, 2, 15)) == 105_000
+
+
+def test_savings_balance_counts_mirror_leg(conn):
+    a = _account(conn)
+    other = _account(conn, label="COURANT", kind="checking")
+    _statement(conn, a, "2026-01-31", 10_000)
+    first = _tx(conn, other, "2026-02-02", -4_000)
+    _tx(conn, a, "2026-02-02", 4_000, mirror_of=first)
+    assert h.savings_balance(conn, a, date(2026, 2, 5)) == 14_000
+
+
+def test_dashboard_change_scope_all(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-01-31", 100_000)
+    _tx(conn, a, "2026-02-10", 5_000)
+    w = _wallet(conn)
+    _snap(conn, w, "2026-01-20T08:00:00+00:00", 6_000)
+    _snap(conn, w, "2026-02-12T08:00:00+00:00", 7_000)
+    d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 20))
+    assert d["total"]["change"] == 6_000 and d["total"]["change_scope"] == "all"
