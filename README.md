@@ -178,6 +178,36 @@ Le consentement dure en général 180 jours ; une pastille « Banque : renouvele
 l'échéance de la première banque concernée (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
 identifiant de session ni IBAN complet n'est journalisé ou affiché.
 
+### Portefeuilles Solana (Helius)
+
+Facultatif : suit en lecture seule la valeur en euros de portefeuilles Solana (SOL, jetons, comptes de staking), à
+partir de leur adresse publique. Aucune clé privée, aucune écriture sur la blockchain. Les valeurs ne sont pas
+mêlées aux totaux des relevés.
+
+1. Créer une clé gratuite sur helius.dev.
+2. Déposer la clé en secret, lisible par l'uid du conteneur :
+
+   ```bash
+   printf '%s' '<clé Helius>' > secrets/helius.key
+   sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
+   ```
+
+3. Ajouter `docker-compose.solana.yml` à `COMPOSE_FILE` dans `.env`, puis relancer :
+
+   ```bash
+   # .env : COMPOSE_FILE=docker-compose.yml:docker-compose.solana.yml
+   # (avec la récupération bancaire : COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml:docker-compose.solana.yml)
+   docker compose up -d
+   ```
+
+   L'actualisation planifiée reprend `SYNC_HOURS` (12 par défaut ; 0 la désactive). `HELIUS_URL` (facultatif)
+   remplace l'adresse du service ; elle doit commencer par `https://`. Le conteneur doit pouvoir joindre
+   `https://mainnet.helius-rpc.com` en sortie.
+
+La clé ne quitte jamais le secret Docker ; elle n'est ni écrite en base, ni journalisée, ni affichée, et les
+adresses ne sont pas journalisées. `docker compose logs` indique pourquoi Helius est désactivé (`clé illisible` :
+refaire le `chown`/`chmod`).
+
 ### Dépannage
 
 - Onglet Banque « non configurée » alors que `.env` est rempli : `docker compose logs` indique la cause
