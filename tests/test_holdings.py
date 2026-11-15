@@ -239,3 +239,29 @@ def test_dashboard_current_value_excludes_hidden_mints(conn):
     assert next(p for p in d["places"] if p["kind"] == "wallet")["value"] == 40_000
     assert [p["value"] for p in d["allocation"]["by_place"]] == [40_000]
     assert sum(p["value"] for p in d["allocation"]["by_asset"]) == d["crypto"]["value"]
+
+
+def test_dashboard_value_matches_overview_when_mint_hidden_before_snapshot(conn):
+    from app.sources.solana.wallets import overview
+    w = _wallet(conn)
+    conn.execute("INSERT INTO hidden_mints(mint) VALUES ('hid')")
+    # le relevé a été pris alors que « hid » était déjà masqué : le total stocké l'exclut déjà
+    s = _snap(conn, w, "2026-02-01T08:00:00+00:00", 40_000, unpriced=0)
+    _pos(conn, s, "sol", 30_000)
+    _pos(conn, s, "token", 10_000, mint="ok", symbol="OK")
+    _pos(conn, s, "token", 20_000, mint="hid", symbol="HID")
+    _pos(conn, s, "token", None, mint="hid", symbol="HID")
+    d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))
+    expected = overview(conn)["wallets"][0]
+    assert d["crypto"]["value"] == 40_000 == int(expected["total_eur"] * 100)
+    assert d["crypto"]["unpriced_count"] == expected["unpriced_count"] == 0
+
+
+def test_dashboard_unpriced_never_negative(conn):
+    w = _wallet(conn)
+    conn.execute("INSERT INTO hidden_mints(mint) VALUES ('hid')")
+    s = _snap(conn, w, "2026-02-01T08:00:00+00:00", 5_000, unpriced=0)   # stocké hors « hid », sans prix
+    _pos(conn, s, "sol", 5_000)
+    _pos(conn, s, "token", None, mint="hid", symbol="HID")
+    c = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))["crypto"]
+    assert c["unpriced_count"] == 0 and c["value"] == 5_000
