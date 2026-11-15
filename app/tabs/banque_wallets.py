@@ -107,6 +107,8 @@ def set_key(body: KeyBody, request: Request):
         runtime.set_key(body.api_key)
     except KeyManagedByServer as exc:
         raise HTTPException(409, str(exc)) from None
+    except NotConfigured as exc:
+        raise HTTPException(503, str(exc)) from None
     except KeyInvalid as exc:
         raise HTTPException(422, str(exc)) from None
     except RateLimited:

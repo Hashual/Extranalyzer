@@ -106,8 +106,10 @@ class SolanaRuntime:
 
         Lève KeyManagedByServer, KeyInvalid (forme ou refus de Helius) ou HeliusError (Helius injoignable, quota).
         """
-        if not self.can_set_key:
+        if self.key_source == "server":
             raise KeyManagedByServer("la clé Helius est fournie par la configuration du serveur")
+        if not self.can_set_key:
+            raise NotConfigured("adresse du service Helius invalide (EXTRANALYZER_HELIUS_URL)")
         key = (api_key or "").strip()
         if not KEY_PATTERN.fullmatch(key):
             raise KeyInvalid("clé Helius invalide : collez la clé seule (lettres, chiffres et tirets)")
@@ -121,10 +123,14 @@ class SolanaRuntime:
                 raise KeyInvalid("clé refusée par Helius : vérifiez-la dans votre tableau de bord Helius") from None
             raise
         tmp = self._key_file.with_name(self._key_file.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(key)
-        os.replace(tmp, self._key_file)
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(key)
+            os.replace(tmp, self._key_file)
+        except OSError:
+            tmp.unlink(missing_ok=True)      # aucune copie de la clé ne reste derrière un échec d'écriture
+            raise
         self.client, self.key_source = candidate, "app"
         log.info("clé Helius enregistrée depuis l'interface")
 
