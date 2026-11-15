@@ -8,7 +8,9 @@ const SOLSCAN = "https://solscan.io/account/";
 const STAKE_STATES = { activating: "en activation", active: "actif", deactivating: "en désactivation",
   inactive: "inactif" };
 const QUANTITY = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 4 });
-const PRICE = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 4 });
+const PRICE = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 6 });
+const PRICE_2 = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
+const formatPrice = (price) => (Math.abs(price) >= 1 ? PRICE_2 : PRICE).format(price);   // 6 décimales : jetons à quelques centimes
 
 let lastNotice = null;      // résultat d'une action, affiché une fois après le rafraîchissement
 
@@ -36,6 +38,10 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
     error.textContent = "";
     try {
       const notice = await run();
+      if (notice === false) {         // action abandonnée (invite annulée) : rien à rafraîchir
+        button.disabled = false;
+        return;
+      }
       if (typeof notice === "string") lastNotice = notice;
       await ctx.refresh();
     } catch (e) {
@@ -65,9 +71,11 @@ function row(first, quantity, price, value, last) {
     el("td", {}, last));
 }
 
-const priceText = (p) => (p.price_eur === null ? "—" : PRICE.format(Number(p.price_eur)));
+// Quantité et prix sont masqués avec les soldes : valeur = quantité × prix s'en déduirait sinon.
+const priceText = (p) => (isMasked("balance") ? MASK : p.price_eur === null ? "—" : formatPrice(Number(p.price_eur)));
 const valueText = (p) => (p.value_eur === null ? "—" : money(p.value_eur, "balance"));
-const solAmount = (p) => `${QUANTITY.format(Number(p.amount))} SOL`;
+const quantityText = (p, unit = "") => (isMasked("balance") ? MASK : `${QUANTITY.format(Number(p.amount))}${unit}`);
+const solAmount = (p) => quantityText(p, " SOL");
 
 function hideButton(p, hidden, ctx) {
   return action(hidden ? "Réafficher" : "Masquer",
@@ -83,7 +91,7 @@ function stakeRow(p, ctx) {
   const rename = p.vote_account
     ? action("Nommer", async () => {
       const value = window.prompt("Nom de ce validateur :", p.validator_label || "");
-      if (value === null) return;
+      if (value === null) return false;
       await ctx.api.put(`/tabs/banque/wallets/validators/${encodeURIComponent(p.vote_account)}`, { label: value });
     }, ctx, { className: "link" })
     : null;
@@ -92,8 +100,8 @@ function stakeRow(p, ctx) {
 
 function tokenRow(p, hidden, ctx) {
   const label = el("span", {}, p.symbol || short(p.mint),
-    p.name && p.name !== p.symbol ? el("span", { className: "muted", text: ` (${p.name})` }) : null);
-  return row(label, QUANTITY.format(Number(p.amount)), priceText(p), valueText(p), hideButton(p, hidden, ctx));
+    p.name && p.name !== p.symbol ? el("small", { className: "muted token-name", text: p.name }) : null);
+  return row(label, quantityText(p), priceText(p), valueText(p), hideButton(p, hidden, ctx));
 }
 
 function positionsBlock(wallet, ctx) {
@@ -105,7 +113,7 @@ function positionsBlock(wallet, ctx) {
     .sort((a, b) => Number(b.value_eur) - Number(a.value_eur));
   const unpriced = tokens.filter((p) => p.value_eur === null);
   const table = (rows) => el("div", { className: "table-wrap scroll-x" },
-    el("table", { className: "data-table" }, head(["Position", "Quantité", "Prix", "Valeur", ""]),
+    el("table", { className: "data-table wallet-table" }, head(["Position", "Quantité", "Prix", "Valeur", ""]),
       el("tbody", {}, rows)));
   return el("div", {},
     table([
@@ -162,7 +170,7 @@ function walletCard(wallet, ctx) {
     el("div", { className: "filters" },
       action("Renommer", async () => {
         const value = window.prompt("Nouveau nom du portefeuille :", wallet.label);
-        if (value === null || !value.trim()) return;
+        if (value === null || !value.trim()) return false;
         await ctx.api.patch(`/tabs/banque/wallets/${wallet.id}`, { label: value.trim() });
       }, ctx),
       action("Retirer", () => ctx.api.delete(`/tabs/banque/wallets/${wallet.id}`), ctx, { className: "danger",
@@ -215,6 +223,9 @@ export async function walletsSection(ctx) {
   const data = await ctx.api.get("/tabs/banque/wallets");
   const notice = lastNotice;
   lastNotice = null;
-  if (!data.configured) return el("div", {}, notConfigured(data), addForm(ctx));
+  if (!data.configured) {
+    return el("div", {}, notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
+      notConfigured(data), addForm(ctx));
+  }
   return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx));
 }
