@@ -181,32 +181,32 @@ identifiant de session ni IBAN complet n'est journalisé ou affiché.
 ### Portefeuilles Solana (Helius)
 
 Facultatif : suit en lecture seule la valeur en euros de portefeuilles Solana (SOL, jetons, comptes de staking), à
-partir de leur adresse publique. Aucune clé privée, aucune écriture sur la blockchain. Les valeurs ne sont pas
-mêlées aux totaux des relevés.
+partir de leur adresse publique. Aucune clé privée ni phrase de récupération, aucune écriture sur la blockchain. Les
+valeurs ne sont pas mêlées aux totaux des relevés.
 
-1. Créer une clé gratuite sur helius.dev.
-2. Déposer la clé en secret, lisible par l'uid du conteneur :
+**Mise en route, depuis l'interface (rien à configurer sur le serveur) :**
 
-   ```bash
-   printf '%s' '<clé Helius>' > secrets/helius.key
-   sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
-   ```
+1. Créer un compte gratuit sur [dashboard.helius.dev](https://dashboard.helius.dev) et copier la clé affichée dans
+   « API Keys ».
+2. Dans Extranalyzer, onglet **Banque**, section « Portefeuilles Solana » : coller la clé et cliquer sur
+   « Enregistrer la clé ». L'application la vérifie auprès de Helius avant de l'enregistrer.
+3. Ajouter ses adresses publiques.
 
-3. Ajouter `docker-compose.solana.yml` à `COMPOSE_FILE` dans `.env`, puis relancer :
+La clé est gardée dans le volume de données (`/data/helius.key`, droits 600) : elle fait donc partie des sauvegardes
+du volume. Elle n'est jamais écrite en base, journalisée ni réaffichée ; on peut la remplacer ou la supprimer depuis
+la même section. Le conteneur doit pouvoir joindre `https://mainnet.helius-rpc.com` en sortie. L'actualisation
+planifiée reprend `SYNC_HOURS` (12 par défaut ; 0 la désactive).
 
-   ```bash
-   # .env : COMPOSE_FILE=docker-compose.yml:docker-compose.solana.yml
-   # (avec la récupération bancaire : COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml:docker-compose.solana.yml)
-   docker compose up -d
-   ```
+**Variante pour administrateur (facultative)** : fournir la clé en secret Docker. Elle prend alors le pas sur la clé
+saisie dans l'interface, qui ne peut plus la modifier.
 
-   L'actualisation planifiée reprend `SYNC_HOURS` (12 par défaut ; 0 la désactive). `HELIUS_URL` (facultatif)
-   remplace l'adresse du service ; elle doit commencer par `https://`. Le conteneur doit pouvoir joindre
-   `https://mainnet.helius-rpc.com` en sortie.
+```bash
+read -rs HK && printf '%s' "$HK" > secrets/helius.key && unset HK
+sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
+# .env : ajouter docker-compose.solana.yml à COMPOSE_FILE, puis docker compose up -d
+```
 
-La clé ne quitte jamais le secret Docker ; elle n'est ni écrite en base, ni journalisée, ni affichée, et les
-adresses ne sont pas journalisées. `docker compose logs` indique pourquoi Helius est désactivé (`clé illisible` :
-refaire le `chown`/`chmod`).
+`HELIUS_URL` (facultatif) remplace l'adresse du service ; elle doit commencer par `https://`.
 
 ### Dépannage
 

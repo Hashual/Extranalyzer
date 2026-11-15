@@ -4,11 +4,13 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.deps import get_conn
 from app.sources.solana import wallets
-from app.sources.solana.runtime import NotConfigured, RefreshBusy, SolanaRuntime
+from app.sources.solana.client import HeliusError, RateLimited
+from app.sources.solana.runtime import (KeyInvalid, KeyManagedByServer, NotConfigured, RefreshBusy,
+                                        SolanaRuntime)
 from app.web_json import to_jsonable
 
 router = APIRouter()
@@ -29,6 +31,10 @@ class RefreshBody(BaseModel):
 
 class HiddenBody(BaseModel):
     hidden: bool
+
+
+class KeyBody(BaseModel):
+    api_key: str = Field(repr=False)
 
 
 def _runtime(request: Request) -> SolanaRuntime:
@@ -88,7 +94,40 @@ def list_wallets(request: Request, conn: Annotated[sqlite3.Connection, Depends(g
         for position in wallet["positions"]:
             position["amount"] = _exact(position["amount"])
             position["price_eur"] = _exact(position["price_eur"])
-    return to_jsonable({"configured": _runtime(request).configured, **data})
+    runtime = _runtime(request)
+    return to_jsonable({"configured": runtime.configured, "key_source": runtime.key_source,
+                        "can_set_key": runtime.can_set_key, **data})
+
+
+@router.put("/key")
+def set_key(body: KeyBody, request: Request):
+    """Clé Helius saisie dans l'interface : vérifiée par un appel en lecture, puis enregistrée. Jamais renvoyée."""
+    runtime = _runtime(request)
+    try:
+        runtime.set_key(body.api_key)
+    except KeyManagedByServer as exc:
+        raise HTTPException(409, str(exc)) from None
+    except KeyInvalid as exc:
+        raise HTTPException(422, str(exc)) from None
+    except RateLimited:
+        raise HTTPException(503, "Helius limite les requêtes : réessayez dans un moment") from None
+    except HeliusError:
+        raise HTTPException(502, "Helius injoignable : réessayez plus tard") from None
+    refresh = None
+    try:
+        refresh = _refresh(request, "clé enregistrée")
+    except HTTPException:
+        refresh = None
+    return {"ok": True, "refresh": refresh}
+
+
+@router.delete("/key")
+def delete_key(request: Request):
+    try:
+        _runtime(request).clear_key()
+    except KeyManagedByServer as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {"ok": True}
 
 
 @router.post("")

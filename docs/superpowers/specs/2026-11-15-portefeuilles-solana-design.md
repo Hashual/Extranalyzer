@@ -225,6 +225,19 @@ Quantités et prix en `Decimal` sérialisé en texte ; valeurs en centimes d'eur
 - README : section « Portefeuilles Solana (Helius) » qui explique comment créer la clé gratuite, poser le secret
   et activer.
 
+### 5.7 bis Clé saisie dans l'interface (révision du 2026-11-15, demandée par l'utilisateur)
+
+Le secret Docker était trop technique pour un novice. Révision :
+- La clé Helius se colle dans la section « Portefeuilles Solana » de l'onglet Banque. Le serveur la vérifie par un
+  appel en lecture (`getEpochInfo`) avant de l'enregistrer : une clé refusée par Helius n'est jamais gardée.
+- Elle est stockée dans le volume de données (`/data/helius.key`, droits 600, écriture atomique). Elle n'est jamais
+  écrite en base, journalisée ni renvoyée par l'API, et l'interface ne la réaffiche pas. Elle peut être remplacée ou
+  supprimée.
+- Le secret Docker reste possible pour un administrateur et prend le pas sur la clé saisie, qui devient non modifiable.
+- Plus besoin d'ajouter un fichier compose : la synchro planifiée tourne toujours et ne fait rien sans clé.
+- Contrepartie acceptée : la clé fait partie des sauvegardes du volume de données. Elle ne donne qu'un accès en lecture
+  aux données publiques de la blockchain (et consomme le quota gratuit de l'utilisateur).
+
 ### 5.8 Tests
 
 - Client : réponses Helius simulées (DAS paginé, Token-2022, jeton sans prix, NFT ignoré, erreurs HTTP et
