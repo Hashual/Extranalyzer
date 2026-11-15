@@ -142,6 +142,41 @@ CREATE TABLE sync_runs (
 CREATE INDEX idx_transactions_source_account ON transactions(source, account_id, op_date);
 -- fin v6
 
+-- Portefeuilles Solana (v7)
+CREATE TABLE wallets (
+    id INTEGER PRIMARY KEY,
+    address TEXT UNIQUE NOT NULL,
+    label TEXT NOT NULL,
+    savings_category_id INTEGER NULL REFERENCES categories(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    last_sync_at TEXT,
+    last_error TEXT
+);
+CREATE TABLE wallet_snapshots (
+    id INTEGER PRIMARY KEY,
+    wallet_id INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+    taken_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ok','error')),
+    total_eur_cents INTEGER,
+    unpriced_count INTEGER NOT NULL DEFAULT 0,
+    message TEXT
+);
+CREATE TABLE wallet_positions (
+    id INTEGER PRIMARY KEY,
+    snapshot_id INTEGER NOT NULL REFERENCES wallet_snapshots(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('sol','token','stake')),
+    mint TEXT, symbol TEXT, name TEXT,
+    amount TEXT NOT NULL, decimals INTEGER,
+    price_eur TEXT, price_source TEXT, value_eur_cents INTEGER,
+    stake_account TEXT, vote_account TEXT,
+    stake_state TEXT CHECK(stake_state IN ('activating','active','deactivating','inactive'))
+);
+CREATE TABLE validator_labels (vote_account TEXT PRIMARY KEY, label TEXT NOT NULL);
+CREATE TABLE hidden_mints (mint TEXT PRIMARY KEY);
+CREATE INDEX idx_wallet_snapshots_wallet ON wallet_snapshots(wallet_id, taken_at);
+CREATE INDEX idx_wallet_positions_snapshot ON wallet_positions(snapshot_id);
+-- fin v7
+
 CREATE INDEX idx_transactions_op_date ON transactions(op_date);
 CREATE INDEX idx_transactions_category_id ON transactions(category_id);
 CREATE INDEX idx_transactions_account_id ON transactions(account_id);
@@ -151,6 +186,6 @@ CREATE INDEX idx_transactions_section_id ON transactions(section_id);
 CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
 CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 
 COMMIT;
