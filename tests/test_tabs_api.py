@@ -76,7 +76,7 @@ def get(client, path, **params):
 # --- Paramètres communs ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("path", ["/overview/summary", "/categories/tree", "/transactions/list",
-                                  "/epargne/summary", "/a_classer/list"])
+                                  "/epargne/summary", "/epargne/dashboard", "/a_classer/list"])
 def test_invalid_periods_are_rejected(env, path):
     client = env[0]
     url = f"/api/tabs{path}"
@@ -497,6 +497,48 @@ def test_epargne_summary(env):
                             {"month": "2025-01", "net": "254.50", "net_cumulative": "354.50"}]
     checking = get(client, "/epargne/summary", **JAN)
     assert checking["total"]["net"] == "250.00"
+
+
+def test_epargne_dashboard_shape(env):
+    client, conn, _, _ = env
+    conn.execute("INSERT INTO accounts(id, number, label, kind) VALUES (3, 'A3', 'Livret vide fictif', 'savings')")
+    conn.execute("INSERT INTO documents(sha256, filename, stored_path, parser, statement_date, imported_at) "
+                 "VALUES ('shaD', 'f', 'p', 'x', '2025-01-31', '2025-02-01')")
+    conn.execute("INSERT INTO sections(document_id, account_id, statement_date, closing_cents, gap_cents, status,"
+                 " content_hash) VALUES (last_insert_rowid(), 2, '2025-01-31', 123456, 0, 'ok', 'h')")
+    conn.commit()
+    d = get(client, "/epargne/dashboard", **JAN)
+    assert {"as_of", "total", "savings", "crypto", "places", "allocation", "series"} <= d.keys()
+    assert d["as_of"] == "2025-01-31"
+    assert d["savings"]["count"] == 2 and d["savings"]["unknown_count"] == 1
+    assert d["savings"]["value"] == "1234.56"
+    assert d["total"]["value"] == d["savings"]["value"]
+    assert isinstance(d["savings"]["value"], str) and "." in d["savings"]["value"]
+    unknown = next(p for p in d["places"] if p["name"] == "Livret vide fictif")
+    assert unknown["value"] is None and unknown["unknown"] is True
+    assert d["crypto"]["value"] is None and d["crypto"]["tracked_since"] is None
+    assert all(isinstance(p["date"], str) for p in d["series"])
+
+
+def test_epargne_dashboard_empty_db(tmp_path):
+    settings = Settings(data_dir=tmp_path / "data", password_hash=hash_password(PASSWORD), max_upload_mb=1)
+    client = TestClient(create_app(settings))
+    assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
+    d = get(client, "/epargne/dashboard", **JAN)
+    assert d["places"] == [] and d["total"]["value"] is None
+    assert d["series"] and all(p["savings"] is None and p["crypto"] is None for p in d["series"])
+
+
+def test_epargne_dashboard_ignores_accounts_param(env):
+    client = env[0]
+    assert get(client, "/epargne/dashboard", **JAN) == get(client, "/epargne/dashboard", **JAN, accounts="1")
+
+
+def test_epargne_dashboard_bad_period_422(env):
+    client = env[0]
+    url = "/api/tabs/epargne/dashboard"
+    assert client.get(url, params={"start": "2025-02-01", "end": "2025-01-01"}).status_code == 422
+    assert client.get(url, params={"end": "2025-01-31"}).status_code == 422
 
 
 def test_paired_unclassified_transfer_is_savings_in_overview_and_epargne(env):
