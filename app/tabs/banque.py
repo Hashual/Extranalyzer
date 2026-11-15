@@ -16,10 +16,12 @@ from app.importer.amounts import from_cents
 from app.sources.enablebanking.client import EnableBankingError
 from app.sources.enablebanking.link import StateError, accept_gap, attach, bank_status, link_state, set_kind
 from app.sources.enablebanking.runtime import BankRuntime, NotConfigured, SyncBusy
+from app.tabs import banque_wallets
 from app.tabs.registry import Tab
 from app.web_json import mask_numbers, to_jsonable
 
 router = APIRouter()
+router.include_router(banque_wallets.router, prefix="/wallets")
 
 
 class SessionBody(BaseModel):

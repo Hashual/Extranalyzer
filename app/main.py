@@ -39,6 +39,7 @@ from app.sources.enablebanking.client import Transport, urllib_transport
 from app.sources.enablebanking.link import bank_status
 from app.sources.enablebanking.runtime import BankRuntime
 from app.sources.scheduler import Scheduler
+from app.sources.solana.runtime import SolanaRuntime
 from app.store.db import connect, transactional
 from app.tabs import ENABLED_TABS, load_tabs
 from app.web_json import delete_report_to_json, mask_numbers, report_to_json
@@ -157,7 +158,8 @@ class MatchingMailSync(MailSyncThread):
 
 
 def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
-               bank_transport: Transport = urllib_transport, start_mail_thread: bool = True) -> FastAPI:
+               bank_transport: Transport = urllib_transport,
+               solana_transport: Transport = urllib_transport, start_mail_thread: bool = True) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
@@ -186,16 +188,22 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
     bank = BankRuntime(settings.bank, read, write, after_import, transport=bank_transport)
     scheduler = (Scheduler(bank.scheduled_tick, settings.sync_hours * 3600)
                  if bank.configured and settings.sync_hours > 0 else None)
+    solana = SolanaRuntime(settings.solana, read, write, transport=solana_transport,
+                           key_file=settings.data_dir / "helius.key", base_url=settings.helius_url)
+    # toujours planifiée : une clé peut être saisie plus tard dans l'interface (le tour ne fait rien sans clé)
+    solana_scheduler = (Scheduler(solana.scheduled_tick, settings.sync_hours * 3600, name="synchro-solana")
+                        if settings.sync_hours > 0 else None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if scheduler is not None:
-            scheduler.start()
+        schedulers = [s for s in (scheduler, solana_scheduler) if s is not None]
+        for task in schedulers:
+            task.start()
         try:
             yield
         finally:
-            if scheduler is not None:
-                scheduler.stop()
+            for task in schedulers:
+                task.stop()
 
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
@@ -212,6 +220,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         syncer.start()
         app.state.mail_thread = syncer
     app.state.bank = bank
+    app.state.solana = solana
 
     def api_guard(request: Request) -> JSONResponse | None:
         """Refus éventuel d'une requête /api avant routage (CSRF, session, taille du dépôt)."""
