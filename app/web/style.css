@@ -554,3 +554,33 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 .wallet-table { min-width: 36rem; }          /* sous cette largeur, le cadre défile (.scroll-x) au lieu de rogner */
 .wallet-table td { white-space: nowrap; }
 .wallet-table .token-name { display: block; font-size: 0.8rem; }
+
+/* Onglet Épargne : tableau de bord */
+.toggle { display: inline-flex; gap: 0.25rem; margin-bottom: 0.5rem; }
+.toggle button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.chart-donut { height: 220px; }
+.donut-legend { margin-top: 0.5rem; }
+.donut-legend li { display: flex; align-items: center; gap: 0.5rem; padding: 0.1rem 0; }
+.donut-legend .legend-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swatch { width: 0.75rem; height: 0.75rem; border-radius: 3px; flex: none; }
+.place-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: var(--gap); }
+.place-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.place-card p { margin: 0; }
+.place-card.clickable { cursor: pointer; }
+.place-card.clickable:hover { border-color: var(--accent); }
+.place-name { color: var(--muted); font-size: 0.9rem; }
+.place-value { font-size: 1.2rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.flows > summary { cursor: pointer; font-weight: 600; }
+.flows[open] > summary { margin-bottom: 0.75rem; }
+.flows .card { padding-left: 0; padding-right: 0; border: none; background: none; }
+@media (max-width: 768px) {
+  .dash-cols { grid-template-columns: 1fr; }
+}
