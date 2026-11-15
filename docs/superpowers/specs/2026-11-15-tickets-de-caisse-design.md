@@ -123,9 +123,14 @@ choix du concepteur.
   peut contenir un ticket de caisse seul, ou le ticket de caisse et son ticket CB.
 - Le fichier déposé passe par les **mêmes contrôles** que les relevés : PDF uniquement, taille maximale,
   dédoublonnage par SHA-256, stockage dans le volume (`/data/receipts/`).
-- Le serveur reconnaît s'il s'agit d'un relevé bancaire ou d'un ticket grâce au `can_parse` des
-  lecteurs. Le bouton de dépôt existant accepte donc aussi les tickets. *(choix du concepteur ; à
-  défaut, une zone de dépôt dans l'onglet Courses)*
+- **Dépôt manuel** *(choix du concepteur)* : une zone de dépôt propre à l'onglet Courses, qui accepte
+  plusieurs fichiers à la fois (route distincte de `/api/upload`, qui reste réservée aux relevés et
+  n'est pas modifiée).
+  - Un ticket CB est apparié à son ticket de caisse par l'horodatage du nom de fichier
+    (`JJMMAAAA-HHMMSS`), qu'ils arrivent ensemble ou séparément. Un ticket CB seul attend son ticket.
+  - Un PDF qu'aucun lecteur ne reconnaît est **refusé** avec un message clair (« enseigne pas encore
+    prise en charge »). Seule la relève, qui connaît l'enseigne par le libellé, conserve des tickets
+    « en attente de lecteur ».
 - **Lecteurs par enseigne**, sur le modèle de `StatementParser` : interface `ReceiptParser`
   (`name`, `can_parse`, `parse`). Le premier est `superu`.
 - **Lecteur Super U** (par coordonnées, comme le relevé) :
@@ -147,9 +152,13 @@ choix du concepteur.
   démarrage quand un nouveau lecteur apparaît) relit tous les tickets conservés.
 
 ### 5.4 Rapprochement ticket ↔ débit *(règles du concepteur, validées dans leur principe)*
-- **Montant de référence** : le montant payé par carte (ticket CB, sinon la ligne de paiement carte du
-  ticket). Un ticket payé entièrement autrement (espèces, bon d'achat) n'a pas de débit à trouver : il
-  est « sans débit carte » et reste visible.
+- **Moyens de paiement** : le lecteur relève chaque paiement du ticket avec son type : carte
+  bancaire, titre-restaurant (carte ticket restaurant, Swile), bon d'achat ou cagnotte, espèces. Un
+  ticket peut avoir deux tickets CB, un par carte. Le builder repère sur les vrais tickets ce qui
+  distingue une carte titre-restaurant d'une carte bancaire.
+- **Montant de référence** : uniquement la part payée par **carte bancaire**. Un ticket sans
+  paiement par carte bancaire (tout en titres-restaurant, espèces ou bons) n'a pas de débit à
+  trouver : il est « sans débit bancaire », reste visible et compte dans la consommation.
 - **Candidats** : les débits du compte courant de **même montant exact**, dont la date d'opération est
   comprise entre le jour du ticket et 3 jours après, et qui ne sont pas déjà reliés à un autre ticket.
 - **Un seul candidat** : relié automatiquement, marqué « auto ».
@@ -161,7 +170,11 @@ choix du concepteur.
   à ±7 jours, puis tout débit de la période), ou délie. Un lien manuel n'est jamais défait
   automatiquement.
 - **Identité stable** : le lien est enregistré sur le `tx_key` de la transaction (comme les
-  reclassements manuels), pour survivre à une ré-analyse des relevés.
+  reclassements manuels), pour survivre à une ré-analyse des relevés. Quand une ré-analyse change un
+  `tx_key`, les liens suivent par le même mécanisme que `move_manual_overrides`. Si le débit relié
+  disparaît (relevé remplacé), un lien auto repasse « à relier » et le rapprochement est retenté. Un
+  lien manuel passe « à relier (débit disparu) » et n'est jamais refait automatiquement. *(choix du
+  concepteur)*
 - Le rapprochement **ne change pas la catégorie** du débit.
 
 ### 5.5 Rayons et familles
@@ -192,11 +205,27 @@ Hygiène & beauté    ███            18,90 €
 Non détaillé (débits Courses sans ticket)   24,60 €
 ```
 
-- **Total** : somme des débits de la catégorie Courses (et sous-catégories) sur la période, nette des
-  remboursements, comme l'onglet Catégories. Ventilation par famille : articles des tickets **reliés**
-  dont le débit est dans la période. « Non détaillé » = le reste.
-- **Tickets non reliés** : listés à part. Leurs articles ne comptent pas dans la répartition, pour que
-  la somme des familles reste égale aux débits réels.
+- **Périmètre** *(choix du concepteur)* : les comptes du sélecteur commun, comme les autres onglets.
+  Total = débits de la catégorie Courses (et sous-catégories) sur la période, nets des remboursements,
+  comme l'onglet Catégories, **plus** les débits reliés à un ticket mais classés ailleurs. Ces
+  derniers sont signalés (« relié mais hors Courses ») pour que l'utilisateur corrige la catégorie
+  s'il le souhaite.
+- **Ventilation par famille** : articles des tickets dont la **date du ticket** est dans la période.
+  « Non détaillé » = débits Courses sans ticket relié.
+- **Toute la consommation compte** (choix A de l'utilisateur) : une partie des courses est payée en
+  **titres-restaurant** (carte ticket restaurant chez Super U, **Swile** chez Intermarché), qui
+  n'apparaissent jamais sur le relevé bancaire. Les articles d'un ticket comptent donc **en entier**
+  dans leurs familles, quel que soit le moyen de paiement. Cela inclut les tickets payés entièrement
+  en titres-restaurant et les tickets relus mais non reliés à un débit.
+- **En-tête de l'onglet** : total des courses, réparti par moyen de paiement (carte bancaire,
+  titres-restaurant, bons d'achat et cagnotte, espèces). Exemple : « 312 € de courses, dont 120 € en
+  titres-restaurant ». Le total de l'onglet ne correspond donc plus aux débits Courses des autres
+  onglets. L'écart est expliqué par cette répartition, et les autres onglets ne changent pas.
+- Les bons d'achat et remises du ticket restent des lignes négatives (famille Remises) : c'est ce
+  que la consommation a réellement coûté.
+- Les tickets **en erreur** ou **en attente de lecteur** ne comptent pas.
+- **Tickets à relier** : listés à part, pour que l'utilisateur les relie. Leurs articles comptent
+  quand même dans la consommation.
 - **Clic sur une famille** : ses rayons, puis pour un rayon ses produits (libellé, quantité totale,
   prix moyen, nombre d'achats sur la période), avec la variation par rapport à la période de
   comparaison.
@@ -231,11 +260,15 @@ Proposition du concepteur, à affiner par le builder :
 - La mémoire reste sous 256 Mo : les PDF sont lus un par un, jamais tous en mémoire.
 
 ## 6. Ordre de livraison suggéré
-1. Modèle de données et lecteur Super U (validé en local sur les vrais tickets, testé sur des tickets
-   fictifs), puis dépôt manuel.
-2. Rapprochement avec les débits.
-3. Rayons, familles et onglet Courses.
-4. Relève IMAP et préparation Intermarché.
+Les vrais tickets ne sont disponibles que dans Gmail : la relève vient donc en premier. Elle
+récupère les 99 tickets Super U dans un dossier de données local, ignoré par git, et c'est sur eux
+que le lecteur est mis au point. Un mot de passe d'application Google est créé par l'utilisateur et
+déposé dans `secrets/` (ignoré par git).
+1. Modèle de données et relève IMAP (avec la préparation Intermarché).
+2. Lecteur Super U, validé en local sur les vrais tickets et testé sur des tickets fictifs, puis
+   dépôt manuel.
+3. Rapprochement avec les débits.
+4. Rayons, familles et onglet Courses.
 5. Configuration, compose, README, puis déploiement sur le Pi.
 
 ## 7. Laissé au builder
