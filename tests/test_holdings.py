@@ -170,8 +170,25 @@ def test_wallet_without_category_has_unknown_deposit(conn):
     w2 = _wallet(conn, "avec catégorie", category_id=cat)
     _snap(conn, w2, "2026-02-01T08:00:00+00:00", 3_000)
     d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))
-    assert d["crypto"]["value"] == 10_000
-    assert d["crypto"]["deposited"] == 0 and d["crypto"]["gap"] == 3_000
+    c = d["crypto"]
+    assert c["value"] == 10_000
+    assert c["deposited"] == 0 and c["compared_value"] == 3_000 and c["compared_partial"] is True
+    assert c["gap"] == c["compared_value"] - c["deposited"] == 3_000
+
+
+def test_unread_wallet_with_known_deposit_is_excluded_from_comparison(conn):
+    from app.classify.savings_target import savings_category_named
+    cat1, cat2 = savings_category_named(conn, "Crypto 1"), savings_category_named(conn, "Crypto 2")
+    other = _account(conn, label="COURANT", kind="checking")
+    for cat, cents in ((cat1, -1_000), (cat2, -5_000)):
+        conn.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (cat, _tx(conn, other, "2026-01-05", cents)))
+    w1 = _wallet(conn, "lu", category_id=cat1)
+    _snap(conn, w1, "2026-02-01T08:00:00+00:00", 3_000)
+    _wallet(conn, "non lu", category_id=cat2)
+    c = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))["crypto"]
+    assert c["unread_count"] == 1 and c["value"] == 3_000
+    assert c["deposited"] == 1_000 and c["compared_value"] == 3_000 and c["gap"] == 2_000
+    assert c["compared_partial"] is False
 
 
 def test_savings_balance_uses_latest_ok_statement_and_ignores_error(conn):
