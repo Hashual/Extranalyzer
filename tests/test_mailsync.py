@@ -184,3 +184,28 @@ def test_thread_runs_at_start_and_on_trigger(tmp_path, write):
         thread.stop()
         thread.join(5)
     assert not thread.is_alive()
+
+
+def test_message_is_atomic_when_ingestion_fails_midway(tmp_path, write, monkeypatch):
+    import sqlite3
+
+    import app.receipts.mailsync as mailsync
+
+    real, calls = mailsync.ingest_file, []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 4:             # 2e pièce jointe du 2e message
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(mailsync, "ingest_file", flaky)
+    imap = FakeImap({LABEL: (7, {1: make_mail(1), 2: make_mail(2)})})
+    result = sync_once(cfg(), write, tmp_path / "r", [], imap)
+    assert result["error"] and result["messages"] == 1
+    assert rows(write, "SELECT COUNT(*) FROM receipts") == [(1,)]       # rien du message 2
+    assert rows(write, "SELECT COUNT(*) FROM receipt_slips") == [(1,)]
+    assert rows(write, "SELECT last_uid, last_success_at FROM mail_sync") == [(1, None)]
+    monkeypatch.setattr(mailsync, "ingest_file", real)                  # reprise : le message 2 est rejoué
+    again = sync_once(cfg(), write, tmp_path / "r", [], FakeImap({LABEL: (7, {1: make_mail(1), 2: make_mail(2)})}))
+    assert again == {"messages": 1, "files": 2, "error": None}
+    assert rows(write, "SELECT COUNT(*) FROM receipts") == [(2,)]

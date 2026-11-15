@@ -71,12 +71,16 @@ def write_parsed(conn: sqlite3.Connection, receipt_id: int, parsed: ParsedReceip
 def _read(conn: sqlite3.Connection, receipt_id: int, parser: ReceiptParser, pdf: Path) -> tuple[str, str | None]:
     """Lit le PDF et met à jour le ticket : (statut, message). Un échec met le ticket en `error`."""
     try:
-        parsed = parser.parse(pdf)
-        write_parsed(conn, receipt_id, parsed)
-    except Exception as exc:        # un lecteur ne doit jamais interrompre toute une relève
-        message = str(exc) if isinstance(exc, ReceiptParseError) else f"lecture impossible ({type(exc).__name__})"
-        conn.execute("UPDATE receipts SET status='error', message=? WHERE id=?", (message, receipt_id))
-        return "error", message
+        try:
+            parsed = parser.parse(pdf)
+        except ReceiptParseError:
+            raise
+        except Exception as exc:        # un lecteur ne doit jamais interrompre toute une relève
+            raise ReceiptParseError(f"lecture impossible ({type(exc).__name__})") from exc
+        write_parsed(conn, receipt_id, parsed)      # une erreur sqlite3 se propage : le message sera rejoué
+    except ReceiptParseError as exc:
+        conn.execute("UPDATE receipts SET status='error', message=? WHERE id=?", (str(exc), receipt_id))
+        return "error", str(exc)
     conn.execute("UPDATE receipts SET status='ok', message=NULL, shop=?, purchased_at=?, total_cents=? "
                  "WHERE id=?", (parsed.shop, parsed.purchased_at.isoformat(timespec="seconds"),
                                 parsed.total_cents, receipt_id))

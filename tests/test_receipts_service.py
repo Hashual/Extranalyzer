@@ -134,3 +134,24 @@ def test_reread_all_replaces_lines(conn, tmp_path):
     counts = reread(conn, tmp_path, [FakeParser(fail=True)])
     assert counts["error"] == 1
     assert conn.execute("SELECT status FROM receipts").fetchone()[0] == "error"
+
+
+def test_unexpected_parser_exception_yields_error_status(conn, tmp_path):
+    class Crashing(FakeParser):
+        def parse(self, path):
+            raise KeyError("x")
+
+    r = ingest_file(conn, pdf("r"), RECEIPT, tmp_path, [Crashing()], origin="upload")
+    assert (r.outcome, r.status) == ("stored", "error") and "KeyError" in r.message
+
+
+def test_database_error_during_write_propagates(conn, tmp_path, monkeypatch):
+    import sqlite3
+
+    import app.receipts.service as service
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(service, "write_parsed", boom)
+    with pytest.raises(sqlite3.OperationalError):
+        ingest_file(conn, pdf("r"), RECEIPT, tmp_path, [FakeParser()], origin="upload")
