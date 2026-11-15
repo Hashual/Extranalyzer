@@ -127,6 +127,10 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
       }
     }, `Catégorie de « ${tx.label} »`);
     const labelCell = el("td", { className: "label" }, el("span", { text: tx.label }));
+    if (tx.receipt_id) {
+      labelCell.append(el("a", { className: "receipt-icon", href: `#tab=courses&receipt=${tx.receipt_id}`,
+                                 text: "🧾", title: "Voir le ticket de caisse", attrs: { "aria-label": "Voir le ticket de caisse" } }));
+    }
     if (tx.manual) labelCell.append(el("span", { className: "tag", text: "manuel" }));
     if (tx.mirror) labelCell.append(el("span", { className: "tag", text: "miroir" }));
     if (tx.classified_by === "model") {

@@ -409,9 +409,15 @@ def test_static_shell_is_served(settings):
     assert r.status_code == 200 and "/static/app.js" in r.text
     assert "/static/vendor/chart.umd.min.js" in r.text
     assert re.search(r"<input id=.upload-input.[^>]* multiple[ >]", r.text)     # dépôt de plusieurs relevés
-    for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js",
+    for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js", "/static/tabs/courses.js",
                  "/static/vendor/chart.umd.min.js"):
         assert c.get(path).status_code == 200, path
+
+
+def test_courses_tab_module_is_served(settings):
+    js = _client(settings).get("/static/tabs/courses.js").text
+    assert 'export const id = "courses"' in js and 'export const title = "Courses"' in js
+    assert "export async function render(" in js
 
 
 def _rule_patterns(settings):
