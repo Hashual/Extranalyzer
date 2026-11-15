@@ -30,12 +30,17 @@ from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
 from app.importer.service import ImportReport, delete_document, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
+from app.receipts import PARSERS_RECEIPTS
+from app.receipts.aisles import load_aisle_seed
+from app.receipts.mailsync import MailSyncThread
+from app.receipts.matching import match_receipts
+from app.receipts.service import reread
 from app.sources.enablebanking.client import Transport, urllib_transport
 from app.sources.enablebanking.link import bank_status
 from app.sources.enablebanking.runtime import BankRuntime
 from app.sources.scheduler import Scheduler
 from app.sources.solana.runtime import SolanaRuntime
-from app.store.db import connect
+from app.store.db import connect, transactional
 from app.tabs import ENABLED_TABS, load_tabs
 from app.web_json import delete_report_to_json, mask_numbers, report_to_json
 
@@ -46,6 +51,7 @@ PARSERS = [CreditMutuelParser()]
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 CSRF_HEADER = "x-extranalyzer"
 MULTIPART_OVERHEAD = 64 * 1024     # marge d'en-têtes multipart tolérée au-delà de la taille maximale
+UPLOAD_PATHS = frozenset({"/api/upload", "/api/tabs/courses/upload"})     # dépôts soumis à la garde de taille
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "X-Content-Type-Options": "nosniff",
@@ -87,13 +93,21 @@ def _init_storage(settings: Settings) -> None:
     Les catégories du seed sont complétées à chaque démarrage, sauf celles que l'utilisateur a supprimées ou
     renommées (mémorisées dans `seed_dismissed`) ; ses règles ne sont installées que sur une installation neuve
     (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
+
+    Tickets de caisse : seed des rayons (sans défaire les choix de l'utilisateur), relecture des tickets
+    en attente d'un lecteur (une enseigne nouvellement prise en charge), puis rapprochement.
     """
     (settings.data_dir / "pdfs").mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "receipts").mkdir(parents=True, exist_ok=True)
     conn = connect(settings.data_dir / "extranalyzer.db")
     try:
         with resources.as_file(resources.files("app.classify").joinpath("rules.seed.toml")) as seed:
             load_seed(conn, seed, with_rules=is_fresh_install(conn))
         reclassify(conn)
+        with resources.as_file(resources.files("app.receipts").joinpath("aisles.seed.toml")) as seed:
+            load_aisle_seed(conn, seed)
+        reread(conn, settings.data_dir / "receipts", PARSERS_RECEIPTS, only_pending=True)
+        match_receipts(conn)
         conn.commit()
     finally:
         conn.close()
@@ -124,12 +138,32 @@ def _meta(conn: sqlite3.Connection) -> dict:
             "data_range": {"min": low, "max": high}, "bank": bank_status(conn, datetime.now(timezone.utc))}
 
 
+def after_import(conn: sqlite3.Connection, ids: list[int]) -> None:
+    """Après un import de relevé ou une synchro bancaire : classement des nouvelles opérations, puis
+    rapprochement des tickets."""
+    on_new_transactions(conn, ids)
+    match_receipts(conn)
+
+
+class MatchingMailSync(MailSyncThread):
+    """Relève suivie du rapprochement des nouveaux tickets, dans sa propre transaction d'écriture.
+
+    `run_once` sert aussi au bouton « Relever maintenant » : le verrou de passage de MailSyncThread
+    garantit qu'un passage manuel et un passage de fond ne se chevauchent jamais."""
+
+    def run_once(self) -> dict:
+        result = super().run_once()
+        self._write(transactional(match_receipts))
+        return result
+
+
 def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
                bank_transport: Transport = urllib_transport,
-               solana_transport: Transport = urllib_transport) -> FastAPI:
+               solana_transport: Transport = urllib_transport, start_mail_thread: bool = True) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
+    receipts_dir = settings.data_dir / "receipts"
     sessions = Sessions(load_or_create_secret(settings.data_dir / "secret.key"))
     limiter = RateLimiter(limit=5, window=60)
     write_lock = threading.Lock()      # une seule écriture lourde (import, conflit, ré-analyse) à la fois
@@ -151,7 +185,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         finally:
             conn.close()
 
-    bank = BankRuntime(settings.bank, read, write, on_new_transactions, transport=bank_transport)
+    bank = BankRuntime(settings.bank, read, write, after_import, transport=bank_transport)
     scheduler = (Scheduler(bank.scheduled_tick, settings.sync_hours * 3600)
                  if bank.configured and settings.sync_hours > 0 else None)
     solana = SolanaRuntime(settings.solana, read, write, transport=solana_transport,
@@ -173,6 +207,18 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
 
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
+    app.state.receipts_dir = receipts_dir
+    app.state.write = write
+    app.state.max_upload_bytes = max_bytes
+    # Relève : l'objet existe dès qu'elle est configurée (bouton « Relever maintenant ») ; le fil de fond
+    # n'est démarré que sur demande (jamais dans les tests).
+    syncer = MatchingMailSync(settings.mail, write, receipts_dir, PARSERS_RECEIPTS) if settings.mail else None
+    app.state.mail_enabled = syncer is not None
+    app.state.mail_syncer = syncer
+    app.state.mail_thread = None
+    if syncer is not None and start_mail_thread:
+        syncer.start()
+        app.state.mail_thread = syncer
     app.state.bank = bank
     app.state.solana = solana
 
@@ -183,7 +229,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
             return JSONResponse({"detail": "en-tête X-Extranalyzer manquant"}, status_code=403)
         if path != "/api/login" and not sessions.valid(request.cookies.get(SESSION_COOKIE)):
             return JSONResponse({"detail": "authentification requise"}, status_code=401)
-        if path == "/api/upload" and request.method == "POST":
+        if path in UPLOAD_PATHS and request.method == "POST":
             length = _content_length(request)
             if length is None:
                 return JSONResponse({"detail": "en-tête Content-Length requis"}, status_code=411)
@@ -234,7 +280,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
 
     def _import(data: bytes, filename: str) -> ImportReport:
         try:
-            return write(lambda conn: import_pdf(conn, data, filename, pdf_dir, PARSERS, on_new_transactions))
+            return write(lambda conn: import_pdf(conn, data, filename, pdf_dir, PARSERS, after_import))
         except Exception as exc:     # fichier hostile ou inattendu : rapport d'erreur, le serveur continue
             log.error("échec de l'import d'un relevé (%s)", type(exc).__name__)
             return ImportReport(None, False, [], "échec de l'analyse du relevé")
@@ -254,7 +300,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         def run(conn: sqlite3.Connection) -> tuple[str, int]:
             if conn.execute("SELECT 1 FROM sections WHERE id = ?", (section_id,)).fetchone() is None:
                 raise UnknownSection
-            orphaned = resolve_conflict(conn, section_id, body.accept, on_new_transactions, pdf_dir=pdf_dir,
+            orphaned = resolve_conflict(conn, section_id, body.accept, after_import, pdf_dir=pdf_dir,
                                         parsers=PARSERS)
             return conn.execute("SELECT status FROM sections WHERE id = ?", (section_id,)).fetchone()[0], orphaned
         try:
@@ -270,11 +316,12 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         report = write(lambda conn: delete_document(conn, document_id, pdf_dir, on_new_transactions))
         if report is None:
             raise HTTPException(404, f"relevé {document_id} introuvable")
+        write(transactional(match_receipts))    # tickets reliés aux débits supprimés : déliés ou signalés
         return delete_report_to_json(report)
 
     @api.post("/reanalyse")
     def reanalyse():
-        reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, on_new_transactions))
+        reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, after_import))
         return [report_to_json(r) for r in reports]
 
     for tab in tabs:

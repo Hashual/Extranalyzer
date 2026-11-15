@@ -27,6 +27,7 @@ include = ["app*"]
 [tool.setuptools.package-data]
 "app.store" = ["schema.sql"]
 "app.classify" = ["rules.seed.toml"]
+"app.receipts" = ["aisles.seed.toml"]
 "app" = ["web/*", "web/**/*"]
 
 [tool.pytest.ini_options]

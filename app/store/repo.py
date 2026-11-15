@@ -175,6 +175,24 @@ def move_manual_overrides(conn: sqlite3.Connection, moves: dict[str, str]) -> in
     return len(categories) - len(pending)
 
 
+def receipt_linked_keys(conn: sqlite3.Connection, tx_keys: list[str]) -> set[str]:
+    """Parmi `tx_keys`, ceux qu'un ticket de caisse relie (lien auto ou manuel, même cassé)."""
+    found: set[str] = set()
+    for start in range(0, len(tx_keys), 500):
+        chunk = tx_keys[start:start + 500]
+        found.update(r[0] for r in conn.execute(
+            f"SELECT tx_key FROM receipts WHERE tx_key IN ({','.join('?' * len(chunk))})", chunk))
+    return found
+
+
+def move_receipt_links(conn: sqlite3.Connection, moves: dict[str, str]) -> None:
+    """Déplace `receipts.tx_key` de l'ancienne identité (clé) vers la nouvelle (valeur), sauf si la
+    nouvelle est déjà reliée par un ticket : le lien reste alors sur l'ancienne identité."""
+    for old_key, new_key in moves.items():
+        if conn.execute("SELECT 1 FROM receipts WHERE tx_key = ?", (new_key,)).fetchone() is None:
+            conn.execute("UPDATE receipts SET tx_key = ? WHERE tx_key = ?", (new_key, old_key))
+
+
 def find_key_collision(conn: sqlite3.Connection, tx_keys: list[str],
                        exclude_section_id: int | None = None) -> tuple[str, str | None] | None:
     """(numéro de compte, date du relevé) de la première transaction existante portant l'une des
