@@ -21,6 +21,7 @@ from app.analytics.totals import unclassified_count
 from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, load_or_create_secret, \
     verify_password
 from app.classify.pipeline import on_new_transactions, reclassify
+from app.receipts.matching import match_receipts
 from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
@@ -115,6 +116,12 @@ def _meta(conn: sqlite3.Connection) -> dict:
             "data_range": {"min": low, "max": high}}
 
 
+def after_import(conn: sqlite3.Connection, ids: list[int]) -> None:
+    """Après un import de relevé : classement des nouvelles opérations, puis rapprochement des tickets."""
+    on_new_transactions(conn, ids)
+    match_receipts(conn)
+
+
 def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
@@ -189,7 +196,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
 
     def _import(data: bytes, filename: str) -> ImportReport:
         try:
-            return write(lambda conn: import_pdf(conn, data, filename, pdf_dir, PARSERS, on_new_transactions))
+            return write(lambda conn: import_pdf(conn, data, filename, pdf_dir, PARSERS, after_import))
         except Exception as exc:     # fichier hostile ou inattendu : rapport d'erreur, le serveur continue
             log.error("échec de l'import d'un relevé (%s)", type(exc).__name__)
             return ImportReport(None, False, [], "échec de l'analyse du relevé")
@@ -209,7 +216,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
         def run(conn: sqlite3.Connection) -> tuple[str, int]:
             if conn.execute("SELECT 1 FROM sections WHERE id = ?", (section_id,)).fetchone() is None:
                 raise UnknownSection
-            orphaned = resolve_conflict(conn, section_id, body.accept, on_new_transactions, pdf_dir=pdf_dir,
+            orphaned = resolve_conflict(conn, section_id, body.accept, after_import, pdf_dir=pdf_dir,
                                         parsers=PARSERS)
             return conn.execute("SELECT status FROM sections WHERE id = ?", (section_id,)).fetchone()[0], orphaned
         try:
@@ -222,7 +229,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
 
     @api.post("/reanalyse")
     def reanalyse():
-        reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, on_new_transactions))
+        reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, after_import))
         return [report_to_json(r) for r in reports]
 
     for tab in tabs:
