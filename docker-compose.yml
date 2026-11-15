@@ -11,8 +11,12 @@ services:
       - /tmp:size=64m
     secrets:
       - password
+      - gmail_app_password
     environment:
       EXTRANALYZER_PASSWORD_FILE: /run/secrets/password
+      EXTRANALYZER_GMAIL_APP_PASSWORD_FILE: /run/secrets/gmail_app_password
+      EXTRANALYZER_GMAIL_USER: ${GMAIL_USER:-}
+      EXTRANALYZER_RECEIPT_LABELS: ${RECEIPT_LABELS:-Super U/Tickets de caisses=superu;intermarche/Tickets de caisses=intermarche}
     read_only: true
     mem_limit: 256m
     cpus: 1.0
@@ -29,6 +33,8 @@ services:
 secrets:
   password:
     file: ./secrets/password.txt
+  gmail_app_password:
+    file: ./secrets/gmail_app_password.txt
 
 volumes:
   data:

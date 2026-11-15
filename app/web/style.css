@@ -507,6 +507,13 @@ button.danger { border-color: var(--danger); color: var(--danger); }
   .tx-table select { min-width: 0; }
 }
 
+/* Courses */
+.tag.warn { border-color: var(--warning); color: var(--warning); }
+.alerts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap); margin-bottom: var(--gap); }
+.alerts .tile-note { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--gap); margin: 0.5rem 0; }
+.receipt-icon { margin-left: 0.4rem; text-decoration: none; }
+details.card summary { cursor: pointer; font-weight: 600; }
 /* Masquage des montants */
 .privacy { position: relative; display: inline-flex; align-items: stretch; }
 .privacy-toggle { border-top-right-radius: 0; border-bottom-right-radius: 0; }
