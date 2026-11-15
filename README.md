@@ -130,10 +130,11 @@ ou `GMAIL_USER` manque.
 1. Sur le compte Google, activer la validation en deux étapes, puis créer un mot de passe
    d'application (compte Google, Sécurité, Mots de passe des applications). Google l'affiche par groupes
    de 4 caractères : les espaces sont retirés par l'application, on peut le coller tel quel.
-2. Sur le Pi, l'écrire dans le secret, avec les mêmes droits que le mot de passe de l'application :
+2. Sur le Pi, l'écrire dans le secret (le fichier existe déjà, propriété de l'uid 10001 en lecture seule :
+   il faut donc passer par `sudo tee`), en gardant les mêmes droits que le mot de passe de l'application :
 
    ```bash
-   printf '%s' 'xxxx xxxx xxxx xxxx' > secrets/gmail_app_password.txt
+   printf '%s' 'xxxx xxxx xxxx xxxx' | sudo tee secrets/gmail_app_password.txt >/dev/null
    sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
    ```
 
@@ -160,7 +161,7 @@ Variables facultatives (dans `.env` à côté du compose) : `RECEIPT_LABELS` (fo
 pour le changer).
 
 Désactiver la relève : vider le secret (`sudo sh -c ': > secrets/gmail_app_password.txt'`, droits
-inchangés) ou laisser `GMAIL_USER` vide, puis `docker compose up -d --force-recreate`. Les tickets déjà
+inchangés) ou laisser `GMAIL_USER` vide (supprimer la ligne du `.env` ou la mettre à `GMAIL_USER=`), puis `docker compose up -d --force-recreate`. Les tickets déjà
 récupérés restent dans l'application.
 
 ## Sauvegarde et restauration du volume `data`
@@ -188,6 +189,16 @@ L'archive contient les PDF des relevés, les PDF des tickets de caisse (`receipt
 
 ## Mettre à jour
 
+- **Première mise à jour vers la relève des tickets** : le compose déclare maintenant le secret
+  `secrets/gmail_app_password.txt`, et `docker compose up -d` échoue tant qu'il n'existe pas. À créer
+  avant (vide : la relève reste désactivée, voir « Tickets de caisse » pour l'activer) :
+
+  ```bash
+  sudo sh -c ': > secrets/gmail_app_password.txt'
+  sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
+  ```
+
+  Le nouveau `docker-compose.yml` doit aussi être copié sur le Pi (route A).
 - **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :
   `gunzip -c extranalyzer-arm64.tar.gz | docker load && docker compose up -d`.
 - **Route B** (build sur le Pi) : `git pull && docker build -t extranalyzer:arm64 . && docker compose up -d`.
