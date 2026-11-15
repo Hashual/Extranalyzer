@@ -94,7 +94,8 @@ def test_parser_fills_receipt(conn, tmp_path):
     row = conn.execute("SELECT store, shop, purchased_at, total_cents FROM receipts").fetchone()
     assert row == ("superu", "Magasin fictif", "2025-01-01T10:10:10", 1000)
     assert conn.execute("SELECT COUNT(*) FROM receipt_lines").fetchone()[0] == 3
-    assert conn.execute("SELECT aisle_id FROM receipt_lines WHERE rank=0").fetchone()[0] is None
+    assert conn.execute("SELECT a.store, a.name, a.family_id FROM receipt_lines l JOIN aisles a "
+                        "ON a.id = l.aisle_id WHERE l.rank=0").fetchone() == ("superu", "FRUITS", None)
     assert conn.execute("SELECT method, amount_cents FROM receipt_payments").fetchall() == [("card", 1000)]
 
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.receipts.aisles import aisle_id
 from app.receipts.base import ReceiptParser
 from app.receipts.model import ParsedReceipt, ReceiptParseError
 
@@ -51,18 +52,22 @@ def _detect(data: bytes, filename: str, parsers: list[ReceiptParser]) -> tuple[R
 
 
 def write_parsed(conn: sqlite3.Connection, receipt_id: int, parsed: ParsedReceipt) -> None:
-    """Remplace lignes et paiements ; les totaux doivent concorder (contrôles bloquants)."""
+    """Remplace lignes et paiements ; les totaux doivent concorder (contrôles bloquants).
+
+    Chaque ligne est rattachée au rayon de l'enseigne du ticket (créé sans famille s'il est inconnu).
+    """
     for amounts in ([line.amount_cents for line in parsed.lines], [p.amount_cents for p in parsed.payments]):
         gap = sum(amounts) - parsed.total_cents
         if gap:
             raise ReceiptParseError(f"écart de {_euros(gap)}")
+    store = conn.execute("SELECT store FROM receipts WHERE id=?", (receipt_id,)).fetchone()[0]
     conn.execute("DELETE FROM receipt_lines WHERE receipt_id=?", (receipt_id,))
     conn.execute("DELETE FROM receipt_payments WHERE receipt_id=?", (receipt_id,))
+    lines = [(receipt_id, i, aisle_id(conn, store, line.aisle), line.label, line.quantity, line.unit_cents,
+              line.amount_cents, line.kind) for i, line in enumerate(parsed.lines)]
     conn.executemany(
         "INSERT INTO receipt_lines(receipt_id, rank, aisle_id, label, quantity, unit_cents, amount_cents, kind) "
-        "VALUES (?, ?, NULL, ?, ?, ?, ?, ?)",
-        [(receipt_id, i, line.label, line.quantity, line.unit_cents, line.amount_cents, line.kind)
-         for i, line in enumerate(parsed.lines)])
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", lines)
     conn.executemany(
         "INSERT INTO receipt_payments(receipt_id, rank, method, amount_cents) VALUES (?, ?, ?, ?)",
         [(receipt_id, i, p.method, p.amount_cents) for i, p in enumerate(parsed.payments)])
