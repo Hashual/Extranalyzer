@@ -362,7 +362,11 @@ function setupBar() {
       else if (kind === "year") updateRoute(yearRange(anchor));
       else {
         const range = state.meta?.data_range;
-        if (range?.min && range?.max) updateRoute({ from: range.min, to: range.max });
+        // Fin = max(dernière opération, aujourd'hui) : le tableau de bord d'épargne porte sur les avoirs actuels.
+        if (range?.min && range?.max) {
+          const today = iso(new Date());
+          updateRoute({ from: range.min, to: range.max > today ? range.max : today });
+        }
       }
     });
   }

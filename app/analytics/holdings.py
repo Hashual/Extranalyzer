@@ -59,6 +59,22 @@ class _Snapshots:
         found = self.at(day)
         return None if found is None else found[0]
 
+    def visible_at(self, conn: sqlite3.Connection, day: date,
+                   hidden: frozenset[str]) -> tuple[int, int, int] | None:
+        """Comme `at`, hors jetons masqués aujourd'hui (même règle que wallets._positions : jetons seulement)."""
+        found = self.at(day)
+        if found is None or not hidden:
+            return found
+        value, snapshot_id, unpriced = found
+        for mint, cents in conn.execute("SELECT mint, value_eur_cents FROM wallet_positions "
+                                        "WHERE snapshot_id = ? AND kind = 'token'", (snapshot_id,)):
+            if mint in hidden:
+                if cents is None:
+                    unpriced -= 1
+                else:
+                    value -= cents
+        return value, snapshot_id, unpriced
+
 
 def savings_balance(conn: sqlite3.Connection, account_id: int, day: date) -> int | None:
     return _Ledger(conn, account_id).value(day)
@@ -153,13 +169,14 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
                        "deposited": None, "gap": None, "unknown": value is None})
     for wallet_id, label, category_id in conn.execute("SELECT id, label, savings_category_id FROM wallets ORDER BY id"):
         snaps = _Snapshots(conn, wallet_id)
-        found = snaps.at(as_of)
+        found = snaps.visible_at(conn, as_of, hidden)
         value = None if found is None else found[0]
+        past = snaps.visible_at(conn, before, hidden)
         deposited = None if category_id is None else to_cents(_net_deposited(conn, category_id)[2])
         if found is not None:
             retained.append(found)
         place = {"kind": "wallet", "id": wallet_id, "name": label, "category_id": category_id, "value": value,
-                 "change": _change(value, snaps.value(before)), "deposited": deposited,
+                 "change": _change(value, None if past is None else past[0]), "deposited": deposited,
                  "gap": None if value is None or deposited is None else value - deposited, "unknown": value is None}
         wallet_places.append(place)
         places.append(place)

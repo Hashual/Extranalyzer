@@ -219,3 +219,23 @@ def test_dashboard_change_scope_all(conn):
     _snap(conn, w, "2026-02-12T08:00:00+00:00", 7_000)
     d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 20))
     assert d["total"]["change"] == 6_000 and d["total"]["change_scope"] == "all"
+
+
+def test_dashboard_current_value_excludes_hidden_mints(conn):
+    w = _wallet(conn)
+    s = _snap(conn, w, "2026-02-01T08:00:00+00:00", 60_000, unpriced=1)
+    _pos(conn, s, "sol", 30_000)
+    _pos(conn, s, "token", 20_000, mint="hid", symbol="HID")
+    _pos(conn, s, "token", None, mint="hid2", symbol="HID2")
+    _pos(conn, s, "token", 10_000, mint="ok", symbol="OK")
+    period = Period(date(2026, 2, 1), date(2026, 2, 28))
+    before = h.dashboard(conn, period, date(2026, 3, 1))
+    assert before["crypto"]["value"] == 60_000 and before["crypto"]["unpriced_count"] == 1
+    conn.execute("INSERT INTO hidden_mints(mint) VALUES ('hid')")
+    conn.execute("INSERT INTO hidden_mints(mint) VALUES ('hid2')")
+    d = h.dashboard(conn, period, date(2026, 3, 1))
+    assert d["crypto"]["value"] == 40_000 and d["total"]["value"] == 40_000
+    assert d["crypto"]["unpriced_count"] == 0
+    assert next(p for p in d["places"] if p["kind"] == "wallet")["value"] == 40_000
+    assert [p["value"] for p in d["allocation"]["by_place"]] == [40_000]
+    assert sum(p["value"] for p in d["allocation"]["by_asset"]) == d["crypto"]["value"]
