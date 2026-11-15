@@ -114,3 +114,11 @@ def test_errors_never_leak_key(make, expected):
         HeliusClient(KEY, transport=make()).epoch()
     assert KEY not in str(exc.value) and "api-key" not in str(exc.value)
     assert KEY not in exc.value.message and "api-key" not in exc.value.message
+
+
+def test_assets_truncated_after_max_pages():
+    fake = FakeHelius().on("getAssetsByOwner", *[page(1000, n * 1000) for n in range(50)])
+    with pytest.raises(HeliusError) as exc:
+        client(fake).assets_by_owner(OWNER)
+    assert exc.value.code == "TRUNCATED" and "incomplète" in exc.value.message
+    assert KEY not in str(exc.value)

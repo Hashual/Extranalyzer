@@ -25,7 +25,11 @@ function dateTime(iso) {
 }
 
 function unpricedText(n) {
-  return `hors ${n} jeton(s) sans prix`;
+  return `hors ${n} position(s) sans prix`;
+}
+
+function unreadText(n) {
+  return `hors ${n} portefeuille(s) sans relevé`;
 }
 
 /** Bouton qui lance une action, affiche son erreur et rafraîchit l'appli. */
@@ -122,7 +126,7 @@ function positionsBlock(wallet, ctx) {
       ...visible.filter((p) => p.kind === "stake").map((p) => stakeRow(p, ctx)),
       ...priced.map((p) => tokenRow(p, false, ctx)),
     ]),
-    unpriced.length ? el("details", {}, el("summary", { text: `${unpriced.length} jeton(s) sans prix` }),
+    unpriced.length ? el("details", {}, el("summary", { text: `${unpriced.length} position(s) sans prix` }),
       table(unpriced.map((p) => tokenRow(p, false, ctx)))) : null,
     hidden.length ? el("details", {}, el("summary", { text: `Masqués (${hidden.length})` }),
       table(hidden.map((p) => tokenRow(p, true, ctx)))) : null);
@@ -156,7 +160,9 @@ function walletCard(wallet, ctx) {
     el("a", { className: "wallet-address", href: SOLSCAN + encodeURIComponent(wallet.address), target: "_blank",
       rel: "noreferrer", text: short(wallet.address), attrs: { title: "Voir sur Solscan" } }));
   return el("section", { className: "card" }, title,
-    el("p", { className: "wallet-total" }, el("strong", { text: money(wallet.total_eur, "balance") }),
+    el("p", { className: "wallet-total" }, wallet.total_eur === null
+      ? el("strong", { className: "muted", text: "valeur inconnue" })
+      : el("strong", { text: money(wallet.total_eur, "balance") }),
       wallet.unpriced_count ? el("span", { className: "muted", text: ` (${unpricedText(wallet.unpriced_count)})` }) : null),
     wallet.category_name
       ? el("p", { className: "muted", text: `Net versé depuis la banque : ${money(wallet.net_deposited, "balance")} `
@@ -178,7 +184,7 @@ function walletCard(wallet, ctx) {
           + "d'épargne et les virements déjà importés sont conservés." })));
 }
 
-function addForm(ctx) {
+function addForm(ctx, configured) {
   const label = el("input", { type: "text", placeholder: "Nom (ex. Principal)",
     attrs: { "aria-label": "Nom du portefeuille" } });
   const address = el("input", { type: "text", placeholder: "Adresse Solana (lecture seule)",
@@ -186,7 +192,8 @@ function addForm(ctx) {
   const add = action("Ajouter", async () => {
     if (!label.value.trim() || !address.value.trim()) throw new Error("renseignez un nom et une adresse");
     const r = await ctx.api.post("/tabs/banque/wallets", { label: label.value.trim(), address: address.value.trim() });
-    return r.refresh ? refreshNotice(r.refresh) : "Portefeuille ajouté.";
+    if (r.refresh) return refreshNotice(r.refresh);
+    return configured ? "Portefeuille ajouté ; lecture en attente, cliquez sur Actualiser." : "Portefeuille ajouté.";
   }, ctx, { className: "primary" });
   return el("details", { className: "card" }, el("summary", { text: "Ajouter une adresse" }),
     el("p", { className: "muted", text: "Seule l'adresse publique est utilisée : aucune clé privée, aucune écriture "
@@ -209,7 +216,8 @@ function header(data, notice, ctx) {
       el("div", {},
         el("h2", { text: "Portefeuilles Solana" }),
         el("p", {}, "Total : ", el("strong", { text: money(data.total_eur, "balance") }),
-          data.unpriced_count ? el("span", { className: "muted", text: ` (${unpricedText(data.unpriced_count)})` }) : null),
+          data.unpriced_count ? el("span", { className: "muted", text: ` (${unpricedText(data.unpriced_count)})` }) : null,
+          data.unread_count ? el("span", { className: "muted", text: ` (${unreadText(data.unread_count)})` }) : null),
         el("p", { className: "muted", text: `Dernière actualisation : ${dateTime(data.last_refresh)}` })),
       data.wallets.length
         ? action("Actualiser", async () => refreshNotice(await ctx.api.post("/tabs/banque/wallets/refresh", {})), ctx,
@@ -225,7 +233,7 @@ export async function walletsSection(ctx) {
   lastNotice = null;
   if (!data.configured) {
     return el("div", {}, notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
-      notConfigured(data), addForm(ctx));
+      notConfigured(data), addForm(ctx, false));
   }
-  return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx));
+  return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx, true));
 }

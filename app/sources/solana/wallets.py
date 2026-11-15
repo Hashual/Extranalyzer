@@ -5,14 +5,14 @@ Les fonctions n'appellent pas `commit` : l'appelant gère la transaction, comme 
 import sqlite3
 from decimal import Decimal
 
+from app.classify.categories import clean_name
 from app.classify.savings_target import savings_category_named
 from app.importer.amounts import from_cents
-from app.sources.solana.holdings import WalletReading
+from app.sources.solana.holdings import SOL_MINT, WalletReading
 from app.store.repo import fold
 
 _B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {c: i for i, c in enumerate(_B58)}
-LABEL_MAX = 60
 ERROR_MAX = 200
 
 
@@ -41,12 +41,13 @@ def clean_address(raw: str) -> str:
 
 
 def _clean_label(label: str) -> str:
-    label = (label or "").strip()
-    if not label:
+    """Le libellé devient un nom de catégorie : mêmes règles que `clean_name`."""
+    if not (label or "").strip():
         raise WalletError("libellé requis")
-    if len(label) > LABEL_MAX:
-        raise WalletError(f"libellé trop long ({LABEL_MAX} caractères au plus)")
-    return label
+    try:
+        return clean_name(label)
+    except ValueError as exc:
+        raise WalletError("libellé invalide : " + str(exc).replace("le nom de la catégorie", "le libellé")) from exc
 
 
 def add_wallet(conn: sqlite3.Connection, label: str, address: str, now: str) -> int:
@@ -144,7 +145,7 @@ def _positions(conn: sqlite3.Connection, snapshot_id: int, hidden: frozenset[str
             "SELECT kind, mint, symbol, name, amount, decimals, price_eur, price_source, value_eur_cents,"
             " stake_account, vote_account, stake_state FROM wallet_positions WHERE snapshot_id = ? ORDER BY id",
             (snapshot_id,)):
-        is_hidden = mint is not None and mint in hidden
+        is_hidden = kind == "token" and mint in hidden
         positions.append({"kind": kind, "mint": mint, "symbol": symbol, "name": name, "amount": Decimal(amount),
                           "decimals": decimals, "price_eur": None if price is None else Decimal(price),
                           "price_source": source, "value_eur": None if cents is None else from_cents(cents),
@@ -174,16 +175,17 @@ def overview(conn: sqlite3.Connection) -> dict:
         deposits, withdrawals, net = _net_deposited(conn, cat_id)
         snap = conn.execute("SELECT id FROM wallet_snapshots WHERE wallet_id = ? AND status = 'ok' "
                             "ORDER BY taken_at DESC, id DESC LIMIT 1", (wid,)).fetchone()
-        positions, total_cents, unpriced = _positions(conn, snap[0], hidden, validators) if snap else ([], 0, 0)
+        positions, total_cents, unpriced = _positions(conn, snap[0], hidden, validators) if snap else ([], None, 0)
         history = [{"taken_at": t, "total_eur": from_cents(c)} for t, c in conn.execute(
             "SELECT taken_at, total_eur_cents FROM wallet_snapshots WHERE wallet_id = ? AND status = 'ok' "
             "ORDER BY taken_at, id", (wid,)).fetchall()]
         wallets.append({"id": wid, "label": label, "address": address, "category_id": cat_id,
                         "category_name": cat_name, "net_deposited": net, "deposits": deposits,
-                        "withdrawals": withdrawals, "total_eur": from_cents(total_cents),
+                        "withdrawals": withdrawals, "total_eur": None if total_cents is None else from_cents(total_cents),
                         "unpriced_count": unpriced, "last_sync_at": last_sync, "last_error": last_error,
                         "positions": positions, "history": history})
     last_refresh = conn.execute("SELECT MAX(taken_at) FROM wallet_snapshots WHERE status = 'ok'").fetchone()[0]
-    return {"total_eur": sum((x["total_eur"] for x in wallets), Decimal(0)),
+    return {"total_eur": sum((x["total_eur"] for x in wallets if x["total_eur"] is not None), Decimal(0)),
+            "unread_count": sum(1 for x in wallets if x["total_eur"] is None),
             "unpriced_count": sum(x["unpriced_count"] for x in wallets), "last_refresh": last_refresh,
             "wallets": wallets, "validators": validators, "hidden_mints": sorted(hidden)}
