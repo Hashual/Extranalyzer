@@ -1,7 +1,6 @@
 // Section « Portefeuilles Solana » de l'onglet Banque : suivi en lecture seule (SOL, jetons, staking) valorisé en euros.
 // Tous les montants en euros passent par money(…, "balance") : ils suivent le masquage des soldes.
-import { cssVar, mountChart } from "../charts.js";
-import { el, emptyNote, money, section } from "../ui.js";
+import { el, emptyNote, hasTab, money, section } from "../ui.js";
 import { isMasked, MASK } from "../privacy.js";
 
 const SOLSCAN = "https://solscan.io/account/";
@@ -132,29 +131,6 @@ function positionsBlock(wallet, ctx) {
       table(hidden.map((p) => tokenRow(p, true, ctx)))) : null);
 }
 
-function historyChart(wallet) {
-  if (wallet.history.length < 2) return null;
-  const host = el("div", { className: "chart" });
-  const masked = isMasked("balance");
-  requestAnimationFrame(() => {       // le canevas a besoin d'être dans la page pour se dimensionner
-    if (!host.isConnected) return;
-    mountChart(host, {
-      type: "line",
-      data: {
-        labels: wallet.history.map((h) => new Date(h.taken_at).toLocaleDateString("fr-FR",
-          { day: "2-digit", month: "2-digit" })),
-        datasets: [{ label: wallet.label, data: wallet.history.map((h) => Number(h.total_eur)),
-          borderColor: cssVar("--accent"), backgroundColor: cssVar("--accent"), pointRadius: 2, tension: 0.2 }],
-      },
-      options: {
-        scales: { y: { ticks: { callback: (v) => (masked ? MASK : money(v, "balance")) } } },
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (item) => money(item.raw, "balance") } } },
-      },
-    });
-  });
-  return host;
-}
-
 function walletCard(wallet, ctx) {
   const title = el("h2", { className: "wallet-title" }, wallet.label, " ",
     el("a", { className: "wallet-address", href: SOLSCAN + encodeURIComponent(wallet.address), target: "_blank",
@@ -172,7 +148,6 @@ function walletCard(wallet, ctx) {
       text: `Dernière actualisation en échec : ${wallet.last_error}` }) : null,
     el("p", { className: "muted", text: `Dernier relevé : ${dateTime(wallet.last_sync_at)}` }),
     positionsBlock(wallet, ctx),
-    historyChart(wallet),
     el("div", { className: "filters" },
       action("Renommer", async () => {
         const value = window.prompt("Nouveau nom du portefeuille :", wallet.label);
@@ -259,7 +234,11 @@ function header(data, notice, ctx) {
           { className: "primary" })
         : null),
     notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
-    data.wallets.length ? null : emptyNote("Aucun portefeuille : ajoutez une adresse ci-dessous."));
+    data.wallets.length ? null : emptyNote("Aucun portefeuille : ajoutez une adresse ci-dessous."),
+    data.wallets.length && hasTab(ctx, "epargne")
+      ? el("p", {}, el("button", { type: "button", className: "link", text: "Voir l'analyse dans Épargne",
+        on: { click: () => ctx.navigate("epargne") } }))
+      : null);
 }
 
 export async function walletsSection(ctx) {
