@@ -76,6 +76,15 @@ docker build -t extranalyzer:arm64 .
    (Le dossier `secrets/` en 700 appartient à votre utilisateur : il reste traversable par Docker, qui
    lit le fichier en root.)
 
+   Créer aussi `secrets/gmail_app_password.txt` : `docker compose` exige que ce fichier existe, même
+   vide. Un fichier vide désactive la relève des tickets de caisse ; pour l'activer, voir « Tickets de
+   caisse ».
+
+   ```bash
+   : > secrets/gmail_app_password.txt
+   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
+   ```
+
 2. Choisir l'adresse d'écoute dans un fichier `.env` à côté du compose (ignoré par git ; ainsi
    `docker compose stop/ps/down` fonctionnent aussi dans une nouvelle session SSH) :
    `BIND_ADDR` = l'IP WireGuard du Pi (par exemple `10.8.0.1`), ou son IP LAN. Elle est obligatoire :
@@ -216,6 +225,53 @@ sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
   lisible par l'uid 10001 ; refaire le `chown 10001:10001` et `chmod 400` ci-dessus, puis
   `docker compose up -d --force-recreate`.
 - `required variable BIND_ADDR is missing` : le fichier `.env` est absent ou ne se trouve pas à côté du compose.
+- `secrets/gmail_app_password.txt` introuvable au `docker compose up` : créer le fichier (vide pour
+  désactiver la relève, voir « Tickets de caisse »).
+- `lecture impossible de EXTRANALYZER_GMAIL_APP_PASSWORD_FILE` dans `docker compose logs` : même cause
+  que pour le mot de passe, refaire le `chown 10001:10001` et `chmod 400` sur ce fichier.
+
+## Tickets de caisse
+
+L'application peut relever les tickets de caisse (PDF) reçus par mail dans Gmail, puis les rapprocher
+des débits de carte (onglet Courses). La relève est désactivée tant que le mot de passe d'application
+ou `GMAIL_USER` manque.
+
+1. Sur le compte Google, activer la validation en deux étapes, puis créer un mot de passe
+   d'application (compte Google, Sécurité, Mots de passe des applications). Google l'affiche par groupes
+   de 4 caractères : les espaces sont retirés par l'application, on peut le coller tel quel.
+2. Sur le Pi, l'écrire dans le secret (le fichier existe déjà, propriété de l'uid 10001 en lecture seule :
+   il faut donc passer par `sudo tee`), en gardant les mêmes droits que le mot de passe de l'application :
+
+   ```bash
+   printf '%s' 'xxxx xxxx xxxx xxxx' | sudo tee secrets/gmail_app_password.txt >/dev/null
+   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
+   ```
+
+3. Ajouter l'adresse Gmail dans le `.env` (ignoré par git), puis recréer le conteneur :
+
+   ```bash
+   echo 'GMAIL_USER=votre.adresse@gmail.com' >> .env
+   docker compose up -d --force-recreate
+   ```
+
+Ce que fait la relève :
+
+- Gmail est ouvert en **lecture seule** : aucun mail n'est marqué lu, déplacé ni supprimé.
+- Elle lit deux libellés Gmail, par défaut `Super U/Tickets de caisses` (enseigne `superu`) et
+  `intermarche/Tickets de caisses` (enseigne `intermarche`), une fois toutes les heures et au démarrage ;
+  le bouton « Relever maintenant » de l'onglet Courses la lance à la demande.
+- Les PDF sont rangés dans `receipts/` du volume `data`.
+- La seule connexion sortante de la relève est `imap.gmail.com:993` (TLS vérifié).
+- Les journaux ne contiennent ni adresse, ni mot de passe, ni libellé de produit, ni montant.
+
+Variables facultatives (dans `.env` à côté du compose) : `RECEIPT_LABELS` (format
+`libellé=enseigne;libellé=enseigne`, les deux libellés ci-dessus par défaut) et, dans le service,
+`EXTRANALYZER_MAIL_INTERVAL_MIN` (60 par défaut, entier positif ; à ajouter à `environment:` du compose
+pour le changer).
+
+Désactiver la relève : vider le secret (`sudo sh -c ': > secrets/gmail_app_password.txt'`, droits
+inchangés) ou laisser `GMAIL_USER` vide (supprimer la ligne du `.env` ou la mettre à `GMAIL_USER=`), puis `docker compose up -d --force-recreate`. Les tickets déjà
+récupérés restent dans l'application.
 
 ## Sauvegarde et restauration du volume `data`
 
@@ -238,10 +294,22 @@ docker run --rm -v extranalyzer_data:/data -v "$PWD":/backup alpine \
 docker compose up -d
 ```
 
-L'archive contient les PDF et la base : la ranger hors du dépôt, chiffrée si elle quitte le Pi.
+L'archive contient les PDF des relevés, les PDF des tickets de caisse (`receipts/`) et la base : la ranger hors du dépôt, chiffrée si elle quitte le Pi.
 
 ## Mettre à jour
 
+- **Première mise à jour vers la relève des tickets** (toutes routes) : le compose déclare maintenant le secret
+  `secrets/gmail_app_password.txt`, et `docker compose up -d` échoue tant qu'il n'existe pas. Avant de
+  mettre à jour, copier le nouveau `docker-compose.yml` sur le Pi (l'image publiée ne le contient pas ;
+  route B : il arrive avec le `git pull`), puis créer le secret (vide : la relève reste désactivée, voir
+  « Tickets de caisse » pour l'activer) :
+
+  ```bash
+  sudo sh -c ': > secrets/gmail_app_password.txt'
+  sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
+  ```
+
+  Au premier démarrage, la base passe d'elle-même au schéma 8 (tables des tickets) ; rien d'autre à faire.
 - **Route GitHub** : pousser sur `main`, attendre la fin du workflow (onglet *Actions*), puis sur le Pi :
   `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
 - **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :

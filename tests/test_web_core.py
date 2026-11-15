@@ -224,11 +224,12 @@ def test_post_without_custom_header_forbidden(client):
 # --- Registre d'onglets ----------------------------------------------------------------------
 
 def test_default_tabs(client):
-    assert ENABLED_TABS == ["overview", "categories", "transactions", "epargne", "a_classer", "releves", "banque",
-                            "regles"]
+    assert ENABLED_TABS == ["overview", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
+                            "banque", "regles"]
     assert client.get("/api/tabs").json() == [
         {"id": "overview", "title": "Vue d'ensemble", "order": 10},
         {"id": "categories", "title": "Catégories", "order": 20},
+        {"id": "courses", "title": "Courses", "order": 25},
         {"id": "transactions", "title": "Transactions", "order": 30},
         {"id": "epargne", "title": "Épargne", "order": 40},
         {"id": "a_classer", "title": "À classer", "order": 50},
@@ -448,9 +449,15 @@ def test_static_shell_is_served(settings):
     assert r.status_code == 200 and "/static/app.js" in r.text
     assert "/static/vendor/chart.umd.min.js" in r.text
     assert re.search(r"<input id=.upload-input.[^>]* multiple[ >]", r.text)     # dépôt de plusieurs relevés
-    for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js",
+    for path in ("/static/app.js", "/static/api.js", "/static/style.css", "/static/tabs/overview.js", "/static/tabs/courses.js",
                  "/static/vendor/chart.umd.min.js"):
         assert c.get(path).status_code == 200, path
+
+
+def test_courses_tab_module_is_served(settings):
+    js = _client(settings).get("/static/tabs/courses.js").text
+    assert 'export const id = "courses"' in js and 'export const title = "Courses"' in js
+    assert "export async function render(" in js
 
 
 def _rule_patterns(settings):
