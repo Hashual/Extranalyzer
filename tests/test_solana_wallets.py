@@ -4,7 +4,7 @@ import pytest
 
 from app.classify.savings_target import savings_category_named
 from app.sources.solana import wallets as w
-from app.sources.solana.holdings import Position, WalletReading
+from app.sources.solana.holdings import Position, SOL_MINT, WalletReading
 from app.store.db import connect
 
 ADDR = "11111111111111111111111111111112"          # 32 octets : 31 zéros puis 1
@@ -162,3 +162,38 @@ def test_overview_recomputes_with_hidden_mints(conn):
 
 def test_savings_category_named_idempotent(conn):
     assert savings_category_named(conn, "Ledger") == savings_category_named(conn, "LEDGER")
+
+
+def test_hiding_wsol_mint_does_not_hide_native_sol(conn):
+    wid = w.add_wallet(conn, "Principal", ADDR, "t")
+    base = _reading().positions
+    sol = Position(kind="sol", amount=Decimal("1.5"), mint=SOL_MINT, symbol="SOL", price_eur=Decimal("100"),
+                   price_source="helius", value_eur_cents=15000)
+    wsol = Position(kind="token", amount=Decimal("1"), mint=SOL_MINT, symbol="SOL", decimals=9,
+                    price_eur=Decimal("100"), price_source="helius", value_eur_cents=10000)
+    w.record_reading(conn, wid, "2026-01-02T10:00", WalletReading([sol, wsol, base[2]], 25000, 1))
+    w.hide_mint(conn, SOL_MINT, True)
+    wal = w.overview(conn)["wallets"][0]
+    assert wal["total_eur"] == Decimal("150.00")
+    assert {p["kind"]: p["hidden"] for p in wal["positions"]} == {"sol": False, "token": True, "stake": False}
+
+
+def test_never_read_wallet_has_unknown_total(conn):
+    a = w.add_wallet(conn, "Lu", ADDR, "t")
+    b = w.add_wallet(conn, "Jamais lu", ADDR2, "t")
+    ov = w.overview(conn)
+    assert ov["wallets"][1]["total_eur"] is None and ov["unread_count"] == 2
+    w.record_reading(conn, a, "2026-01-02T10:00", _reading())
+    ov = w.overview(conn)
+    assert ov["wallets"][0]["total_eur"] == Decimal("200.00") and ov["wallets"][1]["total_eur"] is None
+    assert ov["total_eur"] == Decimal("200.00") and ov["unread_count"] == 1
+    w.record_error(conn, b, "t2", "429")
+    assert w.overview(conn)["wallets"][1]["total_eur"] is None
+
+
+def test_label_follows_category_name_rules(conn):
+    wid = w.add_wallet(conn, "  Mon   Ledger ", ADDR, "t")
+    assert conn.execute("SELECT label FROM wallets WHERE id = ?", (wid,)).fetchone()[0] == "Mon Ledger"
+    for bad in ("Mon" + chr(0) + "Ledger", "a" + chr(0x200b) + "b", "x" * 61, "   "):
+        with pytest.raises(w.WalletError):
+            w.rename_wallet(conn, wid, bad)

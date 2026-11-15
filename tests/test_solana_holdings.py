@@ -133,3 +133,11 @@ def test_no_eurc_price_raises():
     client_fake.on("getAsset", {"id": EURC_MINT, "token_info": {}})
     with pytest.raises(NoEurRate):
         read_wallet(client, OWNER)
+
+
+def test_hiding_wsol_mint_keeps_native_sol():
+    wsol = fungible(SOL_MINT, 1_000_000_000, 9, 150.0, "SOL")
+    _, client = make([wsol])
+    r = read_wallet(client, OWNER, hidden_mints=frozenset({SOL_MINT}))
+    assert r.total_eur_cents == cents(2 * 150)      # le SOL natif reste compté, le jeton wSOL est masqué
+    assert r.unpriced_count == 0

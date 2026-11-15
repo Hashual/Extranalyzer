@@ -176,3 +176,13 @@ def test_quantities_and_prices_are_not_rounded(tmp_path):
     tiny = next(p for p in positions if p["mint"] == MINT)
     assert tiny["amount"] == "22.105"
     assert tiny["price_eur"] == "0.00012"
+
+
+def test_get_never_read_wallet_total_unknown(client, monkeypatch):
+    def busy(*args, **kwargs):
+        raise RefreshBusy("une actualisation est déjà en cours")
+    monkeypatch.setattr(client.app.state.solana, "refresh", busy)
+    r = _add(client)
+    assert r.status_code == 200 and r.json()["refresh"] is None
+    data = client.get(URL).json()
+    assert data["wallets"][0]["total_eur"] is None and data["unread_count"] == 1

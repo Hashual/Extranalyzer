@@ -146,7 +146,7 @@ def read_wallet(client: HeliusClient, address: str, hidden_mints: frozenset[str]
         epoch = client.epoch()
         positions += [p for p in (_stake_position(e, epoch, sol_usd, eur_per_usd) for e in stakes) if p is not None]
 
-    counted = [p for p in positions if p.mint not in hidden_mints]
+    counted = [p for p in positions if not (p.kind == "token" and p.mint in hidden_mints)]
     return WalletReading(
         positions=positions,
         total_eur_cents=sum(p.value_eur_cents for p in counted if p.value_eur_cents is not None),

@@ -78,8 +78,8 @@ class HeliusClient:
             if number == 1 and isinstance(result.get("nativeBalance"), dict):
                 native = result["nativeBalance"]
             if len(page) < PAGE_LIMIT:
-                break
-        return items, native
+                return items, native
+        raise HeliusError(0, "TRUNCATED", "réponse Helius incomplète (trop d'actifs)")
 
     def asset(self, mint: str) -> dict:
         result = self._call("getAsset", {"id": mint})
