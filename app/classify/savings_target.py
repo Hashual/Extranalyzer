@@ -27,6 +27,17 @@ def _has_words(norm_label: str, words: str) -> bool:
     return re.search(rf"(?<!\w){re.escape(fold(words))}(?!\w)", norm_label) is not None
 
 
+def savings_category_named(conn: sqlite3.Connection, name: str) -> int:
+    """Sous-catégorie d'Épargne `name` : retrouvée (comparaison `fold`) ou créée, idempotente."""
+    root = _savings_root(conn)
+    children = conn.execute("SELECT id, name FROM categories WHERE parent_id = ?", (root,)).fetchall()
+    same = next((i for i, n in children if fold(n) == fold(name)), None)
+    if same is not None:
+        return same
+    return conn.execute("INSERT INTO categories(name, parent_id, kind) VALUES (?, ?, 'savings')",
+                        (name, root)).lastrowid
+
+
 def savings_category_for_account(conn: sqlite3.Connection, account_id: int) -> int:
     """Sous-catégorie d'Épargne du compte : retrouvée ou créée, idempotente."""
     label = conn.execute("SELECT label FROM accounts WHERE id = ?", (account_id,)).fetchone()[0]
