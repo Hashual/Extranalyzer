@@ -31,7 +31,7 @@ class BankSettings:
 
 @dataclass(frozen=True)
 class SolanaSettings:
-    """Accès Helius. La clé vient d'un secret Docker ; elle n'est jamais écrite en base ni journalisée."""
+    """Clé Helius fournie par le serveur (secret Docker). Jamais écrite en base, journalisée ni renvoyée par l'API."""
     api_key: str = field(repr=False)
     base_url: str = DEFAULT_HELIUS_URL
 
@@ -44,7 +44,8 @@ class Settings:
     auto_threshold: float = 0.90  # seuil du classement automatique par le modèle
     bank: BankSettings | None = None   # None : récupération bancaire désactivée
     sync_hours: int = 0           # période de la synchro planifiée (0 : désactivée)
-    solana: SolanaSettings | None = None   # None : portefeuilles Solana désactivés
+    solana: SolanaSettings | None = None   # clé Helius du serveur ; None : clé saisie dans l'interface
+    helius_url: str | None = DEFAULT_HELIUS_URL   # None : adresse invalide, portefeuilles désactivés
 
 
 def _password() -> str:
@@ -110,20 +111,32 @@ def _bank_settings() -> BankSettings | None:
     return BankSettings(app_id=app_id, key_pem=key_pem, redirect_url=redirect_url, aspsp_name=aspsp)
 
 
-def _solana_settings() -> SolanaSettings | None:
-    """Helius : activé si le fichier de clé est lisible et non vide et l'URL en https ; sinon désactivé."""
+def _helius_url() -> str | None:
+    """Adresse du service Helius : EXTRANALYZER_HELIUS_URL (https obligatoire), sinon l'adresse par défaut."""
     base_url = os.environ.get("EXTRANALYZER_HELIUS_URL", "").strip() or DEFAULT_HELIUS_URL
     if not base_url.startswith("https://"):
         log.warning("Helius désactivé : EXTRANALYZER_HELIUS_URL doit commencer par https://")
         return None
-    key_file = Path(os.environ.get("EXTRANALYZER_HELIUS_KEY_FILE", DEFAULT_HELIUS_KEY_FILE))
+    return base_url
+
+
+def _solana_settings() -> SolanaSettings | None:
+    """Clé Helius fournie par la configuration du serveur (secret Docker), facultative : sans elle, la clé se saisit
+    dans l'onglet Banque. Un fichier absent au chemin par défaut n'est pas une erreur."""
+    base_url = _helius_url()
+    if base_url is None:
+        return None
+    explicit = os.environ.get("EXTRANALYZER_HELIUS_KEY_FILE")
+    key_file = Path(explicit or DEFAULT_HELIUS_KEY_FILE)
+    if not explicit and not key_file.exists():
+        return None
     try:
         api_key = key_file.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as exc:
-        log.warning("Helius désactivé : clé illisible (%s)", type(exc).__name__)
+        log.warning("clé Helius du serveur illisible (%s)", type(exc).__name__)
         return None
     if not api_key:
-        log.warning("Helius désactivé : clé vide")
+        log.warning("clé Helius du serveur vide")
         return None
     return SolanaSettings(api_key=api_key, base_url=base_url)
 
@@ -146,4 +159,5 @@ def load_settings() -> Settings:
                     auto_threshold=auto_threshold(),
                     bank=_bank_settings(),
                     sync_hours=_sync_hours(),
-                    solana=_solana_settings())
+                    solana=_solana_settings(),
+                    helius_url=_helius_url())

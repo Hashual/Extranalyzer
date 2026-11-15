@@ -201,13 +201,48 @@ function addForm(ctx, configured) {
     el("div", { className: "filters" }, label, address), add);
 }
 
-function notConfigured(data) {
-  return section("Portefeuilles Solana non configurés",
-    el("p", { text: "Pour suivre vos portefeuilles Solana, fournissez au conteneur la clé Helius en secret Docker "
-      + "(helius_key, ou le fichier indiqué par EXTRANALYZER_HELIUS_KEY_FILE)." }),
-    el("p", { className: "muted", text: "Marche à suivre détaillée : README, section « Portefeuilles Solana »." }),
+/** Champ de saisie de la clé Helius : vérifiée par le serveur auprès de Helius avant d'être enregistrée. */
+function keyForm(ctx, label) {
+  const input = el("input", { type: "password", placeholder: "Clé API Helius",
+    attrs: { "aria-label": "Clé API Helius", autocomplete: "off", spellcheck: "false" } });
+  const save = action(label, async () => {
+    if (!input.value.trim()) throw new Error("collez votre clé Helius");
+    const r = await ctx.api.put("/tabs/banque/wallets/key", { api_key: input.value.trim() });
+    input.value = "";
+    return r.refresh ? `Clé enregistrée. ${refreshNotice(r.refresh)}` : "Clé enregistrée.";
+  }, ctx, { className: "primary" });
+  return el("div", { className: "filters" }, input, save);
+}
+
+function notConfigured(data, ctx) {
+  if (!data.can_set_key) {
+    return section("Portefeuilles Solana indisponibles",
+      el("p", { text: "L'adresse du service Helius configurée sur le serveur est invalide (EXTRANALYZER_HELIUS_URL)." }));
+  }
+  return section("Portefeuilles Solana : une étape",
+    el("p", { text: "Pour lire vos portefeuilles, l'application a besoin d'une clé Helius, gratuite :" }),
+    el("ol", {},
+      el("li", {}, "créez un compte sur ",
+        el("a", { href: "https://dashboard.helius.dev", text: "dashboard.helius.dev",
+          attrs: { target: "_blank", rel: "noreferrer" } }), " (offre gratuite) ;"),
+      el("li", { text: "copiez votre clé dans « API Keys » ;" }),
+      el("li", { text: "collez-la ici." })),
+    keyForm(ctx, "Enregistrer la clé"),
+    el("p", { className: "muted", text: "Lecture seule : l'application ne lit que des soldes publics. Elle ne vous "
+      + "demandera jamais votre phrase de récupération ni de clé privée. La clé Helius est vérifiée puis gardée sur "
+      + "votre serveur ; elle n'est jamais réaffichée." }),
     data.wallets.length ? el("ul", { className: "plain-list" }, data.wallets.map((w) =>
-      el("li", { text: `${w.label} — ${short(w.address)} (valeur disponible une fois la clé configurée)` }))) : null);
+      el("li", { text: `${w.label} — ${short(w.address)} (valeur disponible une fois la clé enregistrée)` }))) : null);
+}
+
+function keySettings(data, ctx) {
+  if (data.key_source !== "app") return null;
+  return el("details", { className: "card" }, el("summary", { text: "Clé Helius" }),
+    el("p", { className: "muted", text: "Une clé est enregistrée. Pour la changer, collez la nouvelle :" }),
+    keyForm(ctx, "Remplacer la clé"),
+    action("Supprimer la clé", () => ctx.api.delete("/tabs/banque/wallets/key"), ctx, { className: "danger",
+      confirm: "Supprimer la clé Helius ? Les portefeuilles et leur historique sont conservés, mais ne seront plus "
+        + "actualisés." }));
 }
 
 function header(data, notice, ctx) {
@@ -233,7 +268,8 @@ export async function walletsSection(ctx) {
   lastNotice = null;
   if (!data.configured) {
     return el("div", {}, notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
-      notConfigured(data), addForm(ctx, false));
+      notConfigured(data, ctx), addForm(ctx, false));
   }
-  return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx, true));
+  return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx, true),
+    keySettings(data, ctx));
 }

@@ -4,12 +4,15 @@
 chaque portefeuille se fait hors de ce verrou ; l'écriture est une transaction par portefeuille.
 """
 import logging
+import os
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
-from app.config import SolanaSettings
+from app.config import DEFAULT_HELIUS_URL, SolanaSettings
 from app.sources.enablebanking.client import Transport, urllib_transport
 from app.sources.enablebanking.link import Runner
 from app.sources.solana import wallets
@@ -48,18 +51,90 @@ def _committed(fn):
     return run
 
 
+class KeyInvalid(ValueError):
+    """Clé mal formée, ou refusée par Helius (message destiné à l'utilisateur)."""
+
+
+class KeyManagedByServer(RuntimeError):
+    """La clé vient de la configuration du serveur (secret Docker) : elle ne se change pas depuis l'interface."""
+
+
+KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,128}")
+
+
+def _read_stored_key(path: Path | None) -> str | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        log.warning("clé Helius enregistrée illisible (%s)", type(exc).__name__)
+        return None
+    return key if KEY_PATTERN.fullmatch(key) else None
+
+
 class SolanaRuntime:
+    """Clé Helius : celle du serveur (`settings`, secret Docker) si elle existe, sinon celle saisie dans
+    l'interface et enregistrée dans `key_file` (volume de données, droits 600)."""
+
     def __init__(self, settings: SolanaSettings | None, read: Runner, write: Runner,
-                 transport: Transport = urllib_transport, clock: Callable[[], datetime] = _utc_now):
+                 transport: Transport = urllib_transport, clock: Callable[[], datetime] = _utc_now,
+                 key_file: Path | None = None, base_url: str | None = DEFAULT_HELIUS_URL):
         self.settings, self._read, self._write, self._clock = settings, read, write, clock
+        self._transport, self._key_file = transport, key_file
+        self._base_url = settings.base_url if settings is not None else base_url
         self.client: HeliusClient | None = None
+        self.key_source: str | None = None          # 'server' | 'app' | None
         if settings is not None:
-            self.client = HeliusClient(settings.api_key, settings.base_url, transport=transport)
+            self.client, self.key_source = HeliusClient(settings.api_key, self._base_url, transport=transport), "server"
+        elif self._base_url is not None:
+            stored = _read_stored_key(key_file)
+            if stored is not None:
+                self.client, self.key_source = HeliusClient(stored, self._base_url, transport=transport), "app"
         self._lock = threading.Lock()
 
     @property
     def configured(self) -> bool:
         return self.client is not None
+
+    @property
+    def can_set_key(self) -> bool:
+        return self.key_source != "server" and self._key_file is not None and self._base_url is not None
+
+    def set_key(self, api_key: str) -> None:
+        """Vérifie la clé auprès de Helius (un appel en lecture), puis l'enregistre et l'utilise.
+
+        Lève KeyManagedByServer, KeyInvalid (forme ou refus de Helius) ou HeliusError (Helius injoignable, quota).
+        """
+        if not self.can_set_key:
+            raise KeyManagedByServer("la clé Helius est fournie par la configuration du serveur")
+        key = (api_key or "").strip()
+        if not KEY_PATTERN.fullmatch(key):
+            raise KeyInvalid("clé Helius invalide : collez la clé seule (lettres, chiffres et tirets)")
+        candidate = HeliusClient(key, self._base_url, transport=self._transport)
+        try:
+            candidate.epoch()
+        except RateLimited:
+            raise
+        except HeliusError as exc:
+            if exc.status in (401, 403):
+                raise KeyInvalid("clé refusée par Helius : vérifiez-la dans votre tableau de bord Helius") from None
+            raise
+        tmp = self._key_file.with_name(self._key_file.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(key)
+        os.replace(tmp, self._key_file)
+        self.client, self.key_source = candidate, "app"
+        log.info("clé Helius enregistrée depuis l'interface")
+
+    def clear_key(self) -> None:
+        """Oublie la clé saisie dans l'interface (le fichier est supprimé)."""
+        if self.key_source == "server":
+            raise KeyManagedByServer("la clé Helius est fournie par la configuration du serveur")
+        if self._key_file is not None:
+            self._key_file.unlink(missing_ok=True)
+        self.client, self.key_source = None, None
 
     def write(self, fn):
         """Écriture sous le verrou de l'application."""

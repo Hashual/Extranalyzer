@@ -154,9 +154,11 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
     bank = BankRuntime(settings.bank, read, write, on_new_transactions, transport=bank_transport)
     scheduler = (Scheduler(bank.scheduled_tick, settings.sync_hours * 3600)
                  if bank.configured and settings.sync_hours > 0 else None)
-    solana = SolanaRuntime(settings.solana, read, write, transport=solana_transport)
+    solana = SolanaRuntime(settings.solana, read, write, transport=solana_transport,
+                           key_file=settings.data_dir / "helius.key", base_url=settings.helius_url)
+    # toujours planifiée : une clé peut être saisie plus tard dans l'interface (le tour ne fait rien sans clé)
     solana_scheduler = (Scheduler(solana.scheduled_tick, settings.sync_hours * 3600, name="synchro-solana")
-                        if solana.configured and settings.sync_hours > 0 else None)
+                        if settings.sync_hours > 0 else None)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
