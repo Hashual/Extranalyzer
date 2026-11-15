@@ -1,6 +1,7 @@
 // Onglet « Banque » : connexions Enable Banking (une par banque), comptes bancaires (rattachement, type, contrôle
 // de solde), ajout d'une banque choisie dans la liste d'Enable Banking, synchros.
 import { el, emptyNote, formatDate, money, section } from "../ui.js";
+import { walletsSection } from "./banque-wallets.js";
 
 export const id = "banque";
 export const title = "Banque";
@@ -284,8 +285,11 @@ export async function render(container, ctx) {
   const data = await ctx.api.get("/tabs/banque/status");
   const notice = lastNotice;
   lastNotice = null;
+  // une panne côté portefeuilles ne doit pas masquer la partie bancaire
+  const wallets = await walletsSection(ctx).catch((e) => el("p", { className: "error", attrs: { role: "alert" },
+    text: `Portefeuilles Solana : ${e.message}` }));
   if (!data.configured && !data.links.length) {
-    container.replaceChildren(notConfigured());
+    container.replaceChildren(notConfigured(), wallets);
     return;
   }
   container.replaceChildren(...[
@@ -294,6 +298,7 @@ export async function render(container, ctx) {
     globalActions(data, ctx),
     ...data.links.map((link) => linkCard(link, data, ctx)),
     data.configured ? addBankCard(data, ctx) : null,
+    wallets,
     runsCard(data),
     data.configured ? pasteCard(ctx) : null,
   ].filter(Boolean));
