@@ -76,9 +76,19 @@ def _exists(conn: sqlite3.Connection, wallet_id: int) -> bool:
     return conn.execute("SELECT 1 FROM wallets WHERE id = ?", (wallet_id,)).fetchone() is not None
 
 
+def _exact(value):
+    """Quantité ou prix en chaîne décimale non arrondie (to_jsonable arrondirait à 2 décimales)."""
+    return None if value is None else format(value, "f")
+
+
 @router.get("")
 def list_wallets(request: Request, conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
-    return to_jsonable({"configured": _runtime(request).configured, **wallets.overview(conn)})
+    data = wallets.overview(conn)
+    for wallet in data["wallets"]:
+        for position in wallet["positions"]:
+            position["amount"] = _exact(position["amount"])
+            position["price_eur"] = _exact(position["price_eur"])
+    return to_jsonable({"configured": _runtime(request).configured, **data})
 
 
 @router.post("")

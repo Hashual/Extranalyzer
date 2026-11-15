@@ -159,3 +159,20 @@ def test_key_never_in_responses(client):
 def test_csrf_required(client):
     assert client.post(URL, json={"label": "A", "address": ADDR_A}).status_code == 403
     assert client.get(URL).status_code == 200
+
+
+def test_quantities_and_prices_are_not_rounded(tmp_path):
+    fake = FakeHelius()
+    fake.on("getAssetsByOwner", {"items": [fungible(EURC_MINT, 0, 6, 1.0, "EURC"),
+                                           fungible(MINT, 22_105_000, 6, 0.00012, "TINY")],
+                                 "nativeBalance": {"lamports": 0}})
+    fake.on("getProgramAccounts", [])
+    settings = Settings(data_dir=tmp_path / "data", password_hash=hash_password(PASSWORD), max_upload_mb=1,
+                        solana=SolanaSettings(KEY))
+    client = TestClient(create_app(settings, solana_transport=fake))
+    assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
+    _add(client)
+    positions = client.get(URL).json()["wallets"][0]["positions"]
+    tiny = next(p for p in positions if p["mint"] == MINT)
+    assert tiny["amount"] == "22.105"
+    assert tiny["price_eur"] == "0.00012"
