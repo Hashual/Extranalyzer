@@ -61,20 +61,17 @@ class _Snapshots:
 
     def visible_at(self, conn: sqlite3.Connection, day: date,
                    hidden: frozenset[str]) -> tuple[int, int, int] | None:
-        """Comme `at`, hors jetons masqués aujourd'hui (même règle que wallets._positions : jetons seulement)."""
+        """Comme `at`, recalculé depuis les positions du relevé hors jetons masqués aujourd'hui (même règle que
+        wallets._positions). Sans aucune position enregistrée, on garde le total stocké."""
         found = self.at(day)
-        if found is None or not hidden:
+        if found is None:
+            return None
+        rows = conn.execute("SELECT kind, mint, value_eur_cents FROM wallet_positions WHERE snapshot_id = ?",
+                            (found[1],)).fetchall()
+        if not rows:
             return found
-        value, snapshot_id, unpriced = found
-        for mint, cents in conn.execute("SELECT mint, value_eur_cents FROM wallet_positions "
-                                        "WHERE snapshot_id = ? AND kind = 'token'", (snapshot_id,)):
-            if mint in hidden:
-                if cents is None:
-                    unpriced -= 1
-                else:
-                    value -= cents
-        return value, snapshot_id, unpriced
-
+        visible = [cents for kind, mint, cents in rows if not (kind == "token" and mint in hidden)]
+        return sum(c for c in visible if c is not None), found[1], sum(1 for c in visible if c is None)
 
 def savings_balance(conn: sqlite3.Connection, account_id: int, day: date) -> int | None:
     return _Ledger(conn, account_id).value(day)
