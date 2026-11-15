@@ -5,10 +5,12 @@ scope_clause) ; jambes miroir exclues. Les virements internes appariés encore n
 destination sans id.
 """
 import sqlite3
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from app.analytics import holdings
 from app.analytics.periods import month_keys
 from app.analytics.totals import ANALYSIS_FROM, EFFECTIVE_KIND, INTERNAL_TRANSFERS, SIGNED_AMOUNT, scope_clause
 from app.deps import get_conn
@@ -65,6 +67,28 @@ def summary(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated
     total_dep = sum(dep for dep, _ in flows.values())
     total_wd = sum(wd for _, wd in flows.values())
     return to_jsonable({"destinations": destinations, "total": _flows(total_dep, total_wd), "monthly": monthly})
+
+
+# Champs en centimes du tableau de bord ; les compteurs (count, unknown_count, ...) restent des entiers.
+_CENTS = {"value", "change", "deposited", "gap", "compared_value", "savings", "crypto"}
+
+
+def _euros(node, key=None):
+    if isinstance(node, dict):
+        return {k: _euros(v, k) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_euros(v, key) for v in node]
+    return from_cents(node) if key in _CENTS and isinstance(node, int) and not isinstance(node, bool) else node
+
+
+def _today() -> date:
+    return date.today()
+
+
+@router.get("/dashboard")
+def dashboard(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated[Scope, Depends(scope)]):
+    """Avoirs de tous les comptes d'épargne et portefeuilles ; le sélecteur de comptes est ignoré."""
+    return to_jsonable(_euros(holdings.dashboard(conn, s.period, _today())))
 
 
 TAB = Tab("epargne", "Épargne", 40, router)
