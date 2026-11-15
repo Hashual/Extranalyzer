@@ -1,6 +1,10 @@
 import sqlite3
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
+from typing import TypeVar
+
+T = TypeVar("T")
 
 SCHEMA_VERSION = 5
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
@@ -144,3 +148,17 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
         conn.close()
         raise
     return conn
+
+
+def transactional(fn: Callable[[sqlite3.Connection], T]) -> Callable[[sqlite3.Connection], T]:
+    """Enveloppe `fn` (qui ne valide pas) dans une transaction : validée si elle réussit, annulée sinon."""
+    def run(conn: sqlite3.Connection) -> T:
+        conn.execute("BEGIN")
+        try:
+            result = fn(conn)
+            conn.commit()
+            return result
+        except BaseException:
+            conn.rollback()
+            raise
+    return run

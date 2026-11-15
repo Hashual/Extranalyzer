@@ -90,8 +90,9 @@ def test_invalid_periods_are_rejected(env, path):
 
 
 def test_tabs_are_registered_in_order(env):
-    assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "categories", "transactions",
-                                                                 "epargne", "a_classer", "releves", "regles"]
+    assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "categories", "courses",
+                                                                 "transactions", "epargne", "a_classer", "releves",
+                                                                 "regles"]
 
 
 # --- Vue d'ensemble ----------------------------------------------------------------------------
@@ -207,7 +208,8 @@ def test_transactions_list_shape_and_default_sort(env):
     assert first == {"id": ids["withdraw"], "op_date": "2025-01-25", "label": "VIR DEPUIS LIVRET",
                      "amount": "50.00", "account_id": 1, "category_id": cat["Épargne/Livret Bleu"],
                      "category_name": "Livret Bleu", "manual": True, "mirror": False,
-                     "classified_by": "manual", "confidence": None, "suggestion_reason": None}
+                     "classified_by": "manual", "confidence": None, "suggestion_reason": None,
+                     "receipt_id": None}
     dates = [i["op_date"] for i in page["items"]]
     assert dates == sorted(dates, reverse=True)
 
@@ -768,8 +770,8 @@ def test_regles_test_preview(env):
 
 # --- Modules -----------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("module", ["overview", "categories", "transactions", "epargne", "a_classer", "releves",
-                                    "regles"])
+@pytest.mark.parametrize("module", ["overview", "categories", "courses", "transactions", "epargne", "a_classer",
+                                    "releves", "regles"])
 def test_tab_module_imports_alone_without_app_main(module):
     code = (f"import sys, app.tabs.{module} as m; "
             f"assert m.TAB.id == {module!r}; assert 'app.main' not in sys.modules")

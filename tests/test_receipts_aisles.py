@@ -93,3 +93,25 @@ def test_lines_get_their_store_aisle(conn, tmp_path):
     assert conn.execute("SELECT a.store, a.name, f.name FROM receipt_lines l JOIN aisles a ON a.id = l.aisle_id "
                         "LEFT JOIN aisle_families f ON f.id = a.family_id").fetchall() == [
         ("superu", "ULTRA FRAIS", "Crèmerie")]
+
+
+def test_seed_does_not_recreate_renamed_or_deleted_family(conn, tmp_path):
+    seed = write_seed(tmp_path / "s.toml", {"BEURRE": "Crèmerie", "REMISES": "Remises"})
+    load_aisle_seed(conn, seed)
+    conn.execute("UPDATE aisle_families SET name='Laitages' WHERE name='Crèmerie'")       # renommée
+    remises = conn.execute("SELECT id FROM aisle_families WHERE name='Remises'").fetchone()[0]
+    conn.execute("UPDATE aisles SET family_id=NULL WHERE family_id=?", (remises,))
+    conn.execute("DELETE FROM aisle_families WHERE id=?", (remises,))                     # supprimée
+    load_aisle_seed(conn, seed)
+    assert [r[0] for r in conn.execute("SELECT name FROM aisle_families")] == ["Laitages"]
+    assert family_of(conn, "BEURRE") == "Laitages" and family_of(conn, "REMISES") is None
+
+
+def test_seed_adds_new_aisles_only_into_existing_families(conn, tmp_path):
+    load_aisle_seed(conn, write_seed(tmp_path / "s.toml", {"BEURRE": "Crèmerie"}))
+    conn.execute("DELETE FROM aisle_families WHERE name='Remises'")
+    load_aisle_seed(conn, write_seed(tmp_path / "s2.toml", {"BEURRE": "Crèmerie", "OEUFS": "Crèmerie",
+                                                            "REMISES": "Remises"}))
+    assert family_of(conn, "OEUFS") == "Crèmerie"
+    # la famille n'existe plus : le rayon n'est pas créé par le seed (il sera « à ranger » s'il apparaît)
+    assert conn.execute("SELECT 1 FROM aisles WHERE name='REMISES'").fetchone() is None

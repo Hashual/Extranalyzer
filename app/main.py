@@ -21,14 +21,18 @@ from app.analytics.totals import unclassified_count
 from app.auth import SESSION_COOKIE, SESSION_MAX_AGE, RateLimiter, Sessions, load_or_create_secret, \
     verify_password
 from app.classify.pipeline import on_new_transactions, reclassify
-from app.receipts.matching import match_receipts
 from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
 from app.importer.service import ImportReport, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
-from app.store.db import connect
+from app.receipts import PARSERS_RECEIPTS
+from app.receipts.aisles import load_aisle_seed
+from app.receipts.mailsync import MailSyncThread
+from app.receipts.matching import match_receipts
+from app.receipts.service import reread
+from app.store.db import connect, transactional
 from app.tabs import ENABLED_TABS, load_tabs
 from app.web_json import mask_numbers, report_to_json
 
@@ -39,6 +43,7 @@ PARSERS = [CreditMutuelParser()]
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 CSRF_HEADER = "x-extranalyzer"
 MULTIPART_OVERHEAD = 64 * 1024     # marge d'en-têtes multipart tolérée au-delà de la taille maximale
+UPLOAD_PATHS = frozenset({"/api/upload", "/api/tabs/courses/upload"})     # dépôts soumis à la garde de taille
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "X-Content-Type-Options": "nosniff",
@@ -79,13 +84,21 @@ def _init_storage(settings: Settings) -> None:
 
     Les catégories du seed sont complétées à chaque démarrage ; ses règles ne sont installées que sur
     une installation neuve (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
+
+    Tickets de caisse : seed des rayons (sans défaire les choix de l'utilisateur), relecture des tickets
+    en attente d'un lecteur (une enseigne nouvellement prise en charge), puis rapprochement.
     """
     (settings.data_dir / "pdfs").mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "receipts").mkdir(parents=True, exist_ok=True)
     conn = connect(settings.data_dir / "extranalyzer.db")
     try:
         with resources.as_file(resources.files("app.classify").joinpath("rules.seed.toml")) as seed:
             load_seed(conn, seed, with_rules=is_fresh_install(conn))
         reclassify(conn)
+        with resources.as_file(resources.files("app.receipts").joinpath("aisles.seed.toml")) as seed:
+            load_aisle_seed(conn, seed)
+        reread(conn, settings.data_dir / "receipts", PARSERS_RECEIPTS, only_pending=True)
+        match_receipts(conn)
         conn.commit()
     finally:
         conn.close()
@@ -122,10 +135,24 @@ def after_import(conn: sqlite3.Connection, ids: list[int]) -> None:
     match_receipts(conn)
 
 
-def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> FastAPI:
+class MatchingMailSync(MailSyncThread):
+    """Relève suivie du rapprochement des nouveaux tickets, dans sa propre transaction d'écriture.
+
+    `run_once` sert aussi au bouton « Relever maintenant » : le verrou de passage de MailSyncThread
+    garantit qu'un passage manuel et un passage de fond ne se chevauchent jamais."""
+
+    def run_once(self) -> dict:
+        result = super().run_once()
+        self._write(transactional(match_receipts))
+        return result
+
+
+def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
+               start_mail_thread: bool = True) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
+    receipts_dir = settings.data_dir / "receipts"
     sessions = Sessions(load_or_create_secret(settings.data_dir / "secret.key"))
     limiter = RateLimiter(limit=5, window=60)
     write_lock = threading.Lock()      # une seule écriture lourde (import, conflit, ré-analyse) à la fois
@@ -141,6 +168,18 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
 
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db_path = db_path
+    app.state.receipts_dir = receipts_dir
+    app.state.write = write
+    app.state.max_upload_bytes = max_bytes
+    # Relève : l'objet existe dès qu'elle est configurée (bouton « Relever maintenant ») ; le fil de fond
+    # n'est démarré que sur demande (jamais dans les tests).
+    syncer = MatchingMailSync(settings.mail, write, receipts_dir, PARSERS_RECEIPTS) if settings.mail else None
+    app.state.mail_enabled = syncer is not None
+    app.state.mail_syncer = syncer
+    app.state.mail_thread = None
+    if syncer is not None and start_mail_thread:
+        syncer.start()
+        app.state.mail_thread = syncer
 
     def api_guard(request: Request) -> JSONResponse | None:
         """Refus éventuel d'une requête /api avant routage (CSRF, session, taille du dépôt)."""
@@ -149,7 +188,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None) -> Fas
             return JSONResponse({"detail": "en-tête X-Extranalyzer manquant"}, status_code=403)
         if path != "/api/login" and not sessions.valid(request.cookies.get(SESSION_COOKIE)):
             return JSONResponse({"detail": "authentification requise"}, status_code=401)
-        if path == "/api/upload" and request.method == "POST":
+        if path in UPLOAD_PATHS and request.method == "POST":
             length = _content_length(request)
             if length is None:
                 return JSONResponse({"detail": "en-tête Content-Length requis"}, status_code=411)

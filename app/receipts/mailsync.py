@@ -20,6 +20,7 @@ from typing import TypeVar
 from app.config import MailSettings
 from app.receipts.base import ReceiptParser
 from app.receipts.service import ingest_file
+from app.store.db import transactional
 
 log = logging.getLogger(__name__)
 
@@ -124,19 +125,6 @@ def fetch_new(cfg: MailSettings, state: dict[str, tuple[int | None, int]], conne
             pass
 
 
-def _transactional(fn: Callable[[sqlite3.Connection], T]) -> Callable[[sqlite3.Connection], T]:
-    def run(conn: sqlite3.Connection) -> T:
-        conn.execute("BEGIN")
-        try:
-            result = fn(conn)
-            conn.commit()
-            return result
-        except BaseException:
-            conn.rollback()
-            raise
-    return run
-
-
 def _short_error(exc: BaseException, cfg: MailSettings) -> str:
     text = " ".join(str(exc).split())
     for secret in (cfg.user, cfg.app_password):
@@ -157,7 +145,7 @@ def _prepare(cfg: MailSettings, now: str) -> Callable[[sqlite3.Connection], dict
                          "ON CONFLICT(label) DO UPDATE SET store=excluded.store, "
                          "last_attempt_at=excluded.last_attempt_at", (label, store, now))
         return _read_state(conn)
-    return _transactional(run)
+    return transactional(run)
 
 
 def _ingest_message(msg: FetchedMessage, receipts_dir: Path,
@@ -175,7 +163,7 @@ def _ingest_message(msg: FetchedMessage, receipts_dir: Path,
         conn.execute("UPDATE mail_sync SET last_uid=?, uidvalidity=? WHERE label=?",
                      (msg.uid, msg.uidvalidity, msg.label))
         return -1 if known else files        # -1 : message déjà connu, ignoré
-    return _transactional(run)
+    return transactional(run)
 
 
 def _finish(cfg: MailSettings, now: str, label_errors: dict[str, str],
@@ -189,7 +177,7 @@ def _finish(cfg: MailSettings, now: str, label_errors: dict[str, str],
             else:
                 conn.execute("UPDATE mail_sync SET last_error=NULL, last_success_at=?, last_attempt_at=? "
                              "WHERE label=?", (now, now, label))
-    return _transactional(run)
+    return transactional(run)
 
 
 def sync_once(cfg: MailSettings, write: Write, receipts_dir: Path, parsers: list[ReceiptParser],

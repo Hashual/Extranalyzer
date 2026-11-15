@@ -15,7 +15,8 @@ ROW_FROM = """
 """
 ROW_SELECT = """
     SELECT t.id, t.op_date, t.label, t.amount_cents, t.account_id, t.category_id, c.name, t.manual,
-           t.mirror_of, t.classified_by, t.confidence, t.suggestion_reason
+           t.mirror_of, t.classified_by, t.confidence, t.suggestion_reason,
+           (SELECT r.id FROM receipts r WHERE r.tx_key = t.tx_key AND r.link_broken = 0) AS receipt_id
 """ + ROW_FROM
 
 
@@ -25,11 +26,12 @@ class ReclassBody(BaseModel):
 
 def row_to_dict(row: tuple) -> dict:
     (tx_id, op_date, label, cents, account_id, category_id, category_name, manual, mirror_of,
-     classified_by, confidence, suggestion_reason) = row
+     classified_by, confidence, suggestion_reason, receipt_id) = row
     return {"id": tx_id, "op_date": op_date, "label": label, "amount": from_cents(cents),
             "account_id": account_id, "category_id": category_id, "category_name": category_name,
             "manual": bool(manual), "mirror": mirror_of is not None,
-            "classified_by": classified_by, "confidence": confidence, "suggestion_reason": suggestion_reason}
+            "classified_by": classified_by, "confidence": confidence, "suggestion_reason": suggestion_reason,
+            "receipt_id": receipt_id}
 
 
 def set_category(conn: sqlite3.Connection, tx_id: int, category_id: int | None) -> dict:

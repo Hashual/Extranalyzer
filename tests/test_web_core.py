@@ -224,10 +224,12 @@ def test_post_without_custom_header_forbidden(client):
 # --- Registre d'onglets ----------------------------------------------------------------------
 
 def test_default_tabs(client):
-    assert ENABLED_TABS == ["overview", "categories", "transactions", "epargne", "a_classer", "releves", "regles"]
+    assert ENABLED_TABS == ["overview", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
+                            "regles"]
     assert client.get("/api/tabs").json() == [
         {"id": "overview", "title": "Vue d'ensemble", "order": 10},
         {"id": "categories", "title": "Catégories", "order": 20},
+        {"id": "courses", "title": "Courses", "order": 25},
         {"id": "transactions", "title": "Transactions", "order": 30},
         {"id": "epargne", "title": "Épargne", "order": 40},
         {"id": "a_classer", "title": "À classer", "order": 50},
