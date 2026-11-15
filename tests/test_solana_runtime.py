@@ -197,3 +197,28 @@ def test_scheduled_tick_unconfigured_and_busy(db_path):
     rt.scheduled_tick()
     rt._lock.release()
     assert _state(db_path, ADDR_A)[1] == []
+
+
+def test_refresh_wallet_deleted_during_read(db_path):
+    ok = _by_address({})
+
+    def transport(method, url, headers, body):
+        params = json.loads(body)["params"]
+        if isinstance(params, dict) and params.get("ownerAddress") == ADDR_A:
+            conn = connect(db_path)       # le portefeuille A est supprimé pendant sa propre lecture réseau
+            conn.execute("DELETE FROM wallets WHERE address = ?", (ADDR_A,))
+            conn.commit()
+            conn.close()
+        return ok(method, url, headers, body)
+    assert _runtime(db_path, transport).refresh("manuelle") == RefreshSummary(refreshed=1, errors=0)
+    assert _state(db_path, ADDR_B)[1] == ["ok"]
+
+
+def test_refresh_wallet_deleted_during_failed_read(db_path):
+    def transport(method, url, headers, body):
+        conn = connect(db_path)
+        conn.execute("DELETE FROM wallets WHERE address = ?", (ADDR_A,))
+        conn.commit()
+        conn.close()
+        return 500, b"{}"
+    assert _runtime(db_path, transport).refresh("manuelle") == RefreshSummary(refreshed=0, errors=1)

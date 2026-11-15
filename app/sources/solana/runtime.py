@@ -95,13 +95,20 @@ class SolanaRuntime:
                     error = f"réponse inattendue de Helius ({type(exc).__name__})"
                     log.error("lecture d'un portefeuille Solana impossible (%s)", type(exc).__name__)
                 taken_at = self._clock().isoformat()
+                def record(conn, i=target_id, r=reading, m=error):
+                    # portefeuille supprimé pendant la lecture réseau : rien à enregistrer
+                    if conn.execute("SELECT 1 FROM wallets WHERE id = ?", (i,)).fetchone() is None:
+                        return False
+                    if r is not None:
+                        wallets.record_reading(conn, i, taken_at, r)
+                    else:
+                        wallets.record_error(conn, i, taken_at, m)
+                    return True
+                if not self._write(_committed(record)):
+                    continue
                 if reading is not None:
-                    self._write(_committed(lambda conn, i=target_id, r=reading:
-                                           wallets.record_reading(conn, i, taken_at, r)))
                     summary.refreshed += 1
                 else:
-                    self._write(_committed(lambda conn, i=target_id, m=error:
-                                           wallets.record_error(conn, i, taken_at, m)))
                     summary.errors += 1
             log.info("actualisation des portefeuilles Solana (%s) : %d relevé(s), %d erreur(s)", trigger,
                      summary.refreshed, summary.errors)
