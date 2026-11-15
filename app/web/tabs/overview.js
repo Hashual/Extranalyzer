@@ -1,7 +1,8 @@
 // Onglet « Vue d'ensemble » : tuiles de totaux, répartition des dépenses, évolution mensuelle,
 // plus grosses hausses et dépenses récurrentes.
 import { cssVar, mountChart, palette } from "../charts.js";
-import { el, emptyNote, formatMonth, hasTab, money, percent, scopeParams, section } from "../ui.js";
+import { isMasked } from "../privacy.js";
+import { el, emptyNote, formatMonth, hasTab, money, percent, scopeParams, section, signedMoney } from "../ui.js";
 
 export const id = "overview";
 export const title = "Vue d'ensemble";
@@ -9,20 +10,20 @@ export const title = "Vue d'ensemble";
 // sens : +1 si une hausse est une bonne nouvelle, −1 si c'est une mauvaise.
 const TILES = [
   // Les débits à classer comptent dans les Dépenses ; les crédits à classer restent hors des Revenus.
-  { key: "expenses", label: "Dépenses", sense: -1, unclassified: "unclassified_debits",
-    note: (x) => `dont ${money(x)} à classer` },
-  { key: "income", label: "Revenus", sense: 1, unclassified: "unclassified_credits",
-    note: (x) => `+ ${money(x)} de crédits à classer` },
-  { key: "savings_net", label: "Épargne", sense: 1 },
-  { key: "balance", label: "Solde de la période", sense: 1 },
+  { key: "expenses", label: "Dépenses", kind: "expense", sense: -1, unclassified: "unclassified_debits",
+    note: (x) => `dont ${money(x, "expense")} à classer` },
+  { key: "income", label: "Revenus", kind: "income", sense: 1, unclassified: "unclassified_credits",
+    note: (x) => `+ ${money(x, "income")} de crédits à classer` },
+  { key: "savings_net", label: "Épargne", kind: "savings", sense: 1 },
+  { key: "balance", label: "Solde de la période", kind: "balance", sense: 1 },
 ];
 
-function variation(current, previous, sense) {
+function variation(current, previous, sense, kind) {
   const cur = Number(current);
   const prev = Number(previous);
   const delta = cur - prev;
-  const text = prev === 0 ? `${delta > 0 ? "+" : ""}${money(delta)}`
-    : `${percent(delta / Math.abs(prev))} (${delta > 0 ? "+" : ""}${money(delta)})`;
+  const text = prev === 0 ? signedMoney(delta, kind)
+    : `${percent(delta / Math.abs(prev))} (${signedMoney(delta, kind)})`;
   const tone = delta === 0 ? "" : delta * sense > 0 ? "good" : "bad";
   return el("p", { className: `variation ${tone}`.trim(), text: `${text} vs comparaison` });
 }
@@ -31,8 +32,8 @@ function tiles(data) {
   return el("div", { className: "tiles" }, TILES.map((t) => {
     const tile = el("div", { className: "tile" },
       el("p", { className: "tile-label", text: t.label }),
-      el("p", { className: "tile-value", text: money(data.totals[t.key]) }));
-    if (data.compare_totals) tile.append(variation(data.totals[t.key], data.compare_totals[t.key], t.sense));
+      el("p", { className: "tile-value", text: money(data.totals[t.key], t.kind) }));
+    if (data.compare_totals) tile.append(variation(data.totals[t.key], data.compare_totals[t.key], t.sense, t.kind));
     if (t.unclassified && Number(data.totals[t.unclassified]) > 0) {
       tile.append(el("p", { className: "tile-note", text: t.note(data.totals[t.unclassified]) }));
     }
@@ -70,7 +71,7 @@ function categoryBars(ctx, categories, colorOf) {
                                        on: { click: () => open && open() } },
       el("span", { className: "bar-name", text: c.name }),
       el("span", { className: "bar-track" }, fill),
-      el("span", { className: "bar-amount", text: money(c.amount) })));
+      el("span", { className: "bar-amount", text: money(c.amount, "expense") })));
   }));
 }
 
@@ -86,7 +87,7 @@ function pieChart(ctx, host, categories, colorOf) {
     options: {
       plugins: {
         legend: { position: "bottom" },
-        tooltip: { callbacks: { label: (item) => `${item.label} : ${money(item.raw)}` } },
+        tooltip: { callbacks: { label: (item) => `${item.label} : ${money(item.raw, "expense")}` } },
       },
       onClick: (_event, elements) => {
         const open = elements.length ? categoryLink(ctx, categories[elements[0].index]) : null;
@@ -105,6 +106,7 @@ function monthlyChart(host, monthly, colorOf) {
     backgroundColor: colorOf(name),
     stack: "depenses",
     order: 2,
+    kind: "expense",
   }));
   datasets.push({
     type: "line",
@@ -113,14 +115,17 @@ function monthlyChart(host, monthly, colorOf) {
     borderColor: cssVar("--success"),
     backgroundColor: cssVar("--success"),
     order: 1,
+    kind: "savings",
   });
   mountChart(host, {
     data: { labels: monthly.map((m) => formatMonth(m.month)), datasets },
     options: {
-      scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: (v) => money(v) } } },
+      // L'axe porte dépenses et épargne : il est masqué dès que l'un des deux l'est.
+      scales: { x: { stacked: true }, y: { stacked: true, ticks: {
+        callback: (v) => money(v, isMasked("savings") ? "savings" : "expense") } } },
       plugins: {
         legend: { position: "bottom" },
-        tooltip: { callbacks: { label: (item) => `${item.dataset.label} : ${money(item.raw)}` } },
+        tooltip: { callbacks: { label: (item) => `${item.dataset.label} : ${money(item.raw, item.dataset.kind)}` } },
       },
     },
   });
@@ -142,12 +147,12 @@ export async function render(container, ctx) {
   const colorOf = colorMap(names);
 
   const increases = simpleList(data.top_increases, (row) => el("li", {},
-    el("span", { text: row.name }), el("span", { className: "amount neg", text: `+${money(row.increase)}` })),
+    el("span", { text: row.name }), el("span", { className: "amount neg", text: signedMoney(row.increase, "expense") })),
   "Aucune hausse par rapport à la période " + (ctx.compare ? "de comparaison." : "précédente."));
   const recurring = simpleList(data.recurring, (row) => el("li", {},
     el("span", { className: "label", text: row.label_norm }),
     el("span", { className: "muted", text: `${row.months.length} mois` }),
-    el("span", { className: "amount", text: `${money(row.avg_amount)} / mois` })),
+    el("span", { className: "amount", text: `${money(row.avg_amount, "expense")} / mois` })),
   "Aucune dépense récurrente détectée sur la période.");
 
   container.replaceChildren(

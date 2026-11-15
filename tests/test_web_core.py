@@ -199,7 +199,7 @@ def test_security_headers(client):
         assert r.headers["referrer-policy"] == "no-referrer"
     assert client.get("/api/tabs").headers["cache-control"] == "no-store"
     assert client.post("/api/logout").headers["cache-control"] == "no-store"      # réponse 403 du garde
-    assert "no-store" not in client.get("/static/app.js").headers.get("cache-control", "")
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"     # revalidé, jamais périmé
 
 
 def test_healthz_is_public_and_carries_security_headers(settings):
@@ -225,7 +225,7 @@ def test_post_without_custom_header_forbidden(client):
 
 def test_default_tabs(client):
     assert ENABLED_TABS == ["overview", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
-                            "regles"]
+                            "banque", "regles"]
     assert client.get("/api/tabs").json() == [
         {"id": "overview", "title": "Vue d'ensemble", "order": 10},
         {"id": "categories", "title": "Catégories", "order": 20},
@@ -234,6 +234,7 @@ def test_default_tabs(client):
         {"id": "epargne", "title": "Épargne", "order": 40},
         {"id": "a_classer", "title": "À classer", "order": 50},
         {"id": "releves", "title": "Relevés", "order": 60},
+        {"id": "banque", "title": "Banque", "order": 65},
         {"id": "regles", "title": "Règles", "order": 70},
     ]
 
@@ -399,6 +400,45 @@ def test_reanalyse(client, tmp_path):
     [report] = r.json()
     assert report["error"] is None and report["sections"][0]["status"] == "ok"
     assert report["sections"][0]["orphaned_overrides"] == 0
+
+
+def test_delete_document_route(client, settings, tmp_path):
+    data = _pdf(tmp_path, "a.pdf", [_cc_section()])
+    document_id = client.post("/api/upload", files={"file": ("a.pdf", data)}, headers=H).json()["document_id"]
+    assert client.delete(f"/api/documents/{document_id}").status_code == 403       # en-tête anti-CSRF requis
+
+    r = client.delete(f"/api/documents/{document_id}", headers=H)
+
+    assert r.status_code == 200
+    assert r.json() == {"document_id": document_id, "deleted_transactions": 3, "reclassified_mirrors": 0,
+                        "pending_versions": []}
+    assert client.get("/api/tabs/releves/list").json()["documents"] == []
+    assert client.get("/api/meta").json()["unclassified_count"] == 0
+    assert list((settings.data_dir / "pdfs").iterdir()) == []
+    # le même PDF se réimporte (dédoublonnage par sha256 du fichier)
+    again = client.post("/api/upload", files={"file": ("a.pdf", data)}, headers=H).json()
+    assert again["duplicate_file"] is False and again["sections"][0]["status"] == "ok"
+
+
+def test_delete_unknown_document(client):
+    r = client.delete("/api/documents/9999", headers=H)
+    assert r.status_code == 404 and r.json()["detail"] == "relevé 9999 introuvable"
+
+
+def test_delete_retained_version_reports_pending_versions(client, tmp_path):
+    first = client.post("/api/upload", files={"file": ("a.pdf", _pdf(tmp_path, "a.pdf", [_cc_section()]))},
+                        headers=H).json()
+    changed = _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")])
+    section_id = client.post("/api/upload", files={"file": ("b.pdf", changed)}, headers=H).json()["sections"][0]["section_id"]
+    assert client.get("/api/tabs/releves/list").json()["documents"][0]["sections"][0]["other_ok"] is True
+
+    r = client.delete(f"/api/documents/{first['document_id']}", headers=H)
+
+    assert "00000000001" not in r.text
+    assert r.json()["pending_versions"] == [{"section_id": section_id, "number_tail": "0001",
+                                              "statement_date": "2024-04-10", "previous_status": "conflict"}]
+    [doc] = client.get("/api/tabs/releves/list").json()["documents"]
+    assert (doc["sections"][0]["status"], doc["sections"][0]["other_ok"]) == ("conflict", False)
 
 
 # --- Statique --------------------------------------------------------------------------------

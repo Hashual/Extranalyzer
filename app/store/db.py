@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 7
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -32,8 +32,83 @@ PRAGMA user_version = 4;
 COMMIT;
 """
 
-# 4 -> 5 : tickets de caisse (reçus Gmail ou déposés), rayons, état de la relève
+# 4 -> 5 : catégories du seed supprimées ou renommées par l'utilisateur (le seed ne les recrée pas)
 _MIGRATE_4_TO_5 = """
+BEGIN;
+CREATE TABLE IF NOT EXISTS seed_dismissed (
+    name TEXT NOT NULL,
+    parent_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(name, parent_name)
+);
+PRAGMA user_version = 5;
+COMMIT;
+"""
+
+
+# 5 -> 6 : sources externes (Enable Banking) et origine des opérations
+_MIGRATE_5_TO_6 = """
+BEGIN;
+ALTER TABLE transactions ADD COLUMN source TEXT NOT NULL DEFAULT 'pdf';
+CREATE TABLE bank_links (
+    id INTEGER PRIMARY KEY,
+    provider TEXT NOT NULL,
+    session_id TEXT UNIQUE NOT NULL,
+    aspsp_name TEXT NOT NULL,
+    aspsp_country TEXT NOT NULL,
+    valid_until TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active','expired','replaced','revoked')),
+    created_at TEXT NOT NULL,
+    last_error TEXT,
+    retry_after TEXT
+);
+
+CREATE TABLE bank_auth_states (
+    state TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE external_accounts (
+    id INTEGER PRIMARY KEY,
+    link_id INTEGER NOT NULL REFERENCES bank_links(id),
+    uid TEXT NOT NULL,
+    identification_hash TEXT,
+    iban TEXT,
+    name TEXT,
+    currency TEXT,
+    cash_account_type TEXT,
+    account_id INTEGER NULL REFERENCES accounts(id),
+    ignored INTEGER NOT NULL DEFAULT 0,
+    last_sync_at TEXT,
+    balance_cents INTEGER,
+    balance_date TEXT,
+    balance_gap_cents INTEGER,
+    accepted_gap_cents INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
+CREATE TABLE external_transactions (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+    raw_json TEXT NOT NULL
+);
+
+CREATE TABLE sync_runs (
+    id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    trigger TEXT NOT NULL,
+    added INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    message TEXT
+);
+
+CREATE INDEX idx_transactions_source_account ON transactions(source, account_id, op_date);
+PRAGMA user_version = 6;
+COMMIT;
+"""
+
+# 6 -> 7 : tickets de caisse (reçus Gmail ou déposés), rayons, état de la relève
+_MIGRATE_6_TO_7 = """
 BEGIN;
 CREATE TABLE aisle_families (
     id INTEGER PRIMARY KEY,
@@ -108,7 +183,7 @@ CREATE TABLE mail_sync (
     last_error TEXT NULL
 );
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 7;
 COMMIT;
 """
 
@@ -140,8 +215,14 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
         if version == 3:    # 3 -> 4 : nombre d'opérations similaires d'une suggestion
             conn.executescript(_MIGRATE_3_TO_4)
             version = 4
-        if version == 4:    # 4 -> 5 : tickets de caisse
+        if version == 4:    # 4 -> 5 : catégories du seed écartées par l'utilisateur
             conn.executescript(_MIGRATE_4_TO_5)
+            version = 5
+        if version == 5:    # 5 -> 6 : sources externes (Enable Banking)
+            conn.executescript(_MIGRATE_5_TO_6)
+            version = 6
+        if version == 6:    # 6 -> 7 : tickets de caisse
+            conn.executescript(_MIGRATE_6_TO_7)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

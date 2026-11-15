@@ -98,7 +98,7 @@ def family_id(env: Env, name: str) -> int:
 def test_tabs_order_includes_courses(env_courses):
     tabs = [t["id"] for t in env_courses.client.get("/api/tabs").json()]
     assert tabs == ["overview", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
-                    "regles"]
+                    "banque", "regles"]
 
 
 def test_upload_links_and_summary_counts_whole_consumption(env_courses):

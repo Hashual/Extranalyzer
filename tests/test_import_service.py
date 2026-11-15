@@ -9,7 +9,7 @@ from reportlab.pdfgen import canvas
 
 from app.classify.normalize import normalize_label
 from app.importer.creditmutuel import CreditMutuelParser
-from app.importer.service import import_pdf, reanalyse_all, resolve_conflict, tx_key
+from app.importer.service import delete_document, import_pdf, reanalyse_all, resolve_conflict, tx_key
 from app.store.db import connect
 from pdfgen import FSection, FTx, make_statement
 
@@ -623,3 +623,188 @@ def test_reanalysis_moves_receipt_links(tmp_path, conn, pdf_dir):
     new_key = conn.execute("SELECT tx_key FROM transactions WHERE label LIKE 'PRLV SEPA BETA%'").fetchone()[0]
     assert new_key != old_key
     assert conn.execute("SELECT tx_key FROM receipts").fetchone()[0] == new_key
+
+
+# --- Suppression d'un relevé -------------------------------------------------------------------
+
+def _doc_count(conn):
+    return _count(conn, "SELECT COUNT(*) FROM documents")
+
+
+def _savings_rule(conn):
+    from app.classify.rules import create_rule
+    savings = conn.execute("INSERT INTO categories(name, kind) VALUES ('Épargne', 'savings')").lastrowid
+    create_rule(conn, "VIR VERS LIVRET", "contains", savings)
+    conn.commit()
+    return savings
+
+
+LIVRET_LEG = "SELECT category_id, mirror_of IS NOT NULL FROM transactions WHERE label = 'VIR EPARGNE TEST'"
+
+
+def test_delete_document(tmp_path, conn, pdf_dir):
+    data = _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()])
+    report = import_pdf(conn, data, "a.pdf", pdf_dir, PARSERS, Recorder())
+    stored = pdf_dir / f"{hashlib.sha256(data).hexdigest()}.pdf"
+    cat = _override(conn, "PRLV SEPA BETA")
+    rec = Recorder()
+
+    deleted = delete_document(conn, report.document_id, pdf_dir, rec)
+
+    assert (deleted.document_id, deleted.deleted_transactions, deleted.reclassified_mirrors) == (
+        report.document_id, 4, 0)
+    assert deleted.pending_versions == []
+    assert (_count(conn), _count(conn, "SELECT COUNT(*) FROM sections"), _doc_count(conn)) == (0, 0, 0)
+    assert not stored.exists()
+    assert rec.calls == []                         # aucune opération restante à reclasser
+    # le reclassement manuel est conservé : il se ré-appliquera à la réimportation
+    assert _count(conn, "SELECT COUNT(*) FROM manual_overrides WHERE category_id = ?", cat) == 1
+    assert not conn.in_transaction
+
+
+def test_delete_unknown_document(conn, pdf_dir):
+    assert delete_document(conn, 9999, pdf_dir, Recorder()) is None
+
+
+def test_reimport_after_delete(tmp_path, conn, pdf_dir):
+    data = _pdf(tmp_path, "a.pdf", [_cc_section()])
+    first = import_pdf(conn, data, "a.pdf", pdf_dir, PARSERS, Recorder())
+    cat = _override(conn, "PRLV SEPA BETA")
+    delete_document(conn, first.document_id, pdf_dir, Recorder())
+
+    again = import_pdf(conn, data, "a.pdf", pdf_dir, PARSERS, Recorder())
+
+    assert again.duplicate_file is False and again.error is None
+    assert [s.status for s in again.sections] == ["ok"]
+    assert (pdf_dir / f"{hashlib.sha256(data).hexdigest()}.pdf").read_bytes() == data
+    assert _count(conn) == 3
+    assert conn.execute("SELECT category_id, manual FROM transactions WHERE label = 'PRLV SEPA BETA'").fetchone() == (cat, 1)
+    assert import_pdf(conn, data, "a.pdf", pdf_dir, PARSERS, Recorder()).duplicate_file is True
+
+
+def test_delete_unpairs_and_reclassifies_mirror_in_other_statement(tmp_path, conn, pdf_dir):
+    from app.classify.pipeline import on_new_transactions
+    savings = _savings_rule(conn)
+    cc = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_transfer("20")]), "a.pdf", pdf_dir, PARSERS,
+                    on_new_transactions)
+    import_pdf(conn, _pdf(tmp_path, "b.pdf", [_livret_section()]), "b.pdf", pdf_dir, PARSERS, on_new_transactions)
+    assert conn.execute(LIVRET_LEG).fetchone() == (savings, 1)     # jambe miroir du virement du compte courant
+
+    deleted = delete_document(conn, cc.document_id, pdf_dir, on_new_transactions)
+
+    assert (deleted.deleted_transactions, deleted.reclassified_mirrors) == (1, 1)
+    assert conn.execute(LIVRET_LEG).fetchone() == (None, 0)         # gardée, désappariée et reclassée
+    assert _count(conn) == 1
+
+
+def test_delete_mirror_pair_within_same_document(tmp_path, conn, pdf_dir):
+    from app.classify.pipeline import on_new_transactions
+    _savings_rule(conn)
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_transfer("20"), _livret_section()]), "a.pdf", pdf_dir,
+                        PARSERS, on_new_transactions)
+    assert conn.execute(LIVRET_LEG).fetchone()[1] == 1
+    rec = Recorder()
+    deleted = delete_document(conn, report.document_id, pdf_dir, rec)
+    assert (deleted.deleted_transactions, deleted.reclassified_mirrors, _count(conn)) == (2, 0, 0)
+    assert rec.calls == []
+
+
+def test_delete_retained_version_leaves_other_versions_to_decide(tmp_path, conn, pdf_dir):
+    a = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir, PARSERS,
+                   Recorder())
+    b = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")]), "b.pdf",
+                   pdf_dir, PARSERS, Recorder())
+    c = import_pdf(conn, _pdf(tmp_path, "c.pdf", [_cc_section(closing="1.137,50", vir="1.050,00")]), "c.pdf",
+                   pdf_dir, PARSERS, Recorder())
+    b_id, c_id = b.sections[0].section_id, c.sections[0].section_id
+    resolve_conflict(conn, c_id, False, Recorder())
+    assert _statuses(conn) == ["ok", "ok", "conflict", "superseded"]
+
+    deleted = delete_document(conn, a.document_id, pdf_dir, Recorder())
+
+    # rien n'est importé automatiquement : les autres versions sont à trancher, et signalées
+    assert [(v.account_number, v.statement_date, v.section_id, v.previous_status)
+            for v in deleted.pending_versions] == [
+        ("00000000001", date(2024, 4, 10), b_id, "conflict"), ("00000000001", date(2024, 4, 10), c_id, "superseded")]
+    assert _statuses(conn) == ["conflict", "conflict"]
+    assert _count(conn) == 0
+
+    # accepter l'une d'elles l'importe telle quelle (aucune version à remplacer)
+    resolve_conflict(conn, b_id, True, Recorder(), pdf_dir=pdf_dir, parsers=PARSERS)
+    assert _statuses(conn) == ["ok", "conflict"]
+    assert _count(conn) == 3
+
+
+def test_delete_conflicting_version_keeps_retained_one(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    b = import_pdf(conn, _pdf(tmp_path, "b.pdf", [_cc_section(closing="1.187,50", vir="1.100,00")]), "b.pdf",
+                   pdf_dir, PARSERS, Recorder())
+    before = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+    deleted = delete_document(conn, b.document_id, pdf_dir, Recorder())
+    assert (deleted.deleted_transactions, deleted.pending_versions) == (0, [])
+    assert _statuses(conn) == ["ok"]
+    assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before
+
+
+def test_delete_failure_rolls_back_and_keeps_file(tmp_path, conn, pdf_dir):
+    from app.classify.pipeline import on_new_transactions
+    _savings_rule(conn)
+    data = _pdf(tmp_path, "a.pdf", [_cc_transfer("20")])
+    cc = import_pdf(conn, data, "a.pdf", pdf_dir, PARSERS, on_new_transactions)
+    import_pdf(conn, _pdf(tmp_path, "b.pdf", [_livret_section()]), "b.pdf", pdf_dir, PARSERS, on_new_transactions)
+    before = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+
+    def boom(conn, ids):
+        raise RuntimeError("échec du classement")
+
+    with pytest.raises(RuntimeError):
+        delete_document(conn, cc.document_id, pdf_dir, boom)
+    assert conn.execute("SELECT * FROM transactions ORDER BY id").fetchall() == before
+    assert _doc_count(conn) == 2
+    assert (pdf_dir / f"{hashlib.sha256(data).hexdigest()}.pdf").exists()
+
+
+def _api_tx(conn, account_number, day):
+    from app.sources.base import AccountFetch, FetchedTransaction
+    from app.sources.service import store_fetch
+    account_id = repo_upsert(conn, account_number)
+    store_fetch(conn, "enablebanking", AccountFetch(account_id, [
+        FetchedTransaction(date.fromisoformat(day), None, "CB API FICTIVE", Decimal("-1.00"))]))
+    conn.commit()
+
+
+def repo_upsert(conn, number):
+    from app.store import repo
+    return repo.upsert_account(conn, number, "C/C EUROCOMPTE TEST")
+
+
+def test_pdf_period_already_covered_by_bank_sync_is_error(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")      # dans la période du relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+                        PARSERS, Recorder())
+    statuses = {s.account_number: (s.status, s.message) for s in report.sections}
+    assert statuses["00000000001"] == ("error", "période déjà couverte par la synchronisation bancaire")
+    assert statuses["00000000002"] == ("ok", None)
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 1
+
+
+def test_pdf_before_first_bank_operation_is_imported(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-11")      # après le relevé du 10/04/2024
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]
+
+
+def test_reanalyse_keeps_api_overlap_guard(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-04-01")
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    reports = reanalyse_all(conn, pdf_dir, PARSERS, Recorder())
+    assert [(s.status, s.message) for r in reports for s in r.sections] == \
+        [("error", "période déjà couverte par la synchronisation bancaire")]
+    assert _count(conn, "SELECT COUNT(*) FROM transactions WHERE source = 'pdf'") == 0
+
+
+def test_pdf_fills_hole_between_synced_periods(tmp_path, conn, pdf_dir):
+    _api_tx(conn, "00000000001", "2024-01-15")      # synchro ancienne, puis consentement expiré
+    _api_tx(conn, "00000000001", "2024-05-02")      # reprise après le trou
+    report = import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section()]), "a.pdf", pdf_dir, PARSERS, Recorder())
+    assert [s.status for s in report.sections] == ["ok"]

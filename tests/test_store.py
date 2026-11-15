@@ -20,10 +20,10 @@ def conn(tmp_path):
 def test_connect_twice_keeps_user_version(tmp_path):
     path = tmp_path / "t.db"
     c1 = connect(path)
-    assert c1.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c1.execute("PRAGMA user_version").fetchone()[0] == 7
     c1.close()
     c2 = connect(path)
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c2.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c2.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     c2.close()
@@ -109,16 +109,33 @@ def test_connect_waits_on_busy_database(tmp_path):
     c.close()
 
 
-def _strip_v5_tables(schema: str) -> str:
-    """Schéma v4 : sans le bloc des tickets de caisse."""
-    stripped = re.sub(r"-- v5 :.*?-- fin v5\n\n?", "", schema, flags=re.S).replace("user_version = 5", "user_version = 4")
-    assert "receipts" not in stripped and "user_version = 4" in stripped
-    return stripped
+def _as_v6(schema: str) -> str:
+    """Schéma courant ramené à la version 6 (sans le bloc des tickets de caisse)."""
+    v6 = re.sub(r"-- v7 :.*?-- fin v7\n\n?", "", schema, flags=re.S).replace("user_version = 7", "user_version = 6")
+    assert "receipts" not in v6 and "user_version = 6" in v6
+    return v6
+
+
+def _as_v5(schema: str) -> str:
+    """Schéma courant ramené à la version 5 (sans les sources externes)."""
+    schema = _as_v6(schema)
+    v5 = re.sub(r"-- Sources externes \(v6\).*?-- fin v6\n\n", "", schema, flags=re.S)
+    v5 = v5.replace("suggestion_support INTEGER NULL,\n    source TEXT NOT NULL DEFAULT 'pdf'\n",
+                    "suggestion_support INTEGER NULL\n").replace("user_version = 6", "user_version = 5")
+    assert "bank_links" not in v5 and v5.count("source TEXT") == 1 and "user_version = 5" in v5
+    return v5
+
+
+def _as_v4(schema: str) -> str:
+    """Schéma courant ramené à la version 4 (sans la table seed_dismissed)."""
+    schema = _as_v5(schema)
+    v4 = re.sub(r"-- Catégories du seed.*?\);\n\n", "", schema, flags=re.S).replace("user_version = 5", "user_version = 4")
+    assert "seed_dismissed" not in v4 and "user_version = 4" in v4
+    return v4
 
 
 def _strip_v3_columns(schema: str) -> str:
-    """Schéma v2 (colonnes de classement retirées) ; les tests de migration en tirent les versions plus anciennes."""
-    schema = _strip_v5_tables(schema)
+    schema = _as_v4(schema)
     stripped = re.sub(r",\n    classified_by .*?suggestion_support INTEGER NULL\n", "\n", schema, flags=re.S)
     assert "classified_by" not in stripped
     return stripped
@@ -134,7 +151,7 @@ def _v1_schema() -> str:
 
 def test_new_database_has_section_message(tmp_path):
     c = connect(tmp_path / "t.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert "message" in [r[1] for r in c.execute("PRAGMA table_info(sections)")]
     c.close()
 
@@ -151,11 +168,11 @@ def test_migration_from_v1_adds_section_message(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT status, message FROM sections").fetchall() == [("ok", None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     c.close()
 
 
@@ -192,14 +209,14 @@ def test_migration_2_to_3(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT id, classified_by, confidence, suggested_category_id, suggestion_reason "
                      "FROM transactions ORDER BY id").fetchall() == [
         (1, "manual", None, None, None), (2, "rule", None, None, None),
         (3, "pair", None, None, None), (4, None, None, None, None), (5, None, None, None, None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT classified_by FROM transactions ORDER BY id").fetchall() == [
         ("manual",), ("rule",), ("pair",), (None,), (None,)]
     c.close()
@@ -246,7 +263,7 @@ def test_failed_migration_rolls_back_and_closes(tmp_path, monkeypatch):
 def test_migration_3_to_4_adds_suggestion_support(tmp_path):
     from importlib import resources
     schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
-    v3 = _strip_v5_tables(schema).replace(",\n    suggestion_support INTEGER NULL\n", "\n").replace("user_version = 4", "user_version = 3")
+    v3 = _as_v4(schema).replace(",\n    suggestion_support INTEGER NULL\n", "\n").replace("user_version = 4", "user_version = 3")
     assert "suggestion_support" not in v3 and "user_version = 3" in v3
     path = tmp_path / "t.db"
     raw = sqlite3.connect(path)
@@ -257,38 +274,75 @@ def test_migration_3_to_4_adds_suggestion_support(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT confidence, suggestion_reason, suggestion_support FROM transactions").fetchone() == (
         0.5, "r", None)
     c.close()
 
 
-# copie figée du schéma v4 (avant les tickets de caisse), pour tester la migration 4 -> 5
-_V4_SCHEMA = (Path(__file__).parent / "schema_v4.sql").read_text(encoding="utf-8")
+def test_migration_4_to_5_adds_seed_dismissed(tmp_path):
+    from importlib import resources
+    schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    path = tmp_path / "t.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(_as_v4(schema))
+    raw.close()
+    c = connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert c.execute("SELECT COUNT(*) FROM seed_dismissed").fetchone()[0] == 0
+    c.close()
 
 
-def test_fresh_db_is_v5_with_receipt_tables(tmp_path):
+def test_new_database_has_external_sources(tmp_path):
+    c = connect(tmp_path / "t.db")
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert {"bank_links", "bank_auth_states", "external_accounts", "external_transactions", "sync_runs"} <= tables
+    assert "source" in [r[1] for r in c.execute("PRAGMA table_info(transactions)")]
+    c.close()
+
+
+def test_migration_from_v5_marks_existing_transactions_pdf(tmp_path):
+    from importlib import resources
+    path = tmp_path / "t.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(_as_v5(resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")))
+    raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
+    raw.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents) "
+                "VALUES (1, 'k', '2025-01-05', 'OP', 'op', 100)")
+    raw.commit()
+    raw.close()
+    c = connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert c.execute("SELECT source FROM transactions").fetchall() == [("pdf",)]
+    assert c.execute("SELECT COUNT(*) FROM bank_links").fetchone()[0] == 0
+
+
+# copie figée du schéma v6 (avant les tickets de caisse), pour tester la migration 6 -> 7
+_V6_SCHEMA = (Path(__file__).parent / "schema_v6.sql").read_text(encoding="utf-8")
+
+
+def test_fresh_db_is_v7_with_receipt_tables(tmp_path):
     conn = connect(tmp_path / "x.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     for t in ("receipts", "receipt_slips", "receipt_lines", "receipt_payments", "aisles", "aisle_families",
               "mail_sync"):
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = ?", (t,)).fetchone()
     conn.close()
 
 
-def test_v4_db_migrates_to_v5(tmp_path):
+def test_v6_db_migrates_to_v7(tmp_path):
     path = tmp_path / "t.db"
     raw = sqlite3.connect(path)
-    raw.executescript(_V4_SCHEMA)
-    assert raw.execute("PRAGMA user_version").fetchone()[0] == 4
+    raw.executescript(_V6_SCHEMA)
+    assert raw.execute("PRAGMA user_version").fetchone()[0] == 6
     raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
     raw.execute("INSERT INTO transactions(account_id, tx_key, op_date, label, label_norm, amount_cents) "
                 "VALUES (1, 'k', '2024-01-01', 'a', 'a', -100)")
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 5
-    assert c.execute("SELECT tx_key, amount_cents FROM transactions").fetchall() == [("k", -100)]
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert c.execute("SELECT tx_key, amount_cents, source FROM transactions").fetchall() == [("k", -100, "pdf")]
     for t in ("receipts", "receipt_slips", "receipt_lines", "receipt_payments", "aisles", "aisle_families",
               "mail_sync"):
         assert c.execute("SELECT name FROM sqlite_master WHERE name = ?", (t,)).fetchone()

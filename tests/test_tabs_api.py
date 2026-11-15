@@ -92,7 +92,7 @@ def test_invalid_periods_are_rejected(env, path):
 def test_tabs_are_registered_in_order(env):
     assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "categories", "courses",
                                                                  "transactions", "epargne", "a_classer", "releves",
-                                                                 "regles"]
+                                                                 "banque", "regles"]
 
 
 # --- Vue d'ensemble ----------------------------------------------------------------------------
@@ -197,6 +197,205 @@ def test_category_detail_lists_the_100_most_recent_transactions(env):
     assert d["transactions"][0]["id"] == ids["courses"]          # le plus récent d'abord
     assert d["amount"] == "225.00"                                # le total couvre tout, pas seulement la page
 
+
+
+# --- Catégories : création, renommage, suppression --------------------------------------------
+
+def _meta_names(client):
+    meta = client.get("/api/meta").json()
+    return {r["name"]: [c["name"] for c in r["children"]] for r in meta["categories"]}
+
+
+def test_create_subcategory_inherits_kind_and_appears_in_meta(env):
+    client, conn, cat, _ = env
+    r = client.post("/api/tabs/categories", json={"name": "  Vélo  ", "parent_id": cat["Transport"]}, headers=H)
+    assert r.status_code == 201, r.text
+    assert r.json() == {"id": r.json()["id"], "name": "Vélo", "parent_id": cat["Transport"], "kind": "expense"}
+    assert "Vélo" in _meta_names(client)["Transport"]
+    # le type demandé est ignoré : une sous-catégorie hérite toujours de sa racine
+    r = client.post("/api/tabs/categories", json={"name": "Prime", "parent_id": cat["Revenus"], "kind": "expense"},
+                    headers=H)
+    assert r.json()["kind"] == "income"
+
+
+def test_create_root_requires_a_kind(env):
+    client, _, _, _ = env
+    r = client.post("/api/tabs/categories", json={"name": "Animaux"}, headers=H)
+    assert r.status_code == 422 and "type" in r.json()["detail"]
+    r = client.post("/api/tabs/categories", json={"name": "Animaux", "kind": "expense"}, headers=H)
+    assert r.status_code == 201 and r.json()["parent_id"] is None
+    assert _meta_names(client)["Animaux"] == []
+
+
+def test_create_category_rejects_invalid_input(env):
+    client, _, cat, _ = env
+
+    def post(body):
+        return client.post("/api/tabs/categories", json=body, headers=H)
+
+    assert post({"name": "   ", "parent_id": cat["Transport"]}).status_code == 422
+    assert post({"name": "x" * 61, "parent_id": cat["Transport"]}).status_code == 422
+    assert post({"name": "A\x07B", "parent_id": cat["Transport"]}).status_code == 422
+    r = post({"name": "Trop profond", "parent_id": cat["Transport/Train"]})
+    assert r.status_code == 422 and "deux niveaux" in r.json()["detail"]
+    assert post({"name": "Orpheline", "parent_id": 9999}).status_code == 404
+    assert post({"name": "Racine", "kind": "autre"}).status_code == 422
+
+
+def test_duplicate_category_is_a_readable_409(env):
+    client, conn, cat, _ = env
+    for body in ({"name": "Train", "parent_id": cat["Transport"]},
+                 {"name": "TRAIN", "parent_id": cat["Transport"]},        # casse
+                 {"name": "Sante", "kind": "expense"}):                   # accents
+        r = client.post("/api/tabs/categories", json=body, headers=H)
+        assert r.status_code == 409, body
+        assert "existe déjà" in r.json()["detail"]
+    # même nom sous une autre racine : autorisé
+    assert client.post("/api/tabs/categories", json={"name": "Train", "parent_id": cat["Loisirs"]},
+                       headers=H).status_code == 201
+    r = client.patch(f"/api/tabs/categories/{cat['Transport/Carburant']}", json={"name": "train"}, headers=H)
+    assert r.status_code == 409
+    assert conn.execute("SELECT name FROM categories WHERE id = ?", (cat["Transport/Carburant"],)).fetchone() == (
+        "Carburant",)
+
+
+def test_rename_category(env):
+    client, _, cat, _ = env
+    r = client.patch(f"/api/tabs/categories/{cat['Transport/Train']}", json={"name": "Rail"}, headers=H)
+    assert r.status_code == 200 and r.json()["name"] == "Rail"
+    assert "Rail" in _meta_names(client)["Transport"] and "Train" not in _meta_names(client)["Transport"]
+    assert client.patch("/api/tabs/categories/9999", json={"name": "X"}, headers=H).status_code == 404
+    assert client.patch(f"/api/tabs/categories/{cat['Courses']}", json={"name": ""}, headers=H).status_code == 422
+    # la casse seule peut changer
+    r = client.patch(f"/api/tabs/categories/{cat['Courses']}", json={"name": "COURSES"}, headers=H)
+    assert r.status_code == 200 and r.json()["name"] == "COURSES"
+
+
+def test_detail_reports_usage(env):
+    client, conn, cat, ids = env
+    conn.execute("INSERT INTO rules(pattern, match, category_id, priority) VALUES ('TRAIN', 'contains', ?, 10)",
+                 (cat["Transport/Train"],))
+    conn.commit()
+    d = get(client, f"/categories/{cat['Transport/Train']}", **JAN)
+    assert d["subcategories"] == 0 and d["usage"] == {"transactions": 1, "rules": 1, "overrides": 0}
+    assert get(client, f"/categories/{cat['Transport']}", **JAN)["subcategories"] == 4
+
+
+def test_delete_category_with_subcategories_is_refused(env):
+    client, conn, cat, _ = env
+    r = client.delete(f"/api/tabs/categories/{cat['Transport']}", params={"move_to": cat["Courses"]}, headers=H)
+    assert r.status_code == 409 and "4 sous-catégories" in r.json()["detail"]
+    assert conn.execute("SELECT 1 FROM categories WHERE id = ?", (cat["Transport"],)).fetchone() is not None
+
+
+def test_delete_used_category_requires_a_destination(env):
+    client, conn, cat, ids = env
+    r = client.post(f"/api/tabs/categories/transactions/{ids['unknown']}/category",
+                    json={"category_id": cat["Transport/Train"]}, headers=H)
+    assert r.status_code == 200
+    conn.execute("INSERT INTO rules(pattern, match, category_id, priority) VALUES ('ZZZ', 'contains', ?, 10)",
+                 (cat["Transport/Train"],))
+    conn.commit()
+    r = client.delete(f"/api/tabs/categories/{cat['Transport/Train']}", headers=H)
+    assert r.status_code == 409
+    assert r.json()["detail"] == ("« Train » est utilisée (2 opérations, 1 règle et 1 reclassement manuel) : "
+                                  "choisissez une catégorie vers laquelle les déplacer")
+    assert conn.execute("SELECT COUNT(*) FROM transactions WHERE category_id = ?",
+                        (cat["Transport/Train"],)).fetchone() == (2,)
+
+
+def test_delete_moves_transactions_rules_and_overrides(env):
+    client, conn, cat, ids = env
+    client.post(f"/api/tabs/categories/transactions/{ids['train']}/category",
+                json={"category_id": cat["Transport/Train"]}, headers=H)       # reclassement manuel mémorisé
+    rule_id = conn.execute("INSERT INTO rules(pattern, match, category_id, priority) "
+                           "VALUES ('ZZZ', 'contains', ?, 10)", (cat["Transport/Train"],)).lastrowid
+    conn.commit()
+    r = client.delete(f"/api/tabs/categories/{cat['Transport/Train']}", params={"move_to": cat["Transport"]},
+                      headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"moved": {"transactions": 1, "rules": 1, "overrides": 1}}
+    assert conn.execute("SELECT 1 FROM categories WHERE id = ?", (cat["Transport/Train"],)).fetchone() is None
+    assert conn.execute("SELECT category_id, manual, classified_by FROM transactions WHERE id = ?",
+                        (ids["train"],)).fetchone() == (cat["Transport"], 1, "manual")
+    assert conn.execute("SELECT category_id FROM rules WHERE id = ?", (rule_id,)).fetchone() == (cat["Transport"],)
+    tx_key = conn.execute("SELECT tx_key FROM transactions WHERE id = ?", (ids["train"],)).fetchone()[0]
+    assert conn.execute("SELECT category_id FROM manual_overrides WHERE tx_key = ?", (tx_key,)).fetchone() == (
+        cat["Transport"],)
+    assert "Train" not in _meta_names(client)["Transport"]
+    roots = {r["name"]: r for r in get(client, "/categories/tree", **JAN)["roots"]}
+    assert roots["Transport"]["amount"] == "110.00"                      # rien n'est perdu
+
+
+def test_delete_destination_must_be_valid(env):
+    client, _, cat, _ = env
+    train = cat["Transport/Train"]
+    r = client.delete(f"/api/tabs/categories/{train}", params={"move_to": cat["Revenus"]}, headers=H)
+    assert r.status_code == 422 and "même type" in r.json()["detail"]
+    assert client.delete(f"/api/tabs/categories/{train}", params={"move_to": train}, headers=H).status_code == 422
+    assert client.delete(f"/api/tabs/categories/{train}", params={"move_to": 9999}, headers=H).status_code == 404
+    assert client.delete("/api/tabs/categories/9999", headers=H).status_code == 404
+
+
+def test_delete_unused_category_forgets_its_suggestions(env):
+    client, conn, cat, ids = env
+    conn.execute("UPDATE transactions SET suggested_category_id = ?, confidence = 0.5, suggestion_reason = 'r' "
+                 "WHERE id = ?", (cat["Loisirs"], ids["unknown"]))
+    conn.commit()
+    r = client.delete(f"/api/tabs/categories/{cat['Loisirs']}", headers=H)
+    assert r.status_code == 200 and r.json()["moved"] == {"transactions": 0, "rules": 0, "overrides": 0}
+    assert "Loisirs" not in _meta_names(client)
+    assert conn.execute("SELECT suggested_category_id FROM transactions WHERE id = ?",
+                        (ids["unknown"],)).fetchone() != (cat["Loisirs"],)
+
+
+def test_renamed_savings_root_still_hosts_paired_savings(env):
+    from app.classify.savings_target import savings_category_for_account
+    client, conn, cat, _ = env
+    assert client.patch(f"/api/tabs/categories/{cat['Épargne']}", json={"name": "Mon épargne"},
+                        headers=H).status_code == 200
+    child = savings_category_for_account(conn, 2)
+    assert conn.execute("SELECT parent_id FROM categories WHERE id = ?", (child,)).fetchone() == (cat["Épargne"],)
+    assert conn.execute("SELECT COUNT(*) FROM categories WHERE parent_id IS NULL AND kind = 'savings'"
+                        ).fetchone() == (1,)
+
+
+def _login(settings):
+    client = TestClient(create_app(settings))       # chaque appel est un démarrage : le seed repasse
+    assert client.post("/api/login", json={"password": PASSWORD}, headers=H).status_code == 200
+    return client
+
+
+def test_deleted_or_renamed_seed_categories_do_not_come_back(tmp_path):
+    settings = Settings(data_dir=tmp_path / "data", password_hash=hash_password(PASSWORD), max_upload_mb=1)
+    client = _login(settings)
+    ids = {}
+    for root in client.get("/api/meta").json()["categories"]:
+        ids[root["name"]] = root["id"]
+        ids.update({f"{root['name']}/{c['name']}": c["id"] for c in root["children"]})
+    api = "/api/tabs/categories"
+    assert client.delete(f"{api}/{ids['Frais bancaires']}", params={"move_to": ids["Divers"]},
+                         headers=H).status_code == 200                # sa règle du seed part dans Divers
+    assert client.patch(f"{api}/{ids['Cadeaux']}", json={"name": "Présents"}, headers=H).status_code == 200
+    assert client.delete(f"{api}/{ids['Transport/Covoiturage']}", headers=H).status_code == 200
+    assert client.patch(f"{api}/{ids['Revenus']}", json={"name": "Entrées"}, headers=H).status_code == 200
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    conn.execute("DELETE FROM rules")           # installation de nouveau « neuve » : les règles du seed reviennent
+    conn.commit()
+    conn.close()
+
+    names = _meta_names(_login(settings))
+    assert "Frais bancaires" not in names and "Cadeaux" not in names and "Revenus" not in names
+    assert names["Présents"] == [] and "Salaire" in names["Entrées"]
+    assert "Covoiturage" not in names["Transport"] and "Train" in names["Transport"]
+    conn = connect(settings.data_dir / "extranalyzer.db")
+    patterns = {p for (p,) in conn.execute("SELECT pattern FROM rules")}
+    conn.close()
+    assert "INTERETS" in patterns and "F COTIS" not in patterns     # règle d'une catégorie écartée : ignorée
+
+    # recréer une catégorie écartée la rend de nouveau au seed (et ne crée pas de doublon au démarrage)
+    assert _login(settings).post(api, json={"name": "Cadeaux", "kind": "expense"}, headers=H).status_code == 201
+    assert list(_meta_names(_login(settings))).count("Cadeaux") == 1
 
 # --- Transactions ------------------------------------------------------------------------------
 
@@ -634,9 +833,9 @@ def test_releves_list(env):
         "filename": "releve-janvier.pdf", "statement_date": "2025-01-31", "imported_at": "2025-02-01T10:00:00"}
     assert docs[1]["sections"] == [
         {"id": 10, "account_label": "Courant fictif", "number_tail": "8901", "statement_date": "2025-01-31",
-         "status": "ok", "gap": "0.00", "tx_count": 2, "message": None},
+         "status": "ok", "gap": "0.00", "tx_count": 2, "other_ok": False, "message": None},
         {"id": 11, "account_label": "Livret fictif", "number_tail": "A2", "statement_date": "2025-01-31",
-         "status": "conflict", "gap": "0.00", "tx_count": 0, "message": None},
+         "status": "conflict", "gap": "0.00", "tx_count": 0, "other_ok": False, "message": None},
     ]
     error = docs[0]["sections"][0]
     assert (error["status"], error["gap"], error["message"]) == ("error", "-12.34", "écart de -12,34 €")

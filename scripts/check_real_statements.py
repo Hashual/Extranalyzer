@@ -72,7 +72,8 @@ def steady_state_ms(conn) -> int:
 
 
 def collect(folder: Path) -> tuple[dict[str, int], Counter]:
-    pdfs = sorted(p for p in folder.glob("*.pdf") if p.is_file() and p.suffix.lower() == ".pdf")
+    # iterdir plutôt que glob("*.pdf"), sensible à la casse sous Linux (« RELEVE.PDF » serait ignoré)
+    pdfs = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
     counts = {"pdf": len(pdfs), "duplicates": 0, "import_errors": 0, "info_lines": 0}
     kinds: Counter = Counter()
     with tempfile.TemporaryDirectory() as tmp:

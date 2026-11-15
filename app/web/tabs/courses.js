@@ -2,7 +2,7 @@
 // avec les débits, rayons à ranger, relève des tickets et dépôt manuel.
 // Paramètres d'onglet : `family=<id>` (détail d'une famille, 0 = à ranger), `receipt=<id>` (fiche d'un ticket),
 // `receipts=<état>` (liste filtrée : to_link, broken, error, pending_parser).
-import { amount, el, emptyNote, formatDate, money, scopeParams, section } from "../ui.js";
+import { amount, el, emptyNote, formatDate, money, scopeParams, section, signedMoney } from "../ui.js";
 
 export const id = "courses";
 export const title = "Courses";
@@ -52,7 +52,7 @@ function quantity(value) {
 function variation(value, compare) {
   if (compare === null || compare === undefined) return null;
   const diff = Number(value) - Number(compare);
-  return el("span", { className: "muted", text: ` (${diff > 0 ? "+" : ""}${money(diff)})` });
+  return el("span", { className: "muted", text: ` (${signedMoney(diff, "expense")})` });
 }
 
 // --- Synthèse ------------------------------------------------------------------------------------
@@ -77,10 +77,10 @@ function header(ctx, data) {
     el("div", { className: "tiles" },
       el("div", { className: "tile" },
         el("p", { className: "tile-label", text: "Courses" }),
-        el("p", { className: "tile-value" }, money(data.total), variation(data.total, data.total_compare))),
+        el("p", { className: "tile-value" }, money(data.total, "expense"), variation(data.total, data.total_compare))),
       payments.map(([key, label]) => el("div", { className: "tile" },
         el("p", { className: "tile-label", text: label }),
-        el("p", { className: "tile-value", text: money(data.by_payment[key]) })))),
+        el("p", { className: "tile-value", text: money(data.by_payment[key], "expense") })))),
     alerts.length ? el("div", { className: "alerts" },
       alerts.map(([n, label, go]) => el("button", { type: "button", className: "pill alert", text: `${n} ${label}`,
                                                     on: { click: go } })),
@@ -100,7 +100,7 @@ function familyBars(ctx, data) {
                                        on: { click: () => onClick && onClick() } },
       el("span", { className: "bar-name", text: name }),
       el("span", { className: "bar-track" }, fill),
-      el("span", { className: "bar-amount" }, money(value), variation(value, compare))));
+      el("span", { className: "bar-amount" }, money(value, "expense"), variation(value, compare))));
   };
   const items = data.families.map((f) =>
     bar(f.name, f.amount, f.compare, () => ctx.navigate("courses", { family: f.id })));
@@ -123,12 +123,12 @@ function outOfCourses(ctx, items) {
 
 async function familyView(container, ctx, familyId) {
   const data = await ctx.api.get(`${BASE}/family/${familyId}`, scopeParams(ctx));
-  const blocks = data.aisles.map((a) => section(`${a.name} · ${money(a.amount)}`,
-    el("p", { className: "muted", text: `${a.store}${a.compare !== null ? ` · comparaison ${money(a.compare)}` : ""}` }),
+  const blocks = data.aisles.map((a) => section(`${a.name} · ${money(a.amount, "expense")}`,
+    el("p", { className: "muted", text: `${a.store}${a.compare !== null ? ` · comparaison ${money(a.compare, "expense")}` : ""}` }),
     a.products.length ? table(["Produit", "Qté#", "Montant#", "Prix moyen#", "Achats#"],
       a.products.map((p) => el("tr", {},
-        el("td", { className: "label", text: p.label }), num(quantity(p.quantity)), num(money(p.amount)),
-        num(p.avg_unit === null ? "—" : money(p.avg_unit)), num(String(p.purchases))))) : emptyNote("Aucun produit.")));
+        el("td", { className: "label", text: p.label }), num(quantity(p.quantity)), num(money(p.amount, "expense")),
+        num(p.avg_unit === null ? "—" : money(p.avg_unit, "expense")), num(String(p.purchases))))) : emptyNote("Aucun produit.")));
   container.replaceChildren(back(ctx, "← Courses"),
     ...(blocks.length ? blocks : [emptyNote("Aucun rayon sur la période.")]));
 }
@@ -145,7 +145,7 @@ function receiptsList(ctx, receipts, filter) {
     el("td", { className: "date", text: shortDate(r.purchased_at) }),
     el("td", {}, el("button", { type: "button", className: "link", text: receiptTitle(r),
                                 on: { click: () => ctx.navigate("courses", { receipt: r.id }) } }), badge(r)),
-    num(r.total === null ? "—" : money(r.total))));
+    num(r.total === null ? "—" : money(r.total, "expense"))));
   return section("Tickets", filter ? back(ctx, "Voir tous les tickets") : null,
     shown.length ? table(["Date", "Ticket", "Total#"], rows) : emptyNote("Aucun ticket."));
 }
@@ -164,7 +164,7 @@ async function receiptView(container, ctx, receiptId) {
   };
 
   const head = el("div", {}, el("strong", { text: receiptTitle(r) }), badge(r),
-    el("p", { className: "muted", text: `${shortDate(r.purchased_at)}${r.total === null ? "" : ` · ${money(r.total)}`}` }),
+    el("p", { className: "muted", text: `${shortDate(r.purchased_at)}${r.total === null ? "" : ` · ${money(r.total, "expense")}`}` }),
     r.message ? el("p", { className: "muted", text: r.message }) : null,
     el("a", { href: `/api/tabs/courses/receipts/${r.id}/pdf`, target: "_blank", rel: "noopener", text: "Ouvrir le PDF" }));
 
@@ -186,9 +186,9 @@ async function receiptView(container, ctx, receiptId) {
   container.replaceChildren(back(ctx, "← Courses"), section("Ticket", head),
     ...r.lines.map((g) => section(`${g.aisle || "Sans rayon"}${g.family ? ` · ${g.family}` : ""}`,
       table(["Article", "Qté#", "Montant#"], g.lines.map((l) => el("tr", {},
-        el("td", { className: "label", text: l.label }), num(quantity(l.quantity)), num(el("span", { className: l.kind === "discount" ? "muted" : "", text: money(l.amount) }))))))),
+        el("td", { className: "label", text: l.label }), num(quantity(l.quantity)), num(el("span", { className: l.kind === "discount" ? "muted" : "", text: money(l.amount, "expense") }))))))),
     section("Paiements", r.payments.length ? el("ul", { className: "plain-list" }, r.payments.map((p) => el("li", {},
-      el("span", { text: PAYMENT_LABEL[p.method] || p.method }), el("span", { text: money(p.amount) }))))
+      el("span", { text: PAYMENT_LABEL[p.method] || p.method }), el("span", { text: money(p.amount, "expense") }))))
       : emptyNote("Aucun paiement lu.")),
     section("Débit bancaire", debit, error));
 }
