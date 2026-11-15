@@ -30,9 +30,9 @@ name = "Animaux"
 name = "Remises"
 
 [aisles.superu]
-# Rayons propres au lecteur : remises sans rayon visible, articles des caisses sans titres de rayon.
+# Remises sans rayon visible. Le rayon SANS RAYON (caisses sans titres de rayon) n'est volontairement rangé dans
+# aucune famille : il reste « à ranger » (spec § 3, pas de famille par défaut).
 "REMISES" = "Remises"
-"SANS RAYON" = "Maison & divers"
 
 # Crèmerie
 "BEURRE" = "Crèmerie"

@@ -70,6 +70,9 @@ def test_shipped_seed_lists_spec_families_and_files_every_aisle(conn):
     assert all(normalize_aisle(k) == k for k in data["aisles"]["superu"])
     assert conn.execute("SELECT COUNT(*) FROM aisles WHERE family_id IS NULL").fetchone()[0] == 0
     assert family_of(conn, "REMISES") == "Remises"
+    # articles sans rayon imprimé : à ranger, jamais dans une famille par défaut (spec § 3)
+    aisle_id(conn, "superu", "SANS RAYON")
+    assert family_of(conn, "SANS RAYON") is None
 
 
 class OneLineParser:

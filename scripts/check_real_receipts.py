@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from app.receipts import PARSERS_RECEIPTS  # noqa: E402
 from app.receipts.aisles import SEED, load_aisle_seed  # noqa: E402
 from app.receipts.service import ingest_file  # noqa: E402
+from app.receipts.superu import NO_AISLE  # noqa: E402
 from app.store.db import connect  # noqa: E402
 
 KINDS = ("écart de", "total introuvable", "date introuvable", "aucun article", "format de ticket non reconnu",
@@ -57,10 +58,12 @@ def collect(data_dir: Path) -> tuple[dict[str, int], Counter]:
             counts["items"] = _scalar(conn, "SELECT COUNT(*) FROM receipt_lines WHERE kind='item'")
             counts["discounts"] = _scalar(conn, "SELECT COUNT(*) FROM receipt_lines WHERE kind='discount'")
             counts["aisles"] = _scalar(conn, "SELECT COUNT(DISTINCT aisle_id) FROM receipt_lines")
-            counts["unsorted"] = _scalar(conn, "SELECT COUNT(DISTINCT l.aisle_id) FROM receipt_lines l "
-                                               "JOIN aisles a ON a.id = l.aisle_id WHERE a.family_id IS NULL")
-            counts["no_aisle_lines"] = _scalar(conn, "SELECT COUNT(*) FROM receipt_lines l JOIN aisles a "
-                                                     "ON a.id = l.aisle_id WHERE a.name = 'SANS RAYON'")
+            # SANS RAYON reste à ranger (aucune famille par défaut) : compté à part, ce n'est pas un défaut du seed
+            counts["unsorted"] = conn.execute("SELECT COUNT(DISTINCT l.aisle_id) FROM receipt_lines l JOIN aisles a "
+                                              "ON a.id = l.aisle_id WHERE a.family_id IS NULL AND a.name <> ?",
+                                              (NO_AISLE,)).fetchone()[0]
+            counts["no_aisle_lines"] = conn.execute("SELECT COUNT(*) FROM receipt_lines l JOIN aisles a "
+                                                    "ON a.id = l.aisle_id WHERE a.name = ?", (NO_AISLE,)).fetchone()[0]
             for method in METHODS:
                 counts[f"tickets_{method}"] = conn.execute(
                     "SELECT COUNT(DISTINCT receipt_id) FROM receipt_payments WHERE method=?", (method,)).fetchone()[0]
@@ -94,9 +97,9 @@ def main(argv: list[str] | None = None) -> int:
         ("Tickets error", counts["error"]),
         ("Lignes d'article", counts["items"]),
         ("Lignes de remise", counts["discounts"]),
-        ("Lignes sans rayon imprimé", counts["no_aisle_lines"]),
+        ("Lignes sans rayon imprimé (à ranger)", counts["no_aisle_lines"]),
         ("Rayons utilisés", counts["aisles"]),
-        ("Rayons sans famille", counts["unsorted"]),
+        ("Rayons sans famille (hors SANS RAYON)", counts["unsorted"]),
         ("Tickets payés par carte bancaire", counts["tickets_card"]),
         ("Tickets avec titre-restaurant", counts["tickets_meal_voucher"]),
         ("Tickets avec bon ou cagnotte", counts["tickets_voucher"]),
