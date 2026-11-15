@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.auth import hash_password
 from app.config import Settings, SolanaSettings, _solana_settings
 from app.main import create_app
-from app.sources.solana.runtime import KeyInvalid, KeyManagedByServer, SolanaRuntime
+from app.sources.solana.runtime import KeyInvalid, KeyManagedByServer, NotConfigured, SolanaRuntime
 from tests.fakehelius import FakeHelius
 from tests.test_banque_wallets_api import ADDR_A, H, PASSWORD, URL, _fake
 
@@ -99,6 +99,20 @@ def test_clear_key_forgets_it(tmp_path):
 def test_invalid_url_disables_key_entry(tmp_path):
     runtime = SolanaRuntime(None, _noop, _noop, transport=_helius(), key_file=tmp_path / "helius.key", base_url=None)
     assert not runtime.can_set_key
+    with pytest.raises(NotConfigured):
+        runtime.set_key(NEW_KEY)
+
+
+def test_write_failure_leaves_no_temp_copy(tmp_path, monkeypatch):
+    key_file = tmp_path / "helius.key"
+    runtime = SolanaRuntime(None, _noop, _noop, transport=_helius(), key_file=key_file)
+
+    def broken_replace(src, dst):
+        raise OSError("disque plein")
+    monkeypatch.setattr("app.sources.solana.runtime.os.replace", broken_replace)
+    with pytest.raises(OSError):
+        runtime.set_key(NEW_KEY)
+    assert not (tmp_path / "helius.key.tmp").exists() and not key_file.exists() and not runtime.configured
 
 
 def test_server_settings_absent_by_default_is_silent(monkeypatch, tmp_path, caplog):
