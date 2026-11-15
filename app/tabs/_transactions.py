@@ -16,7 +16,7 @@ ROW_FROM = """
 ROW_SELECT = """
     SELECT t.id, t.op_date, t.label, t.amount_cents, t.account_id, t.category_id, c.name, t.manual,
            t.mirror_of, t.classified_by, t.confidence, t.suggestion_reason,
-           (SELECT r.id FROM receipts r WHERE r.tx_key = t.tx_key AND r.link_broken = 0) AS receipt_id
+           (SELECT r.id FROM receipts r WHERE r.tx_key = t.tx_key AND r.link_broken = 0 AND r.status = 'ok') AS receipt_id
 """ + ROW_FROM
 
 

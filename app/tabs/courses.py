@@ -155,6 +155,8 @@ def summary(conn: Conn, s: Annotated[Scope, Depends(scope)]):
     payments["card"] = payments.get("card", 0) + undetailed
     return to_jsonable({
         "total": from_cents(sum(current.values()) + undetailed),
+        "total_compare": from_cents(sum(previous.values()) + _undetailed_cents(conn, s, s.compare, root))
+        if s.compare else None,
         "by_payment": {m: from_cents(payments.get(m, 0)) for m in PAYMENT_METHODS},
         "families": families,
         "undetailed": from_cents(undetailed),

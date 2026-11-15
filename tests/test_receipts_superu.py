@@ -118,7 +118,7 @@ def test_classic_layout_without_aisles_and_with_dot_decimals(tmp_path):
 @pytest.mark.parametrize("label, method", [
     ("CB", "card"), ("CB SANS CONTACT", "card"), ("CARTE BANCAIRE EUR", "card"),
     ("TITRE RESTAURANT", "meal_voucher"), ("TRD EDENRED", "meal_voucher"), ("CHEQUE BIMPLI", "meal_voucher"),
-    ("CARTE SWILE", "meal_voucher"),
+    ("CARTE SWILE", "meal_voucher"), ("CHEQUE DEJEUNER", "meal_voucher"),
     ("BON DE REDUCTION", "voucher"), ("BONS U (L)", "voucher"), ("PAIEMENT € CARTE U", "voucher"),
     ("ESPECES", "cash"), ("CHEQUE", "other"), ("MOYEN INCONNU", "other"),
 ])

@@ -6,6 +6,16 @@ const PCT = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDi
 const SCORE = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDigits: 0 });
 const MONTH = new Intl.DateTimeFormat("fr-FR", { month: "short", year: "numeric", timeZone: "UTC" });
 
+/** Lien vers la fiche d'un ticket en conservant période, comparaison et comptes de la route courante. */
+function receiptHref(receiptId) {
+  const current = new URLSearchParams(window.location.hash.slice(1));
+  const next = new URLSearchParams();
+  next.set("tab", "courses");
+  for (const key of ["from", "to", "cmp", "acc"]) if (current.get(key)) next.set(key, current.get(key));
+  next.set("receipt", receiptId);
+  return "#" + next.toString();
+}
+
 /** Montant (chaîne "123.45" de l'API) → « 123,45 € ». */
 export function money(value) {
   return EUR.format(Number(value));
@@ -128,7 +138,7 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
     }, `Catégorie de « ${tx.label} »`);
     const labelCell = el("td", { className: "label" }, el("span", { text: tx.label }));
     if (tx.receipt_id) {
-      labelCell.append(el("a", { className: "receipt-icon", href: `#tab=courses&receipt=${tx.receipt_id}`,
+      labelCell.append(el("a", { className: "receipt-icon", href: receiptHref(tx.receipt_id),
                                  text: "🧾", title: "Voir le ticket de caisse", attrs: { "aria-label": "Voir le ticket de caisse" } }));
     }
     if (tx.manual) labelCell.append(el("span", { className: "tag", text: "manuel" }));

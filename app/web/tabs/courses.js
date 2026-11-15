@@ -40,6 +40,11 @@ function num(node) {
   return el("td", { className: "num" }, node);
 }
 
+function localTime(iso) {
+  const date = iso ? new Date(iso) : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toLocaleString("fr-FR") : String(iso || "");
+}
+
 function quantity(value) {
   return String(value).replace(".", ",");
 }
@@ -57,7 +62,12 @@ function header(ctx, data) {
   const open = (params) => () => ctx.navigate("courses", params);
   const alerts = [
     [c.to_link, "à relier", open({ receipts: "to_link" })],
-    [c.unsorted_aisles, "rayon(s) à ranger", open({ family: 0 })],
+    [c.unsorted_aisles, "rayon(s) à ranger", () => {
+      const panel = document.getElementById("courses-aisles");
+      if (!panel) return;
+      panel.open = true;
+      panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    }],
     [c.errors, "en erreur", open({ receipts: "error" })],
     [c.pending_parser, "en attente de lecteur", open({ receipts: "pending_parser" })],
     [c.broken, "débit(s) disparu(s)", open({ receipts: "broken" })],
@@ -67,7 +77,7 @@ function header(ctx, data) {
     el("div", { className: "tiles" },
       el("div", { className: "tile" },
         el("p", { className: "tile-label", text: "Courses" }),
-        el("p", { className: "tile-value", text: money(data.total) })),
+        el("p", { className: "tile-value" }, money(data.total), variation(data.total, data.total_compare))),
       payments.map(([key, label]) => el("div", { className: "tile" },
         el("p", { className: "tile-label", text: label }),
         el("p", { className: "tile-value", text: money(data.by_payment[key]) })))),
@@ -176,7 +186,7 @@ async function receiptView(container, ctx, receiptId) {
   container.replaceChildren(back(ctx, "← Courses"), section("Ticket", head),
     ...r.lines.map((g) => section(`${g.aisle || "Sans rayon"}${g.family ? ` · ${g.family}` : ""}`,
       table(["Article", "Qté#", "Montant#"], g.lines.map((l) => el("tr", {},
-        el("td", { className: "label", text: l.label }), num(quantity(l.quantity)), num(amount(l.amount))))))),
+        el("td", { className: "label", text: l.label }), num(quantity(l.quantity)), num(el("span", { className: l.kind === "discount" ? "muted" : "", text: money(l.amount) }))))))),
     section("Paiements", r.payments.length ? el("ul", { className: "plain-list" }, r.payments.map((p) => el("li", {},
       el("span", { text: PAYMENT_LABEL[p.method] || p.method }), el("span", { text: money(p.amount) }))))
       : emptyNote("Aucun paiement lu.")),
@@ -211,7 +221,7 @@ async function aislesPanel(ctx) {
                              attrs: { "aria-label": "Nom de la nouvelle famille" } });
   const create = el("button", { type: "button", text: "Créer", on: { click: () => name.value.trim() &&
     run(() => ctx.api.post(`${BASE}/families`, { name: name.value })) } });
-  return el("details", { className: "card" }, el("summary", { text: "Rayons et familles" }),
+  return el("details", { className: "card", id: "courses-aisles" }, el("summary", { text: "Rayons et familles" }),
     rows.length ? table(["Rayon", "Enseigne", "Famille"], rows) : emptyNote("Aucun rayon lu."),
     el("div", { className: "actions" }, name, create), error);
 }
@@ -239,14 +249,14 @@ async function syncPanel(ctx) {
     el("span", { className: "label", text: `${l.store} · ${l.label}` }),
     el("span", { className: l.last_error ? "error" : "muted",
                  text: l.last_error || (l.last_success_at
-                   ? `relevé le ${l.last_success_at.slice(0, 16).replace("T", " ")}` : "jamais relevé") })));
+                   ? `relevé le ${localTime(l.last_success_at)}` : "jamais relevé") })));
   return el("details", { className: "card" }, el("summary", { text: "Relève des tickets" }),
     el("p", { className: "muted", text: state.enabled ? "Relève automatique activée." : "Relève automatique désactivée." }),
     labels.length ? el("ul", { className: "plain-list" }, labels) : null,
     el("div", { className: "actions" }, now, reread), message);
 }
 
-const OUTCOMES = { stored: "ajouté", slip: "bordereau carte, ignoré", duplicate: "déjà présent", rejected: "refusé" };
+const OUTCOMES = { stored: "ajouté", slip: "ticket CB enregistré", duplicate: "déjà présent", rejected: "refusé" };
 
 function uploadZone(ctx) {
   const results = el("ul", { className: "plain-list", attrs: { role: "status" } });

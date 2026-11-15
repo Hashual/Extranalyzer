@@ -327,6 +327,7 @@ def test_comparison_period(env_courses):
     s = env.get("/summary", **JAN, **DEC)
     assert {f["name"]: f["compare"] for f in s["families"]} == {"Crèmerie": "3.00", "Fruits & légumes": "0.00"}
     assert s["undetailed_compare"] == "10.00"
+    assert s["total_compare"] == "13.00"
     [aisle] = env.get(f"/family/{family_id(env, 'Crèmerie')}", **JAN, **DEC)["aisles"]
     assert (aisle["amount"], aisle["compare"]) == ("16.00", "3.00")
 

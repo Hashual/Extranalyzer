@@ -209,3 +209,11 @@ def test_message_is_atomic_when_ingestion_fails_midway(tmp_path, write, monkeypa
     again = sync_once(cfg(), write, tmp_path / "r", [], FakeImap({LABEL: (7, {1: make_mail(1), 2: make_mail(2)})}))
     assert again == {"messages": 1, "files": 2, "error": None}
     assert rows(write, "SELECT COUNT(*) FROM receipts") == [(2,)]
+
+
+def test_unexpected_error_is_recorded_not_raised(tmp_path, write):
+    def boom(*a, **k):
+        raise ValueError("inattendu")
+    result = sync_once(cfg(), write, tmp_path / "r", [], boom)
+    assert result["error"].startswith("ValueError")
+    assert rows(write, "SELECT last_error FROM mail_sync")[0][0].startswith("ValueError")

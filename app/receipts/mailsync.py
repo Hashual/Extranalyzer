@@ -7,7 +7,6 @@ import email
 import email.policy
 import imaplib
 import logging
-import re
 import sqlite3
 import ssl
 import threading
@@ -195,6 +194,9 @@ def sync_once(cfg: MailSettings, write: Write, receipts_dir: Path, parsers: list
                 messages += 1
                 files += count
     except (imaplib.IMAP4.error, OSError, ssl.SSLError, sqlite3.Error) as exc:
+        global_error = _short_error(exc, cfg)
+    except Exception as exc:        # noqa: BLE001 - la relève ne doit jamais lever ; l'échec est visible dans mail_sync
+        log.exception("relève des tickets interrompue")
         global_error = _short_error(exc, cfg)
     write(_finish(cfg, _now(), label_errors, global_error))
     error = global_error or next(iter(label_errors.values()), None)
