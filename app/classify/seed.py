@@ -1,4 +1,9 @@
-"""Chargement idempotent de l'arbre de catégories et des règles génériques."""
+"""Chargement idempotent de l'arbre de catégories et des règles génériques.
+
+Une catégorie du seed supprimée ou renommée par l'utilisateur est mémorisée dans `seed_dismissed` (nom, nom du
+parent ou '' pour une racine) : le seed ne la recrée pas, ni ses sous-catégories s'il s'agit d'une racine, et
+ses règles ne sont pas installées. Recréer ou renommer une catégorie vers ce nom lève la mise à l'écart.
+"""
 import sqlite3
 import tomllib
 from pathlib import Path
@@ -15,24 +20,47 @@ def _ensure_category(conn: sqlite3.Connection, name: str, parent_id: int | None,
                         (name, parent_id, kind)).lastrowid
 
 
-def _category_by_path(conn: sqlite3.Connection, path: str) -> int:
-    parent_id = None
+def dismiss_seed_category(conn: sqlite3.Connection, name: str, parent_name: str | None) -> None:
+    """Mémorise qu'une catégorie a été supprimée ou renommée (inoffensif si elle ne vient pas du seed)."""
+    conn.execute("INSERT OR IGNORE INTO seed_dismissed(name, parent_name) VALUES (?, ?)", (name, parent_name or ""))
+
+
+def restore_seed_category(conn: sqlite3.Connection, name: str, parent_name: str | None) -> None:
+    """Une catégorie de ce nom existe de nouveau : elle n'est plus écartée."""
+    conn.execute("DELETE FROM seed_dismissed WHERE name = ? AND parent_name = ?", (name, parent_name or ""))
+
+
+def _dismissed(conn: sqlite3.Connection, name: str, parent_name: str | None) -> bool:
+    return conn.execute("SELECT 1 FROM seed_dismissed WHERE name = ? AND parent_name = ?",
+                        (name, parent_name or "")).fetchone() is not None
+
+
+def _category_by_path(conn: sqlite3.Connection, path: str) -> int | None:
+    """Id de la catégorie « Racine/Enfant » du seed ; None si elle (ou sa racine) a été écartée."""
+    parent_id, parent_name = None, None
     for name in path.split("/"):
         row = conn.execute("SELECT id FROM categories WHERE name = ? AND COALESCE(parent_id, 0) = ?",
                            (name, parent_id or 0)).fetchone()
         if row is None:
+            if _dismissed(conn, name, parent_name):
+                return None
             raise ValueError(f"catégorie inconnue dans le seed : {path}")
-        parent_id = row[0]
+        parent_id, parent_name = row[0], name
     return parent_id
 
 
 def _load(conn: sqlite3.Connection, data: dict, with_rules: bool) -> None:
     for root in data.get("category", []):
+        if _dismissed(conn, root["name"], None):
+            continue
         root_id = _ensure_category(conn, root["name"], None, root["kind"])
         for child in root.get("children", []):
-            _ensure_category(conn, child, root_id, root["kind"])
+            if not _dismissed(conn, child, root["name"]):
+                _ensure_category(conn, child, root_id, root["kind"])
     for rule in data.get("rule", []) if with_rules else []:
         category_id = _category_by_path(conn, rule["category"])
+        if category_id is None:
+            continue
         match, direction = rule.get("match", "contains"), rule.get("direction")
         exists = conn.execute(
             "SELECT 1 FROM rules WHERE pattern = ? AND match = ? AND direction IS ? AND account_id IS NULL "

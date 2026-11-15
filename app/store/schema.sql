@@ -68,13 +68,79 @@ CREATE TABLE transactions (
     confidence REAL NULL,
     suggested_category_id INTEGER NULL REFERENCES categories(id),
     suggestion_reason TEXT NULL,
-    suggestion_support INTEGER NULL
+    suggestion_support INTEGER NULL,
+    source TEXT NOT NULL DEFAULT 'pdf'
 );
 
 CREATE TABLE manual_overrides (
     tx_key TEXT PRIMARY KEY,
     category_id INTEGER NOT NULL REFERENCES categories(id)
 );
+
+-- Catégories du seed supprimées ou renommées par l'utilisateur : le seed ne les recrée pas
+-- (parent_name '' pour une racine).
+CREATE TABLE seed_dismissed (
+    name TEXT NOT NULL,
+    parent_name TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(name, parent_name)
+);
+
+-- Sources externes (v6) : connexion bancaire Enable Banking, comptes distants, synchros.
+CREATE TABLE bank_links (
+    id INTEGER PRIMARY KEY,
+    provider TEXT NOT NULL,
+    session_id TEXT UNIQUE NOT NULL,
+    aspsp_name TEXT NOT NULL,
+    aspsp_country TEXT NOT NULL,
+    valid_until TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('active','expired','replaced','revoked')),
+    created_at TEXT NOT NULL,
+    last_error TEXT,
+    retry_after TEXT
+);
+
+CREATE TABLE bank_auth_states (
+    state TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE external_accounts (
+    id INTEGER PRIMARY KEY,
+    link_id INTEGER NOT NULL REFERENCES bank_links(id),
+    uid TEXT NOT NULL,
+    identification_hash TEXT,
+    iban TEXT,
+    name TEXT,
+    currency TEXT,
+    cash_account_type TEXT,
+    account_id INTEGER NULL REFERENCES accounts(id),
+    ignored INTEGER NOT NULL DEFAULT 0,
+    last_sync_at TEXT,
+    balance_cents INTEGER,
+    balance_date TEXT,
+    balance_gap_cents INTEGER,
+    accepted_gap_cents INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
+CREATE TABLE external_transactions (
+    transaction_id INTEGER PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
+    raw_json TEXT NOT NULL
+);
+
+CREATE TABLE sync_runs (
+    id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    trigger TEXT NOT NULL,
+    added INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    message TEXT
+);
+
+CREATE INDEX idx_transactions_source_account ON transactions(source, account_id, op_date);
+-- fin v6
 
 CREATE INDEX idx_transactions_op_date ON transactions(op_date);
 CREATE INDEX idx_transactions_category_id ON transactions(category_id);
@@ -85,7 +151,7 @@ CREATE INDEX idx_transactions_section_id ON transactions(section_id);
 CREATE INDEX idx_transactions_mirror_of ON transactions(mirror_of);
 CREATE INDEX idx_sections_account_date ON sections(account_id, statement_date);
 
--- v5 : tickets de caisse
+-- v7 : tickets de caisse
 CREATE TABLE aisle_families (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
@@ -158,8 +224,8 @@ CREATE TABLE mail_sync (
     last_attempt_at TEXT NULL,
     last_error TEXT NULL
 );
--- fin v5
+-- fin v7
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 7;
 
 COMMIT;

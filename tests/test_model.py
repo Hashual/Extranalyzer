@@ -268,3 +268,19 @@ def test_neighbours_cached_per_label_and_direction():
     assert idx.neighbours("MAGASIN ALPHA", -999999) is debit         # même libellé, même sens : calcul réutilisé
     credit = idx.neighbours("MAGASIN ALPHA", 12)
     assert [e.category_id for _, e in debit] == [COURSES] and [e.category_id for _, e in credit] == [SALAIRE]
+
+
+def test_store_numbers_do_not_separate_short_labels():
+    """Le numéro de magasin change d'une opération à l'autre : il ne doit pas masquer le commerce."""
+    lidl = [ex(f"PAIEMENT CB LYON LIDL {n}", COURSES) for n in (4521, 1187, 30422)]
+    p = predict(build_index(lidl), "PAIEMENT CB LYON LIDL 87412", -4500, 1)
+    assert p.best_similarity == pytest.approx(1.0) and p.support == 3
+    assert p.is_auto(0.9)
+    p = predict(build_index(lidl + [ex("PAIEMENT CB LYON CINEMA PATHE", LOISIRS)]),
+                "PAIEMENT CB LYON LIDL 87412", -4500, 1)
+    assert p.category_id == COURSES and p.best_similarity == pytest.approx(1.0)
+
+
+def test_numeric_only_label_has_no_neighbour():
+    idx = build_index([ex("12345", COURSES) for _ in range(3)])
+    assert predict(idx, "12345", -4500, 1).category_id is None

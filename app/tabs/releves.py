@@ -1,7 +1,9 @@
 """Onglet « Relevés » : documents importés et leurs sections (statut de réconciliation, écart, opérations).
 
-Les actions (trancher un conflit, ré-analyser) passent par les routes du cœur `/api/sections/{id}/resolve`
-et `/api/reanalyse`. Aucun numéro de compte complet n'est exposé : seulement ses 4 derniers caractères.
+Les actions (trancher un conflit, supprimer un relevé, ré-analyser) passent par les routes du cœur
+`/api/sections/{id}/resolve`, `DELETE /api/documents/{id}` et `/api/reanalyse`. `other_ok` indique qu'une autre
+version de la section (même compte, même date) est retenue : un conflit sans elle (sa version retenue a été
+supprimée) s'importe tel quel s'il est accepté. Aucun numéro de compte complet n'est exposé : seulement ses 4 derniers caractères.
 """
 import sqlite3
 from typing import Annotated
@@ -28,14 +30,17 @@ def _error_message(status: str, gap_cents: int, message: str | None) -> str | No
 @router.get("/list")
 def list_documents(conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
     sections: dict[int, list[dict]] = {}
-    for sid, doc_id, label, number, statement_date, status, gap_cents, message, tx_count in conn.execute(
+    for sid, doc_id, label, number, statement_date, status, gap_cents, message, tx_count, other_ok in conn.execute(
             """SELECT s.id, s.document_id, a.label, a.number, s.statement_date, s.status, s.gap_cents, s.message,
-                      (SELECT COUNT(*) FROM transactions t WHERE t.section_id = s.id)
+                      (SELECT COUNT(*) FROM transactions t WHERE t.section_id = s.id),
+                      EXISTS (SELECT 1 FROM sections o WHERE o.account_id = s.account_id
+                              AND o.statement_date = s.statement_date AND o.status = 'ok' AND o.id != s.id)
                FROM sections s JOIN accounts a ON a.id = s.account_id ORDER BY s.id"""):
         sections.setdefault(doc_id, []).append({
             "id": sid, "account_label": mask_numbers(label), "number_tail": number[-4:],
             "statement_date": statement_date, "status": status, "gap": from_cents(gap_cents),
-            "tx_count": tx_count, "message": _error_message(status, gap_cents, message)})
+            "tx_count": tx_count, "other_ok": bool(other_ok),
+            "message": _error_message(status, gap_cents, message)})
     documents = [{"id": doc_id, "filename": mask_numbers(filename), "statement_date": statement_date,
                   "imported_at": imported_at, "sections": sections.get(doc_id, [])}
                  for doc_id, filename, statement_date, imported_at in conn.execute(

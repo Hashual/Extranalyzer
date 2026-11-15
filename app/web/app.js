@@ -2,6 +2,7 @@
 // pastille « À classer »), onglets chargés dynamiquement depuis /api/tabs.
 // L'état (onglet, période, comparaison, comptes, paramètres d'onglet) vit dans le hash de l'URL.
 import { api, ApiError, setUnauthorizedHandler } from "./api.js";
+import { hideAll, isKindVisible, KINDS, onPrivacyChange, setKindVisible, toggleHideAll } from "./privacy.js";
 
 const $ = (id) => document.getElementById(id);
 const RESERVED = new Set(["tab", "from", "to", "cmp", "acc"]);
@@ -240,6 +241,8 @@ function renderBar(route) {
   $("period-from").value = route.from;
   $("period-to").value = route.to;
   $("compare").value = route.cmp;
+  $("bar-toggle").textContent = periodLabel(route.from, route.to);
+  $("bar-toggle").title = `Du ${formatDate(route.from)} au ${formatDate(route.to)}`;
 
   const list = $("accounts-list");
   list.replaceChildren();
@@ -261,9 +264,35 @@ function renderBar(route) {
   badge.disabled = !state.tabs.some((t) => t.id === "a_classer");
   badge.classList.toggle("alert", count > 0);
 
+  renderBankAlert();
+
   for (const button of $("tabs").querySelectorAll("button")) {
-    button.setAttribute("aria-current", button.dataset.tab === route.tab ? "page" : "false");
+    const current = button.dataset.tab === route.tab;
+    button.setAttribute("aria-current", current ? "page" : "false");
+    // Barre d'onglets défilante (téléphone) : l'onglet actif reste visible, même ouvert par un lien.
+    if (current) button.scrollIntoView({ block: "nearest", inline: "center" });
   }
+  // Changer d'onglet replie la barre (téléphone) ; changer de période la laisse ouverte.
+  if (state.lastTab && state.lastTab !== route.tab) setBarOpen(false);
+  state.lastTab = route.tab;
+}
+
+// Pastille commune à toutes les banques connectées : la plus urgente, nommée s'il y en a plusieurs.
+const bankName = (b) => (b.links > 1 && b.aspsp_name ? ` ${b.aspsp_name}` : "");
+const BANK_ALERTS = {
+  expiring: (b) => `Banque : renouveler${bankName(b)} (${b.days_left} j)`,
+  expired: (b) => `Banque${bankName(b)} : connexion expirée`,
+  error: (b) => `Banque${bankName(b)} : erreur de synchro`,
+};
+
+/** Pastille de la connexion bancaire : consentement à renouveler, expiré, erreur ou compte à rattacher. */
+function renderBankAlert() {
+  const bank = state.meta?.bank;
+  const pill = $("bank-alert");
+  const text = bank && BANK_ALERTS[bank.status] ? BANK_ALERTS[bank.status](bank)
+    : bank?.to_attach ? `Banque : ${bank.to_attach} compte(s) à rattacher` : "";
+  pill.textContent = text;
+  pill.hidden = !text || !state.tabs.some((t) => t.id === "banque");
 }
 
 function accountsLabel(selected) {
@@ -281,7 +310,41 @@ function updateRoute(changes) {
   go({ ...readRoute(), ...changes });
 }
 
+const MONTHS_SHORT = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
+  "déc."];
+
+/** Libellé court de la période pour le bouton de la barre repliée (téléphone) : « oct. 2026 », « T4 2026 »,
+ *  « 2026 », sinon les deux dates (« 01/01 – 31/10/26 », l'année n'étant répétée que si elle change). */
+function periodLabel(from, to) {
+  if (!ISO_DATE.test(from || "") || !ISO_DATE.test(to || "")) return "Période";
+  const f = parts(from);
+  const t = parts(to);
+  const months = wholeMonths({ from, to });
+  if (months === 1) return `${MONTHS_SHORT[f.m]} ${f.y}`;
+  if (months === 3 && f.m % 3 === 0) return `T${f.m / 3 + 1} ${f.y}`;
+  if (months === 12 && f.m === 0) return String(f.y);
+  const dm = (p) => `${String(p.d).padStart(2, "0")}/${String(p.m + 1).padStart(2, "0")}`;
+  const yy = (p) => String(p.y).slice(2);
+  return f.y === t.y ? `${dm(f)} – ${dm(t)}/${yy(t)}` : `${dm(f)}/${yy(f)} – ${dm(t)}/${yy(t)}`;
+}
+
+function setBarOpen(open) {
+  document.querySelector(".bar").classList.toggle("open", open);
+  $("bar-toggle").setAttribute("aria-expanded", String(open));
+}
+
 function setupBar() {
+  // Sur téléphone, la barre est repliée : ce bouton affiche la période et déplie les autres commandes.
+  $("bar-toggle").addEventListener("click", () => {
+    setBarOpen(!document.querySelector(".bar").classList.contains("open"));
+  });
+  // Fondu du bord droit des onglets (téléphone) : retiré quand on a défilé jusqu'au dernier.
+  const nav = $("tabs");
+  const markEnd = () => nav.classList.toggle("at-end", nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 2);
+  nav.addEventListener("scroll", markEnd, { passive: true });
+  window.addEventListener("resize", markEnd);
+  new MutationObserver(markEnd).observe(nav, { childList: true });
+
   const onDates = () => {
     const from = $("period-from").value;
     const to = $("period-to").value;
@@ -323,6 +386,8 @@ function setupBar() {
     go({ ...readRoute(), ...everything, acc, tab: "a_classer", params: {} });
   });
 
+  $("bank-alert").addEventListener("click", () => navigate("banque"));
+
   $("upload-input").addEventListener("change", async (event) => {
     const input = event.target;
     const files = [...input.files];
@@ -342,6 +407,47 @@ function setupBar() {
       showLogin();
     }
   });
+}
+
+// --- Masquage des montants --------------------------------------------------------------------
+
+function renderPrivacy() {
+  const all = hideAll();
+  const toggle = $("privacy-toggle");
+  toggle.textContent = all ? "Afficher les montants" : "Masquer les montants";
+  toggle.setAttribute("aria-pressed", String(all));
+  for (const box of $("privacy-list").querySelectorAll("input")) {
+    box.checked = isKindVisible(box.value);
+    box.disabled = all;           // tout est masqué : les cases reprennent effet au réaffichage
+  }
+  $("privacy-note").hidden = !all;
+}
+
+function setupPrivacy() {
+  const list = $("privacy-list");
+  list.append(Object.assign(document.createElement("p"), {
+    className: "privacy-title", textContent: "Montants affichés" }));
+  for (const [kind, label] of KINDS) {
+    const row = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = kind;
+    box.addEventListener("change", () => setKindVisible(kind, box.checked));
+    row.append(box, ` ${label}`);
+    list.append(row);
+  }
+  const note = Object.assign(document.createElement("p"), {
+    id: "privacy-note", className: "muted privacy-note", textContent: "Tous les montants sont masqués." });
+  list.append(note);
+  $("privacy-toggle").addEventListener("click", toggleHideAll);
+  document.addEventListener("click", (event) => {       // le menu se ferme en cliquant ailleurs
+    if (!$("privacy-menu").contains(event.target)) $("privacy-menu").open = false;
+  });
+  onPrivacyChange(() => {
+    renderPrivacy();
+    renderCurrent();
+  });
+  renderPrivacy();
 }
 
 // --- Onglets -----------------------------------------------------------------------------------
@@ -455,6 +561,7 @@ function setupLogin() {
 setUnauthorizedHandler(showLogin);
 setupLogin();
 setupBar();
+setupPrivacy();
 window.addEventListener("hashchange", () => renderCurrent());
 showApp().catch((error) => {
   if (!(error instanceof ApiError && error.status === 401)) toast(`Chargement impossible : ${error.message}`, "error", 0);

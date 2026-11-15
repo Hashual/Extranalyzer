@@ -1,4 +1,5 @@
-"""Assemble l'application web : authentification, onglets déclarés, dépôt et ré-analyse des relevés.
+"""Assemble l'application web : authentification, onglets déclarés, dépôt, suppression et ré-analyse des
+relevés.
 
 Lancement : `uvicorn --factory app.main:get_app` (rien n'est construit à l'import du module).
 """
@@ -7,6 +8,8 @@ import re
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -25,16 +28,20 @@ from app.classify.seed import is_fresh_install, load_seed
 from app.config import Settings, load_settings
 from app.deps import get_conn
 from app.importer.creditmutuel import CreditMutuelParser
-from app.importer.service import ImportReport, import_pdf, reanalyse_all, resolve_conflict
+from app.importer.service import ImportReport, delete_document, import_pdf, reanalyse_all, resolve_conflict
 from app.model import ParseError
 from app.receipts import PARSERS_RECEIPTS
 from app.receipts.aisles import load_aisle_seed
 from app.receipts.mailsync import MailSyncThread
 from app.receipts.matching import match_receipts
 from app.receipts.service import reread
+from app.sources.enablebanking.client import Transport, urllib_transport
+from app.sources.enablebanking.link import bank_status
+from app.sources.enablebanking.runtime import BankRuntime
+from app.sources.scheduler import Scheduler
 from app.store.db import connect, transactional
 from app.tabs import ENABLED_TABS, load_tabs
-from app.web_json import mask_numbers, report_to_json
+from app.web_json import delete_report_to_json, mask_numbers, report_to_json
 
 log = logging.getLogger(__name__)
 
@@ -82,8 +89,9 @@ def _init_storage(settings: Settings) -> None:
     chaîne de classement une fois (une base mise à jour, un seuil modifié ou un nouveau seed prennent effet sans
     attendre un import ; une passe stable n'écrit rien).
 
-    Les catégories du seed sont complétées à chaque démarrage ; ses règles ne sont installées que sur
-    une installation neuve (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
+    Les catégories du seed sont complétées à chaque démarrage, sauf celles que l'utilisateur a supprimées ou
+    renommées (mémorisées dans `seed_dismissed`) ; ses règles ne sont installées que sur une installation neuve
+    (une règle supprimée ou modifiée par l'utilisateur ne revient pas).
 
     Tickets de caisse : seed des rayons (sans défaire les choix de l'utilisateur), relecture des tickets
     en attente d'un lecteur (une enseigne nouvellement prise en charge), puis rapprochement.
@@ -126,11 +134,12 @@ def _meta(conn: sqlite3.Connection) -> dict:
     unclassified = unclassified_count(conn)
     low, high = conn.execute("SELECT MIN(op_date), MAX(op_date) FROM transactions").fetchone()
     return {"accounts": accounts, "categories": list(roots.values()), "unclassified_count": unclassified,
-            "data_range": {"min": low, "max": high}}
+            "data_range": {"min": low, "max": high}, "bank": bank_status(conn, datetime.now(timezone.utc))}
 
 
 def after_import(conn: sqlite3.Connection, ids: list[int]) -> None:
-    """Après un import de relevé : classement des nouvelles opérations, puis rapprochement des tickets."""
+    """Après un import de relevé ou une synchro bancaire : classement des nouvelles opérations, puis
+    rapprochement des tickets."""
     on_new_transactions(conn, ids)
     match_receipts(conn)
 
@@ -148,7 +157,7 @@ class MatchingMailSync(MailSyncThread):
 
 
 def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
-               start_mail_thread: bool = True) -> FastAPI:
+               bank_transport: Transport = urllib_transport, start_mail_thread: bool = True) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
@@ -166,7 +175,29 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
             finally:
                 conn.close()
 
-    app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None)
+    def read(fn: Callable[[sqlite3.Connection], T]) -> T:
+        """Lecture sans le verrou d'écriture (récupération bancaire avant écriture)."""
+        conn = connect(db_path)
+        try:
+            return fn(conn)
+        finally:
+            conn.close()
+
+    bank = BankRuntime(settings.bank, read, write, after_import, transport=bank_transport)
+    scheduler = (Scheduler(bank.scheduled_tick, settings.sync_hours * 3600)
+                 if bank.configured and settings.sync_hours > 0 else None)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if scheduler is not None:
+            scheduler.start()
+        try:
+            yield
+        finally:
+            if scheduler is not None:
+                scheduler.stop()
+
+    app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
     app.state.receipts_dir = receipts_dir
     app.state.write = write
@@ -180,6 +211,7 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
     if syncer is not None and start_mail_thread:
         syncer.start()
         app.state.mail_thread = syncer
+    app.state.bank = bank
 
     def api_guard(request: Request) -> JSONResponse | None:
         """Refus éventuel d'une requête /api avant routage (CSRF, session, taille du dépôt)."""
@@ -204,6 +236,10 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         response.headers.update(SECURITY_HEADERS)
         if is_api:
             response.headers["Cache-Control"] = "no-store"
+        elif request.url.path.startswith("/static/"):
+            # Revalidation à chaque chargement (304 si inchangé) : après un déploiement, un téléphone ne garde
+            # pas d'anciens modules JS face à un index.html neuf.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     api = APIRouter(prefix="/api")
@@ -266,6 +302,14 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
             raise HTTPException(409, mask_numbers(str(exc))) from None
         return {"id": section_id, "status": status, "orphaned_overrides": orphaned}
 
+    @api.delete("/documents/{document_id}")
+    def delete(document_id: int):
+        report = write(lambda conn: delete_document(conn, document_id, pdf_dir, on_new_transactions))
+        if report is None:
+            raise HTTPException(404, f"relevé {document_id} introuvable")
+        write(transactional(match_receipts))    # tickets reliés aux débits supprimés : déliés ou signalés
+        return delete_report_to_json(report)
+
     @api.post("/reanalyse")
     def reanalyse():
         reports = write(lambda conn: reanalyse_all(conn, pdf_dir, PARSERS, after_import))
@@ -282,6 +326,12 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(WEB_DIR / "index.html")
+
+    @app.get("/bank/callback", include_in_schema=False)
+    def bank_callback():
+        """Retour de la banque : page statique sans donnée (le cookie SameSite=Strict n'accompagne pas une
+        navigation venue de la banque) ; son script renvoie `code` et `state` à l'API depuis l'appli."""
+        return FileResponse(WEB_DIR / "bank-callback.html")
 
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
     return app

@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 OnNewTransactions = Callable[[sqlite3.Connection, list[int]], None]
 
 KEPT_OLD_VERSION = "ancienne version conservée"
+API_OVERLAP = "période déjà couverte par la synchronisation bancaire"
 
 
 @dataclass
@@ -52,6 +53,24 @@ class ImportReport:
     duplicate_file: bool
     sections: list[SectionReport]
     error: str | None
+
+
+@dataclass
+class PendingVersion:
+    """Autre version d'un relevé dont la version retenue vient d'être supprimée : rien n'est importé
+    automatiquement, elle repasse en `conflict` pour être tranchée dans l'onglet Relevés."""
+    account_number: str
+    statement_date: date
+    section_id: int
+    previous_status: str     # conflict | superseded
+
+
+@dataclass
+class DeleteReport:
+    document_id: int
+    deleted_transactions: int
+    reclassified_mirrors: int       # jambes miroir d'autres relevés désappariées puis reclassées
+    pending_versions: list[PendingVersion]
 
 
 @dataclass(frozen=True)
@@ -161,6 +180,17 @@ def _collision_message(conn: sqlite3.Connection, keyed: list[_KeyedTx],
     return f"opérations déjà importées avec le relevé du compte {number} au {statement_date or 'inconnu'}"
 
 
+def _api_overlap_message(conn: sqlite3.Connection, account_id: int, section: ParsedSection) -> str | None:
+    """Motif d'erreur si la période du relevé contient déjà des opérations d'une source externe (synchro bancaire) :
+    l'intégrer les compterait deux fois. Un relevé sans opération ne peut rien doubler."""
+    if not section.transactions:
+        return None
+    first = min(t.op_date for t in section.transactions).isoformat()
+    if repo.api_overlap(conn, account_id, first, section.statement_date.isoformat()):
+        return API_OVERLAP
+    return None
+
+
 def _status_for(conn: sqlite3.Connection, account_id: int, statement_date: str, gap: Decimal,
                 digest: str, exclude_id: int | None = None) -> str:
     if gap != 0:
@@ -201,6 +231,8 @@ def _import_section(conn: sqlite3.Connection, document_id: int, section: ParsedS
     status = _status_for(conn, account_id, statement_date, gap, digest)
     keyed = _keyed(section)
     message = _collision_message(conn, keyed) if status == "ok" else None
+    if message is None and status == "ok":
+        message = _api_overlap_message(conn, account_id, section)
     if message is not None:
         status = "error"
     section_id = repo.insert_section(conn, document_id, account_id, statement_date,
@@ -276,7 +308,8 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
             repo.update_section(conn, section_id, opening, closing, 0, "superseded", digest)
             return 0
         keyed = _keyed(section)
-        message = _collision_message(conn, keyed, None if old is None else old[0])
+        message = (_collision_message(conn, keyed, None if old is None else old[0])
+                   or _api_overlap_message(conn, account_id, section))
         if message is not None:
             repo.update_section(conn, section_id, opening, closing, 0, "error", digest, message)
             return 0
@@ -291,6 +324,54 @@ def resolve_conflict(conn: sqlite3.Connection, section_id: int, accept: bool,
         _insert_transactions(conn, section_id, account_id, keyed, pending, unmirrored)
         _classify(conn, on_new_transactions, pending)
     return orphaned
+
+
+def delete_document(conn: sqlite3.Connection, document_id: int, pdf_dir: Path,
+                    on_new_transactions: OnNewTransactions) -> DeleteReport | None:
+    """Supprime un document importé, ses sections et leurs transactions ; None si le document n'existe pas.
+
+    - les jambes miroir appariées à ces transactions dans d'autres relevés sont désappariées puis reclassées
+      (une seule passe de classement) ;
+    - si une section `ok` supprimée avait d'autres versions (`conflict` ou `superseded`) dans d'autres
+      documents, aucune n'est importée automatiquement : elles passent en `conflict` (à trancher) et sont
+      signalées dans le rapport ;
+    - les reclassements manuels (`manual_overrides`) sont conservés : ils se ré-appliquent à la réimportation.
+
+    Tout se fait dans une seule transaction ; le PDF conservé n'est effacé qu'après la validation.
+    """
+    stored_path = repo.get_document_path(conn, document_id)
+    if stored_path is None:
+        return None
+    sections = conn.execute(
+        "SELECT s.id, s.account_id, a.number, s.statement_date, s.status FROM sections s "
+        "JOIN accounts a ON a.id = s.account_id WHERE s.document_id = ? ORDER BY s.id", (document_id,)).fetchall()
+    with _transaction(conn):
+        deleted = _count_document_transactions(conn, document_id)
+        unmirrored: list[int] = []
+        pending_versions: list[PendingVersion] = []
+        for section_id, account_id, number, statement_date, status in sections:
+            unmirrored += repo.delete_section_transactions(conn, section_id)
+            if status != "ok":
+                continue
+            for other_id, other_status in repo.other_versions(conn, account_id, statement_date, document_id):
+                if other_status in ("conflict", "superseded"):
+                    repo.set_section_status(conn, other_id, "conflict")
+                    pending_versions.append(PendingVersion(number, date.fromisoformat(statement_date), other_id,
+                                                           other_status))
+        repo.delete_document_rows(conn, document_id)
+        existing = {row[0] for row in conn.execute("SELECT id FROM transactions")}
+        reclassified = [i for i in dict.fromkeys(unmirrored) if i in existing]
+        _classify(conn, on_new_transactions, reclassified)
+    try:
+        (pdf_dir / stored_path).unlink(missing_ok=True)
+    except OSError as exc:      # base déjà validée : le fichier orphelin est sans conséquence
+        log.warning("PDF conservé non supprimé (%s)", type(exc).__name__)
+    return DeleteReport(document_id, deleted, len(reclassified), pending_versions)
+
+
+def _count_document_transactions(conn: sqlite3.Connection, document_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM transactions WHERE section_id IN "
+                        "(SELECT id FROM sections WHERE document_id = ?)", (document_id,)).fetchone()[0]
 
 
 def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: ParsedSection,
@@ -308,7 +389,8 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     if old_status == "superseded":       # déjà tranché : on n'y touche pas
         return _report(section, "superseded", gap, section_id), False
     if old_status == "ok":
-        message = KEPT_OLD_VERSION if gap != 0 else _collision_message(conn, keyed, section_id)
+        message = KEPT_OLD_VERSION if gap != 0 else (_collision_message(conn, keyed, section_id)
+                                                     or _api_overlap_message(conn, account_id, section))
         if message is not None:
             if message != KEPT_OLD_VERSION:
                 message = f"{message} ; {KEPT_OLD_VERSION}"
@@ -319,7 +401,8 @@ def _reanalyse_section(conn: sqlite3.Connection, document_id: int, section: Pars
     else:                                # error ou conflict : réévaluée comme à l'import
         orphaned, unmirrored = 0, []
         status = _status_for(conn, account_id, statement_date, gap, digest, exclude_id=section_id)
-        message = _collision_message(conn, keyed, section_id) if status == "ok" else None
+        message = (_collision_message(conn, keyed, section_id)
+                   or _api_overlap_message(conn, account_id, section)) if status == "ok" else None
         if message is not None:
             status = "error"
     repo.update_section(conn, section_id, to_cents(section.opening), to_cents(section.closing),

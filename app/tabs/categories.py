@@ -4,16 +4,22 @@
 Les sources non classées de virements internes appariés comptent comme épargne (cf. totals) : elles
 apparaissent en pseudo-ligne sans lien « Virements internes (non classés) » sous la catégorie racine
 d'épargne (s'il n'y en a qu'une ; sinon en pseudo-racine), pour que l'épargne de l'onglet égale
-`savings_net`."""
+`savings_net`.
+
+Création, renommage et suppression des catégories : règles dans `app.classify.categories` (doublon, usages sans
+destination, sous-catégories restantes : 409 ; nom ou destination invalides : 422)."""
 import sqlite3
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.analytics.periods import month_keys
 from app.analytics.totals import (ANALYSIS_FROM, INTERNAL_TRANSFERS, PAIRED_UNCLASSIFIED, SIGNED_AMOUNT,
                                    by_category, scope_clause, totals)
+from app.classify.categories import (CategoryConflict, CategoryNotFound, create_category, delete_category,
+                                     rename_category, usage)
 from app.importer.amounts import from_cents
 from app.deps import get_conn
 from app.tabs._params import Scope, scope
@@ -27,6 +33,35 @@ ZERO = Decimal("0.00")
 
 router = APIRouter()
 Conn = Annotated[sqlite3.Connection, Depends(get_conn)]
+
+
+class CategoryBody(BaseModel):
+    name: str
+    parent_id: int | None = None                                     # absent : nouvelle racine
+    kind: Literal["expense", "income", "savings"] | None = None     # obligatoire pour une racine
+
+
+class RenameBody(BaseModel):
+    name: str
+
+
+def _write(conn: sqlite3.Connection, fn):
+    """Exécute une écriture dans une transaction ; traduit les refus en erreurs HTTP lisibles."""
+    try:
+        with conn:
+            return fn()
+    except CategoryNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except CategoryConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+def _category(conn: sqlite3.Connection, category_id: int) -> dict:
+    cid, name, parent_id, kind = conn.execute(
+        "SELECT id, name, parent_id, kind FROM categories WHERE id = ?", (category_id,)).fetchone()
+    return {"id": cid, "name": name, "parent_id": parent_id, "kind": kind}
 
 
 def _internal_transfers_by_month(conn: sqlite3.Connection, s: Scope) -> dict[str, int]:
@@ -115,13 +150,36 @@ def detail(category_id: int, conn: Conn, s: Annotated[Scope, Depends(scope)]):
     transactions = conn.execute(f"{ROW_SELECT} WHERE {where} ORDER BY t.op_date DESC, t.id DESC LIMIT ?",
                                 params + [DETAIL_TX_LIMIT]).fetchall()
     transactions_total = conn.execute(f"SELECT COUNT(*) {ROW_FROM} WHERE {where}", params).fetchone()[0]
+    used = usage(conn, category_id)
     return to_jsonable({
         "id": category_id, "name": name, "parent_id": parent_id, "kind": kind,
+        "subcategories": conn.execute("SELECT COUNT(*) FROM categories WHERE parent_id = ?",
+                                      (category_id,)).fetchone()[0],
+        "usage": {"transactions": used.transactions, "rules": used.rules, "overrides": used.overrides},
         "amount": from_cents(sum(per_month.values())),
         "children": children, "monthly": monthly,
         "transactions": [row_to_dict(r) for r in transactions],
         "transactions_total": transactions_total,
     })
+
+
+@router.post("", status_code=201)
+def add_category(body: CategoryBody, conn: Conn):
+    category_id = _write(conn, lambda: create_category(conn, body.name, body.parent_id, body.kind))
+    return _category(conn, category_id)
+
+
+@router.patch("/{category_id}")
+def edit_category(category_id: int, body: RenameBody, conn: Conn):
+    _write(conn, lambda: rename_category(conn, category_id, body.name))
+    return _category(conn, category_id)
+
+
+@router.delete("/{category_id}")
+def remove_category(category_id: int, conn: Conn, move_to: int | None = None):
+    """Supprime une catégorie ; ses usages vont vers `move_to` (obligatoire si elle est utilisée)."""
+    moved = _write(conn, lambda: delete_category(conn, category_id, move_to))
+    return {"moved": {"transactions": moved.transactions, "rules": moved.rules, "overrides": moved.overrides}}
 
 
 @router.post("/transactions/{tx_id}/category")

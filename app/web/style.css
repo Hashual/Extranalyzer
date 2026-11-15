@@ -53,7 +53,8 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  overflow-x: hidden;
+  /* `clip` et non `hidden` : `hidden` fait du body un conteneur de défilement et casse la barre collante. */
+  overflow-x: clip;
 }
 
 [hidden] { display: none !important; }
@@ -132,6 +133,7 @@ input, select {
 }
 
 .brand { margin-right: auto; }
+.bar-toggle { display: none; }      /* bouton de période : téléphone seulement */
 
 .link { border: none; background: none; color: var(--muted); text-decoration: underline; }
 
@@ -273,7 +275,9 @@ input, select {
 
 .tag.auto { border-color: var(--accent); color: var(--accent); cursor: help; }
 .tag.suggestion { margin-left: 0; border-color: var(--accent); color: var(--accent); cursor: help; white-space: nowrap; }
-.accept-all { margin-bottom: 0.6rem; }
+.accept-all { margin-bottom: 0.6rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.accept-all .error { flex-basis: 100%; }
+.toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
 /* Tableaux */
 .table-wrap { max-width: 100%; }
@@ -368,6 +372,16 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 .cat-header { margin-bottom: 0.75rem; }
 .cat-header h2 { margin: 0.2rem 0 0; }
 .cat-header p { margin: 0; }
+.cat-actions { margin-top: 0.5rem; }
+.cat-actions button { padding: 0.2rem 0.6rem; font-size: 0.9rem; }
+.cat-slot:empty { display: none; }
+.cat-form { margin-top: 0.5rem; }
+.cat-form p { margin: 0.3rem 0; }
+.cat-form input[type="text"] { flex: 1 1 12rem; min-width: 0; }
+.cat-form select { min-width: 0; max-width: 100%; }
+.cat-new { margin: 0.6rem 0.4rem 0.2rem; }
+.cat-new .link { padding: 0; }
+.cat-new .cat-form { margin-top: 0; }
 
 /* Toasts */
 .toasts {
@@ -403,6 +417,75 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 }
 
 @media (max-width: 720px) {
+  /* 16 px minimum : en dessous, iOS zoome la page à chaque champ touché. */
+  input, select { font-size: 16px; }
+
+  /* Barre repliée, sur une ligne : marque, bouton de période, « À classer » ; le reste se déplie au besoin. */
+  .bar { padding: 0.4rem 0.75rem 0; }
+  .bar-row { gap: 0.4rem; margin-bottom: 0.4rem; }
+  /* Base nulle : la marque ne fait jamais passer les boutons à la ligne, elle prend la place restante (tronquée). */
+  .brand { order: 0; flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+           font-size: 1rem; }
+  .bar-toggle { order: 1; display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+  #unclassified { order: 2; }
+  #bank-alert { order: 3; flex-basis: 100%; text-align: center; }
+  .bar-toggle::after { content: "▾"; font-size: 0.75em; color: var(--muted); }
+  .bar.open .bar-toggle::after { content: "▴"; }
+  .bar.open .bar-toggle { border-color: var(--accent); color: var(--accent); }
+  .pill, .bar-toggle { padding: 0.3rem 0.65rem; white-space: nowrap; }
+
+  .bar:not(.open) .upload,
+  .bar:not(.open) .privacy,
+  .bar:not(.open) #logout,
+  .bar:not(.open) .period { display: none; }
+  .bar.open { max-height: 100vh; overflow-y: auto; }
+
+  /* Volet déplié : actions sur une ligne (passage à la ligne forcé), puis les filtres en grille pleine largeur. */
+  .bar.open .bar-row:first-child::after { content: ""; order: 4; flex-basis: 100%; }
+  .bar-row:first-child .upload { order: 5; flex: 1 1 auto; text-align: center; }
+  .bar-row:first-child .privacy { order: 6; }
+  .bar-row:first-child #logout { order: 7; margin-left: auto; padding: 0 0.25rem; font-size: 0.9rem; }
+
+  .period { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.4rem; }
+  .period > label { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+  .period input[type="date"], .period select { flex: 1 1 auto; width: auto; min-width: 0; }
+  .period .shortcuts { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .period .shortcuts button { padding: 0.35rem 0.2rem; }
+  .period > label:has(#compare), .period .accounts { grid-column: 1 / -1; }
+  .period .accounts summary { text-align: center; }
+  .period .accounts-list { left: 0; right: 0; }
+
+  /* Onglets : défilement sans barre visible, fondu au bord droit pour signaler la suite. */
+  .tabs {
+    scrollbar-width: none;
+    margin: 0 -0.75rem;
+    padding: 0 0.75rem;
+    mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+  }
+  .tabs.at-end { mask-image: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { padding: 0.5rem 0.6rem; }
+
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile { padding: 0.6rem 0.7rem; }
+  .tile-value { font-size: 1.15rem; overflow-wrap: anywhere; }
+
+  /* Règles : une fiche par règle, intitulé de colonne devant chaque champ. */
+  .rules-table thead { display: none; }
+  .rules-table, .rules-table tbody, .rules-table tr, .rules-table td { display: block; width: 100%; }
+  .rules-table tr { padding: 0.6rem 0; border-bottom: 1px solid var(--border); }
+  .rules-table td { border: none; padding: 0.15rem 0; text-align: left; }
+  .rules-table td.num { text-align: left; }
+  .rules-table td[data-label] {
+    display: grid;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .rules-table td[data-label]::before { content: attr(data-label); color: var(--muted); font-size: 0.85rem; }
+  .rules-table td[data-label] > * { grid-column: 2; }
+  .rules-table input[type="text"], .rules-table select { width: 100%; min-width: 0; max-width: none; }
+
   .split { grid-template-columns: minmax(0, 1fr); }
   .bar-row-button { grid-template-columns: minmax(0, 7rem) minmax(0, 1fr) auto; }
 
@@ -431,3 +514,40 @@ button.danger { border-color: var(--danger); color: var(--danger); }
 .actions { display: flex; flex-wrap: wrap; gap: var(--gap); margin: 0.5rem 0; }
 .receipt-icon { margin-left: 0.4rem; text-decoration: none; }
 details.card summary { cursor: pointer; font-weight: 600; }
+/* Masquage des montants */
+.privacy { position: relative; display: inline-flex; align-items: stretch; }
+.privacy-toggle { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.privacy-toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.privacy-menu summary {
+  cursor: pointer;
+  list-style: none;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 0 0.5rem;
+}
+.privacy-menu summary::-webkit-details-marker { display: none; }
+.privacy-list {
+  position: absolute;
+  right: 0;
+  z-index: 20;
+  min-width: 13rem;
+  max-width: calc(100vw - 2rem);
+  margin-top: 0.25rem;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.privacy-title { margin: 0; font-weight: 600; }
+.privacy-note { margin: 0; font-size: 0.85em; }
+.amount.masked { color: var(--muted); letter-spacing: 0.08em; }
+
+/* Onglet Banque : liste des banques proposées par Enable Banking */
+.bank-list { display: block; width: 100%; max-width: 28rem; margin: 0.5rem 0; }
