@@ -148,7 +148,7 @@ def test_link_manual_rejects_already_linked_debit(conn):
         link_manual(conn, b, "k1")
     link_manual(conn, a, "k1")                                   # se relier au même débit reste permis
     link_manual(conn, a, None)
-    assert _link(conn, a) == (None, None, 0)
+    assert _link(conn, a) == (None, "manual", 0)
 
 
 def test_candidates_same_amount_first_then_by_gap(conn):
@@ -161,3 +161,24 @@ def test_candidates_same_amount_first_then_by_gap(conn):
     assert [c["tx_key"] for c in got] == ["far", "near"]
     assert got[0] == {"tx_key": "far", "op_date": "2025-01-16", "label": "CB DIVERS", "amount": Decimal("-10.00")}
     assert len(candidates(conn, rid, limit=1)) == 1
+
+
+def test_contested_debit_leaves_both_receipts_unlinked(conn):
+    _tx(conn, "store", "2025-01-10", -1200, "CB HYPER U VILLETEST")
+    _tx(conn, "pharma", "2025-01-11", -1200, "CB PHARMACIE")
+    a = _receipt(conn, 1, "2025-01-10T10:00:00", [("card", 1200)], shop="HYPER U")
+    b = _receipt(conn, 2, "2025-01-10T11:00:00", [("card", 1200)], shop="HYPER U")
+    assert match_receipts(conn)["linked"] == 0
+    assert _link(conn, a)[0] is None and _link(conn, b)[0] is None
+
+
+def test_manual_unlink_is_not_undone_by_matching(conn):
+    _tx(conn, "k1", "2025-01-10", -1000)
+    rid = _receipt(conn, 1, "2025-01-10T10:00:00", [("card", 1000)])
+    match_receipts(conn)
+    assert _link(conn, rid) == ("k1", "auto", 0)
+    link_manual(conn, rid, None)
+    match_receipts(conn)
+    assert _link(conn, rid) == (None, "manual", 0)
+    link_manual(conn, rid, "k1")                                 # un nouveau lien manuel reste possible
+    assert _link(conn, rid) == ("k1", "manual", 0)

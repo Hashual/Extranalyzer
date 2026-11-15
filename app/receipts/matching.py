@@ -3,6 +3,7 @@
 Aucune fonction ne valide : l'appelant possède la transaction."""
 import re
 import sqlite3
+from collections import Counter
 
 from app.importer.amounts import from_cents
 from app.store.repo import fold
@@ -44,24 +45,31 @@ def match_receipts(conn: sqlite3.Connection) -> dict:
         if r[1] != -card_cents(conn, r[0]):
             conn.execute("UPDATE receipts SET tx_key = NULL, link_mode = NULL WHERE id = ?", (r[0],))
             unlinked += 1
-    # 3. nouveaux liens
+    # 3. nouveaux liens : tous les candidats sont évalués sur un même instantané des liens existants ;
+    # un débit visé par plusieurs tickets est disputé, aucun d'eux n'est relié (jamais au hasard).
     todo = conn.execute("SELECT id, shop, purchased_at FROM receipts WHERE status = 'ok' AND tx_key IS NULL "
-                        "AND link_broken = 0 AND purchased_at IS NOT NULL ORDER BY purchased_at, id").fetchall()
+                        "AND link_broken = 0 AND link_mode IS NULL AND purchased_at IS NOT NULL "
+                        "ORDER BY purchased_at, id").fetchall()
+    taken = {r[0] for r in conn.execute("SELECT tx_key FROM receipts WHERE tx_key IS NOT NULL")}
+    chosen: dict[int, str] = {}
     for rid, shop, purchased_at in todo:
         cents = card_cents(conn, rid)
         if cents <= 0:
             continue
-        rows = conn.execute(
+        rows = [r for r in conn.execute(
             "SELECT t.tx_key, t.label_norm FROM transactions t JOIN accounts a ON a.id = t.account_id "
             "WHERE a.kind = 'checking' AND t.mirror_of IS NULL AND t.amount_cents = ? "
-            "AND t.op_date BETWEEN date(?) AND date(?, '+3 days') "
-            "AND t.tx_key NOT IN (SELECT tx_key FROM receipts WHERE tx_key IS NOT NULL) "
-            "ORDER BY t.op_date, t.id", (-cents, purchased_at, purchased_at)).fetchall()
+            "AND t.op_date BETWEEN date(?) AND date(?, '+3 days') ORDER BY t.op_date, t.id",
+            (-cents, purchased_at, purchased_at)) if r[0] not in taken]
         if len(rows) > 1:
             rows = _tiebreak(rows, shop)
         if len(rows) == 1:
+            chosen[rid] = rows[0][0]
+    votes = Counter(chosen.values())
+    for rid, key in chosen.items():
+        if votes[key] == 1:
             conn.execute("UPDATE receipts SET tx_key = ?, link_mode = 'auto', link_broken = 0 WHERE id = ?",
-                         (rows[0][0], rid))
+                         (key, rid))
             linked += 1
     return {"linked": linked, "unlinked": unlinked, "broken": broken}
 
@@ -69,7 +77,8 @@ def match_receipts(conn: sqlite3.Connection) -> dict:
 def link_manual(conn: sqlite3.Connection, receipt_id: int, tx_key: str | None) -> None:
     """Relie à la main le ticket au débit `tx_key`, ou le délie avec `None`."""
     if tx_key is None:
-        conn.execute("UPDATE receipts SET tx_key = NULL, link_mode = NULL, link_broken = 0 WHERE id = ?",
+        # Déliaison explicite : le mode 'manual' sans débit empêche tout nouveau lien automatique.
+        conn.execute("UPDATE receipts SET tx_key = NULL, link_mode = 'manual', link_broken = 0 WHERE id = ?",
                      (receipt_id,))
         return
     if conn.execute("SELECT 1 FROM receipts WHERE tx_key = ? AND id != ?", (tx_key, receipt_id)).fetchone():
