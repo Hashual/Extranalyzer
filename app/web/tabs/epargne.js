@@ -24,23 +24,32 @@ function tile(label, value, ...notes) {
     ...notes);
 }
 
-function note(text, className = "variation") {
-  return el("p", { className, text });
+function note(text, className = "variation", tag = "p") {
+  return el(tag, { className, text });
 }
 
 /** Variation signée, colorée sauf en mode discret (la couleur révélerait le signe). */
-function variationNote(change, suffix = "") {
+function variationNote(change, suffix = "", tag = "p") {
   if (change === null) return null;
   const sign = Number(change) < 0 ? "bad" : Number(change) > 0 ? "good" : "";
-  return note(`${signedMoney(change, "balance")}${suffix}`, `variation ${isMasked("balance") ? "" : sign}`.trim());
+  return note(`${signedMoney(change, "balance")}${suffix}`, `variation ${isMasked("balance") ? "" : sign}`.trim(), tag);
+}
+
+/** Écart signé (+/−), coloré sauf en mode discret. */
+function signedGap(value) {
+  const masked = isMasked("balance");
+  const cls = masked ? "" : Number(value) < 0 ? " neg" : Number(value) > 0 ? " pos" : "";
+  return el("span", { className: `amount${cls}`, text: signedMoney(value, "balance") });
 }
 
 function dashboardTiles(d) {
   const { total, savings, crypto } = d;
   const partial = total.change_scope === "partial";
+  const cryptoMissing = d.places.some((p) => p.kind === "wallet" && p.value !== null && p.change === null);
   const since = crypto.tracked_since ? ` depuis le ${formatDate(crypto.tracked_since)}` : "";
-  const totalChange = variationNote(total.change,
-    partial ? ` (livrets seuls, crypto suivie${since})` : " sur la période");
+  const scope = crypto.tracked_since && cryptoMissing ? ` (livrets seuls, crypto suivie${since})`
+    : " (sur une partie des comptes)";
+  const totalChange = variationNote(total.change, partial ? scope : " sur la période");
 
   const savingsNotes = [note(`${savings.count} compte(s)`),
     savings.unknown_count ? note(`hors ${savings.unknown_count} sans solde connu`, "tile-note") : null];
@@ -52,7 +61,7 @@ function dashboardTiles(d) {
   const excluded = d.places.filter((p) => p.kind === "wallet" && p.value !== null && p.deposited === null).length;
   const gapNote = crypto.gap === null ? null
     : el("p", { className: "variation" },
-      el("span", { text: "Écart " }), amount(crypto.gap, "balance"),
+      el("span", { text: "Écart " }), signedGap(crypto.gap),
       crypto.compared_partial
         ? el("span", { className: "muted", text: excluded ? ` (hors ${excluded} portefeuille(s))` : " (partiel)" })
         : null);
@@ -116,18 +125,20 @@ function allocationCard(d) {
 function evolutionCard(d) {
   const host = el("div", { className: "chart" });
   const card = section("Évolution", host);
-  if (d.series.length < 2) {
+  const hasData = d.series.some((p) => p.savings !== null || p.crypto !== null);
+  if (d.series.length < 2 || !hasData) {
     host.replaceChildren(emptyNote("Pas encore assez de relevés pour tracer une courbe."));
   } else {
     const num = (v) => (v === null ? null : Number(v));
-    const layer = (label, key, color) => ({ label, data: d.series.map((p) => num(p[key])), fill: true,
+    const layer = (label, key, color, fill) => ({ label, data: d.series.map((p) => num(p[key])), fill,
       borderColor: color, backgroundColor: color + "55", pointRadius: 0, tension: 0.2, spanGaps: false });
     requestAnimationFrame(() => {
       if (!host.isConnected) return;
       mountChart(host, {
         type: "line",
         data: { labels: d.series.map((p) => dayMonth(p.date)),
-          datasets: [layer("Livrets", "savings", cssVar("--chart-1")), layer("Crypto", "crypto", cssVar("--chart-2"))] },
+          datasets: [layer("Livrets", "savings", cssVar("--chart-1"), "origin"),
+            layer("Crypto", "crypto", cssVar("--chart-2"), "-1")] },
         options: {
           interaction: { mode: "index", intersect: false },
           scales: { y: { stacked: true, beginAtZero: true, ticks: { callback: (v) => money(v, "balance") } } },
@@ -149,13 +160,13 @@ function placeCard(p, ctx) {
     : p.category_id !== null && hasTab(ctx, "categories") ? () => ctx.navigate("categories", { id: p.category_id })
       : null;
   const lines = [
-    el("p", { className: "place-name", text: p.name }),
-    p.value === null ? el("p", { className: "place-value muted", text: "valeur inconnue" })
-      : el("p", { className: "place-value", text: money(p.value, "balance") }),
-    variationNote(p.change, " sur la période"),
+    el("span", { className: "place-name", text: p.name }),
+    p.value === null ? el("span", { className: "place-value muted", text: "valeur inconnue" })
+      : el("span", { className: "place-value", text: money(p.value, "balance") }),
+    variationNote(p.change, " sur la période", "span"),
     p.kind === "wallet" && p.deposited !== null
-      ? el("p", { className: "variation" }, `Versé ${money(p.deposited, "balance")}`,
-        p.gap !== null ? el("span", {}, " · écart ", amount(p.gap, "balance")) : null)
+      ? el("span", { className: "variation" }, `Versé ${money(p.deposited, "balance")}`,
+        p.gap !== null ? el("span", {}, " · écart ", signedGap(p.gap)) : null)
       : null,
   ];
   return target

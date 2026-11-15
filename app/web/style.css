@@ -573,7 +573,7 @@ button.danger { border-color: var(--danger); color: var(--danger); }
   font: inherit;
   color: inherit;
 }
-.place-card p { margin: 0; }
+.place-card > span { display: block; }
 .place-card.clickable { cursor: pointer; }
 .place-card.clickable:hover { border-color: var(--accent); }
 .place-name { color: var(--muted); font-size: 0.9rem; }
