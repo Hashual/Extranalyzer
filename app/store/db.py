@@ -2,7 +2,7 @@ import sqlite3
 from importlib import resources
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -104,6 +104,46 @@ COMMIT;
 """
 
 
+# 6 -> 7 : suivi des portefeuilles Solana
+_MIGRATE_6_TO_7 = """
+BEGIN;
+CREATE TABLE wallets (
+    id INTEGER PRIMARY KEY,
+    address TEXT UNIQUE NOT NULL,
+    label TEXT NOT NULL,
+    savings_category_id INTEGER NULL REFERENCES categories(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    last_sync_at TEXT,
+    last_error TEXT
+);
+CREATE TABLE wallet_snapshots (
+    id INTEGER PRIMARY KEY,
+    wallet_id INTEGER NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+    taken_at TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('ok','error')),
+    total_eur_cents INTEGER,
+    unpriced_count INTEGER NOT NULL DEFAULT 0,
+    message TEXT
+);
+CREATE TABLE wallet_positions (
+    id INTEGER PRIMARY KEY,
+    snapshot_id INTEGER NOT NULL REFERENCES wallet_snapshots(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('sol','token','stake')),
+    mint TEXT, symbol TEXT, name TEXT,
+    amount TEXT NOT NULL, decimals INTEGER,
+    price_eur TEXT, price_source TEXT, value_eur_cents INTEGER,
+    stake_account TEXT, vote_account TEXT,
+    stake_state TEXT CHECK(stake_state IN ('activating','active','deactivating','inactive'))
+);
+CREATE TABLE validator_labels (vote_account TEXT PRIMARY KEY, label TEXT NOT NULL);
+CREATE TABLE hidden_mints (mint TEXT PRIMARY KEY);
+CREATE INDEX idx_wallet_snapshots_wallet ON wallet_snapshots(wallet_id, taken_at);
+CREATE INDEX idx_wallet_positions_snapshot ON wallet_positions(snapshot_id);
+PRAGMA user_version = 7;
+COMMIT;
+"""
+
+
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
 
@@ -136,6 +176,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 5
         if version == 5:    # 5 -> 6 : sources externes (Enable Banking)
             conn.executescript(_MIGRATE_5_TO_6)
+            version = 6
+        if version == 6:    # 6 -> 7 : portefeuilles Solana
+            conn.executescript(_MIGRATE_6_TO_7)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

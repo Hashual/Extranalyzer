@@ -19,10 +19,10 @@ def conn(tmp_path):
 def test_connect_twice_keeps_user_version(tmp_path):
     path = tmp_path / "t.db"
     c1 = connect(path)
-    assert c1.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c1.execute("PRAGMA user_version").fetchone()[0] == 7
     c1.close()
     c2 = connect(path)
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c2.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c2.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     c2.close()
@@ -108,9 +108,17 @@ def test_connect_waits_on_busy_database(tmp_path):
     c.close()
 
 
+def _as_v6(schema: str) -> str:
+    """Schéma courant ramené à la version 6 (sans les portefeuilles Solana)."""
+    v6 = re.sub(r"-- Portefeuilles Solana \(v7\).*?-- fin v7\n\n", "", schema, flags=re.S)
+    v6 = v6.replace("user_version = 7", "user_version = 6")
+    assert "wallets" not in v6 and "user_version = 6" in v6
+    return v6
+
+
 def _as_v5(schema: str) -> str:
     """Schéma courant ramené à la version 5 (sans les sources externes)."""
-    v5 = re.sub(r"-- Sources externes \(v6\).*?-- fin v6\n\n", "", schema, flags=re.S)
+    v5 = re.sub(r"-- Sources externes \(v6\).*?-- fin v6\n\n", "", _as_v6(schema), flags=re.S)
     v5 = v5.replace("suggestion_support INTEGER NULL,\n    source TEXT NOT NULL DEFAULT 'pdf'\n",
                     "suggestion_support INTEGER NULL\n").replace("user_version = 6", "user_version = 5")
     assert "bank_links" not in v5 and v5.count("source TEXT") == 1 and "user_version = 5" in v5
@@ -142,7 +150,7 @@ def _v1_schema() -> str:
 
 def test_new_database_has_section_message(tmp_path):
     c = connect(tmp_path / "t.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert "message" in [r[1] for r in c.execute("PRAGMA table_info(sections)")]
     c.close()
 
@@ -159,11 +167,11 @@ def test_migration_from_v1_adds_section_message(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT status, message FROM sections").fetchall() == [("ok", None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     c.close()
 
 
@@ -200,14 +208,14 @@ def test_migration_2_to_3(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT id, classified_by, confidence, suggested_category_id, suggestion_reason "
                      "FROM transactions ORDER BY id").fetchall() == [
         (1, "manual", None, None, None), (2, "rule", None, None, None),
         (3, "pair", None, None, None), (4, None, None, None, None), (5, None, None, None, None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT classified_by FROM transactions ORDER BY id").fetchall() == [
         ("manual",), ("rule",), ("pair",), (None,), (None,)]
     c.close()
@@ -265,7 +273,7 @@ def test_migration_3_to_4_adds_suggestion_support(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT confidence, suggestion_reason, suggestion_support FROM transactions").fetchone() == (
         0.5, "r", None)
     c.close()
@@ -279,7 +287,7 @@ def test_migration_4_to_5_adds_seed_dismissed(tmp_path):
     raw.executescript(_as_v4(schema))
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT COUNT(*) FROM seed_dismissed").fetchone()[0] == 0
     c.close()
 
@@ -303,7 +311,44 @@ def test_migration_from_v5_marks_existing_transactions_pdf(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
     assert c.execute("SELECT source FROM transactions").fetchall() == [("pdf",)]
     assert c.execute("SELECT COUNT(*) FROM bank_links").fetchone()[0] == 0
     c.close()
+
+
+_WALLET_TABLES = {"wallets", "wallet_snapshots", "wallet_positions", "validator_labels", "hidden_mints"}
+
+
+def test_fresh_schema_has_wallet_tables(tmp_path):
+    c = connect(tmp_path / "t.db")
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert _WALLET_TABLES <= tables
+    c.close()
+
+
+def test_migrate_6_to_7(tmp_path):
+    from importlib import resources
+    path = tmp_path / "t.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(_as_v6(resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")))
+    raw.execute("INSERT INTO accounts(id, number, label, kind) VALUES (1, 'A1', 'CC', 'checking')")
+    raw.commit()
+    raw.close()
+    c = connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert c.execute("SELECT number FROM accounts").fetchall() == [("A1",)]
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert _WALLET_TABLES <= tables
+    c.close()
+
+
+def test_wallet_delete_cascades(conn):
+    conn.execute("INSERT INTO wallets(id, address, label, created_at) VALUES (1, 'ADDR_FICTIVE', 'Test', '2026-01-01')")
+    conn.execute("INSERT INTO wallet_snapshots(id, wallet_id, taken_at, status) VALUES (1, 1, '2026-01-01', 'ok')")
+    conn.execute("INSERT INTO wallet_positions(snapshot_id, kind, amount) VALUES (1, 'sol', '1.5')")
+    conn.commit()
+    conn.execute("DELETE FROM wallets WHERE id = 1")
+    assert conn.execute("SELECT COUNT(*) FROM wallet_snapshots").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM wallet_positions").fetchone()[0] == 0
