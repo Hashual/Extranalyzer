@@ -1,0 +1,16 @@
+# Clé Helius en secret Docker (facultatif : la clé peut aussi être saisie dans l'onglet Banque).
+# À activer en ajoutant dans .env : COMPOSE_FILE=docker-compose.yml:docker-compose.solana.yml
+# (avec la récupération bancaire : COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml:docker-compose.solana.yml)
+# Voir README, « Portefeuilles Solana (Helius) ».
+services:
+  extranalyzer:
+    secrets:
+      - helius_key
+    environment:
+      EXTRANALYZER_HELIUS_KEY_FILE: /run/secrets/helius_key
+      EXTRANALYZER_HELIUS_URL: ${HELIUS_URL:-https://mainnet.helius-rpc.com}
+      EXTRANALYZER_SYNC_HOURS: ${SYNC_HOURS:-12}
+
+secrets:
+  helius_key:
+    file: ./secrets/helius.key

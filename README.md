@@ -187,6 +187,36 @@ Le consentement dure en général 180 jours ; une pastille « Banque : renouvele
 l'échéance de la première banque concernée (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
 identifiant de session ni IBAN complet n'est journalisé ou affiché.
 
+### Portefeuilles Solana (Helius)
+
+Facultatif : suit en lecture seule la valeur en euros de portefeuilles Solana (SOL, jetons, comptes de staking), à
+partir de leur adresse publique. Aucune clé privée ni phrase de récupération, aucune écriture sur la blockchain. Les
+valeurs ne sont pas mêlées aux totaux des relevés.
+
+**Mise en route, depuis l'interface (rien à configurer sur le serveur) :**
+
+1. Créer un compte gratuit sur [dashboard.helius.dev](https://dashboard.helius.dev) et copier la clé affichée dans
+   « API Keys ».
+2. Dans Extranalyzer, onglet **Banque**, section « Portefeuilles Solana » : coller la clé et cliquer sur
+   « Enregistrer la clé ». L'application la vérifie auprès de Helius avant de l'enregistrer.
+3. Ajouter ses adresses publiques.
+
+La clé est gardée dans le volume de données (`/data/helius.key`, droits 600) : elle fait donc partie des sauvegardes
+du volume. Elle n'est jamais écrite en base, journalisée ni réaffichée ; on peut la remplacer ou la supprimer depuis
+la même section. Le conteneur doit pouvoir joindre `https://mainnet.helius-rpc.com` en sortie. L'actualisation
+planifiée reprend `SYNC_HOURS` (12 par défaut ; 0 la désactive).
+
+**Variante pour administrateur (facultative)** : fournir la clé en secret Docker. Elle prend alors le pas sur la clé
+saisie dans l'interface, qui ne peut plus la modifier.
+
+```bash
+read -rs HK && printf '%s' "$HK" > secrets/helius.key && unset HK
+sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
+# .env : ajouter docker-compose.solana.yml à COMPOSE_FILE, puis docker compose up -d
+```
+
+`HELIUS_URL` (facultatif) remplace l'adresse du service ; elle doit commencer par `https://`.
+
 ### Dépannage
 
 - Onglet Banque « non configurée » alors que `.env` est rempli : `docker compose logs` indique la cause
@@ -279,7 +309,7 @@ L'archive contient les PDF des relevés, les PDF des tickets de caisse (`receipt
   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
   ```
 
-  Au premier démarrage, la base passe d'elle-même au schéma 7 (tables des tickets) ; rien d'autre à faire.
+  Au premier démarrage, la base passe d'elle-même au schéma 8 (tables des tickets) ; rien d'autre à faire.
 - **Route GitHub** : pousser sur `main`, attendre la fin du workflow (onglet *Actions*), puis sur le Pi :
   `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
 - **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :
