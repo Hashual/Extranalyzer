@@ -72,3 +72,14 @@ def test_mail_settings_both_password_sources_is_error(monkeypatch, tmp_path):
     monkeypatch.setenv("EXTRANALYZER_GMAIL_APP_PASSWORD_FILE", str(f))
     with pytest.raises(ConfigError):
         mail_settings()
+
+
+def test_mail_secrets_not_in_repr(monkeypatch, tmp_path):
+    from pathlib import Path
+    from app.config import Settings
+    monkeypatch.setenv("EXTRANALYZER_GMAIL_USER", "test@example.invalid")
+    monkeypatch.setenv("EXTRANALYZER_GMAIL_APP_PASSWORD", "abcd efgh ijkl mnop")
+    m = mail_settings()
+    s = Settings(data_dir=Path("d"), password_hash=b"x", mail=m)
+    for text in (repr(m), repr(s)):
+        assert "abcdefghijklmnop" not in text and "test@example.invalid" not in text

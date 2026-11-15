@@ -1,6 +1,6 @@
 """Configuration lue dans les variables d'environnement."""
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.auth import hash_password
@@ -12,8 +12,8 @@ class ConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class MailSettings:
-    user: str
-    app_password: str                       # mot de passe d'application Gmail, sans espaces
+    user: str = field(repr=False)           # hors repr : ni adresse ni secret dans les journaux
+    app_password: str = field(repr=False)   # mot de passe d'application Gmail, sans espaces
     labels: tuple[tuple[str, str], ...]     # (libellé Gmail, enseigne)
     interval_min: int = 60
 
