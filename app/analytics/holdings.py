@@ -155,19 +155,20 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
         snaps = _Snapshots(conn, wallet_id)
         found = snaps.at(as_of)
         value = None if found is None else found[0]
-        deposited = to_cents(_net_deposited(conn, category_id)[2])
+        deposited = None if category_id is None else to_cents(_net_deposited(conn, category_id)[2])
         if found is not None:
             retained.append(found)
         place = {"kind": "wallet", "id": wallet_id, "name": label, "category_id": category_id, "value": value,
                  "change": _change(value, snaps.value(before)), "deposited": deposited,
-                 "gap": None if value is None else value - deposited, "unknown": value is None}
+                 "gap": None if value is None or deposited is None else value - deposited, "unknown": value is None}
         wallet_places.append(place)
         places.append(place)
 
     savings_value = _sum_known(savings_values)
     wallet_values = [p["value"] for p in wallet_places]
     crypto_value = _sum_known(wallet_values)
-    crypto_deposited = sum(p["deposited"] for p in wallet_places)
+    crypto_deposited = _sum_known([p["deposited"] for p in wallet_places])    # sans catégorie : inconnu, pas 0
+    crypto_gap = _sum_known([p["gap"] for p in wallet_places])
 
     places.sort(key=lambda p: (p["value"] is None, -(p["value"] or 0)))
     known = [p for p in places if p["value"] is not None]
@@ -190,7 +191,7 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
         "crypto": {"value": crypto_value, "count": len(wallet_places),
                    "unread_count": sum(1 for v in wallet_values if v is None),
                    "unpriced_count": sum(unpriced for _, _, unpriced in retained), "deposited": crypto_deposited,
-                   "gap": None if crypto_value is None else crypto_value - crypto_deposited,
+                   "gap": crypto_gap,
                    "tracked_since": crypto_tracked_since(conn)},
         "places": places,
         "allocation": {"by_place": [{"name": p["name"], "value": p["value"]} for p in known if p["value"] > 0],
