@@ -53,6 +53,10 @@ export const api = {
     return send("PATCH", path, body);
   },
 
+  put(path, body) {
+    return send("PUT", path, body);
+  },
+
   delete(path) {
     return send("DELETE", path);
   },
