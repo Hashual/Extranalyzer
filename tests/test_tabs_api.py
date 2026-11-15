@@ -1016,3 +1016,24 @@ def test_tab_module_imports_alone_without_app_main(module):
     code = (f"import sys, app.tabs.{module} as m; "
             f"assert m.TAB.id == {module!r}; assert 'app.main' not in sys.modules")
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_epargne_dashboard_crypto_amounts_are_euro_strings(env):
+    client, conn, cat, _ = env
+    category = cat["Épargne/Livret Bleu"]
+    conn.execute("INSERT INTO wallets(id, address, label, savings_category_id, created_at) "
+                 "VALUES (1, 'addrfictive', 'Portefeuille fictif', ?, '2025-01-01')", (category,))
+    for sid, taken, cents in ((1, "2024-12-31T10:00:00+00:00", 50000), (2, "2025-01-31T10:00:00+00:00", 80000)):
+        conn.execute("INSERT INTO wallet_snapshots(id, wallet_id, taken_at, status, total_eur_cents, unpriced_count)"
+                     " VALUES (?, 1, ?, 'ok', ?, 0)", (sid, taken, cents))
+    conn.commit()
+    d = get(client, "/epargne/dashboard", **JAN)
+    c = d["crypto"]
+    assert c["value"] == "800.00" and c["compared_value"] == "800.00"
+    assert c["deposited"] == "350.00" and c["gap"] == "450.00"
+    assert c["compared_partial"] is False
+    wallet = next(p for p in d["places"] if p["kind"] == "wallet")
+    assert wallet["change"] == "300.00"
+    assert wallet["deposited"] == c["deposited"] and wallet["gap"] == c["gap"]
+    assert isinstance(wallet["gap"], str) and "." in wallet["gap"]
+    assert d["series"][-1]["crypto"] == "800.00"

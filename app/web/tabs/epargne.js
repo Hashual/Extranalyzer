@@ -14,8 +14,9 @@ const PCT = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDi
 let allocationView = "by_place";        // choix de l'anneau, gardé d'un rafraîchissement à l'autre
 let flowsOpen = false;                  // section « Mouvements de la période » dépliée ou non
 
-/** "2025-01-31" → "31/01". */
-const dayMonth = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+/** "2025-01-31" → "31/01" (ou "31/01/25" quand la courbe couvre plusieurs années). */
+const dayMonth = (iso, withYear = false) =>
+  `${iso.slice(8, 10)}/${iso.slice(5, 7)}${withYear ? `/${iso.slice(2, 4)}` : ""}`;
 
 function tile(label, value, ...notes) {
   return el("div", { className: "tile" },
@@ -45,10 +46,15 @@ function signedGap(value) {
 function dashboardTiles(d) {
   const { total, savings, crypto } = d;
   const partial = total.change_scope === "partial";
-  const cryptoMissing = d.places.some((p) => p.kind === "wallet" && p.value !== null && p.change === null);
+  const known = d.places.filter((p) => p.value !== null);
+  const excludedPlaces = known.filter((p) => p.change === null);
+  const cryptoOnlyExcluded = excludedPlaces.length > 0 && excludedPlaces.every((p) => p.kind === "wallet")
+    && !known.some((p) => p.kind === "wallet" && p.change !== null);
   const since = crypto.tracked_since ? ` depuis le ${formatDate(crypto.tracked_since)}` : "";
-  const scope = crypto.tracked_since && cryptoMissing ? ` (livrets seuls, crypto suivie${since})`
+  const scope = crypto.tracked_since && cryptoOnlyExcluded ? ` (livrets seuls, crypto suivie${since})`
     : " (sur une partie des comptes)";
+  const unknownPlaces = savings.unknown_count + crypto.unread_count;
+  const totalHint = unknownPlaces ? note(`hors ${unknownPlaces} endroit(s) sans valeur`, "tile-note") : null;
   const totalChange = variationNote(total.change, partial ? scope : " sur la période");
 
   const savingsNotes = [note(`${savings.count} compte(s)`),
@@ -69,7 +75,7 @@ function dashboardTiles(d) {
     ? "—" : `${money(crypto.deposited, "balance")} → ${money(crypto.compared_value, "balance")}`;
 
   return el("div", { className: "tiles" },
-    tile("Épargne totale", total.value === null ? "—" : money(total.value, "balance"), totalChange),
+    tile("Épargne totale", total.value === null ? "—" : money(total.value, "balance"), totalChange, totalHint),
     tile("Livrets", savings.value === null ? "—" : money(savings.value, "balance"), ...savingsNotes),
     tile("Crypto", crypto.value === null ? "—" : money(crypto.value, "balance"), ...cryptoNotes),
     tile("Versé → valeur", comparison, gapNote));
@@ -129,6 +135,7 @@ function evolutionCard(d) {
   if (d.series.length < 2 || !hasData) {
     host.replaceChildren(emptyNote("Pas encore assez de relevés pour tracer une courbe."));
   } else {
+    const multiYear = d.series[0].date.slice(0, 4) !== d.series[d.series.length - 1].date.slice(0, 4);
     const num = (v) => (v === null ? null : Number(v));
     const layer = (label, key, color, fill) => ({ label, data: d.series.map((p) => num(p[key])), fill,
       borderColor: color, backgroundColor: color + "55", pointRadius: 0, tension: 0.2, spanGaps: false });
@@ -136,7 +143,7 @@ function evolutionCard(d) {
       if (!host.isConnected) return;
       mountChart(host, {
         type: "line",
-        data: { labels: d.series.map((p) => dayMonth(p.date)),
+        data: { labels: d.series.map((p) => dayMonth(p.date, multiYear)),
           datasets: [layer("Livrets", "savings", cssVar("--chart-1"), "origin"),
             layer("Crypto", "crypto", cssVar("--chart-2"), "-1")] },
         options: {
