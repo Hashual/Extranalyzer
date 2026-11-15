@@ -1,0 +1,150 @@
+# Familles de rayons (ordre d'affichage) et rangement initial des rayons, par enseigne.
+# Noms de rayons génériques seulement (titres imprimés sur les tickets), aucune donnée d'achat.
+# Le seed ne remplace jamais la famille d'un rayon déjà connu.
+
+[[family]]
+name = "Crèmerie"
+[[family]]
+name = "Fruits & légumes"
+[[family]]
+name = "Viandes & poissons"
+[[family]]
+name = "Épicerie salée"
+[[family]]
+name = "Épicerie sucrée"
+[[family]]
+name = "Boissons"
+[[family]]
+name = "Surgelés"
+[[family]]
+name = "Boulangerie & pâtisserie"
+[[family]]
+name = "Hygiène & beauté"
+[[family]]
+name = "Entretien"
+[[family]]
+name = "Maison & divers"
+[[family]]
+name = "Animaux"
+[[family]]
+name = "Remises"
+
+[aisles.superu]
+# Remises sans rayon visible. Le rayon SANS RAYON (caisses sans titres de rayon) n'est volontairement rangé dans
+# aucune famille : il reste « à ranger » (spec § 3, pas de famille par défaut).
+"REMISES" = "Remises"
+
+# Crèmerie
+"BEURRE" = "Crèmerie"
+"CREMERIE L.S." = "Crèmerie"
+"FROMAGE A LA COUPE" = "Crèmerie"
+"FROMAGE COUPE EMBALLE" = "Crèmerie"
+"FROMAGE LS" = "Crèmerie"
+"LAITS ET DERIVES" = "Crèmerie"
+"MARGARINES ET COMPOSES" = "Crèmerie"
+"OEUFS" = "Crèmerie"
+"ULTRA FRAIS" = "Crèmerie"
+
+# Fruits & légumes
+"FRUITS" = "Fruits & légumes"
+"FRUITS ET LEGUMES" = "Fruits & légumes"
+"FRUITS/LEGUMES LS (SECS," = "Fruits & légumes"
+"LEGUMES" = "Fruits & légumes"
+
+# Viandes & poissons (boucherie, volaille, charcuterie, poissonnerie)
+"BOUCH.LS (UVCI)" = "Viandes & poissons"
+"BOUCH.LS.INDUST." = "Viandes & poissons"
+"BOUCH.TRADT." = "Viandes & poissons"
+"BOUCH.VOL.ATELIER" = "Viandes & poissons"
+"BOUCHERIE FRAICHE PREEMB" = "Viandes & poissons"
+"CHARC.TRAIT.SAUC.SECS L" = "Viandes & poissons"
+"CHARCT.LS UVCI" = "Viandes & poissons"
+"CHARCT.TRADT" = "Viandes & poissons"
+"CHARCT.TRAIT.TRADT." = "Viandes & poissons"
+"CHARCUTERIE FRAICH EMBAL" = "Viandes & poissons"
+"POISSON FRAIS PREEMBALLE" = "Viandes & poissons"
+"POISSON LS UVCI" = "Viandes & poissons"
+"POISSON TRADITIONNEL" = "Viandes & poissons"
+"POISSONNERIE" = "Viandes & poissons"
+"SAUCISSON ET JAMBONS SEC" = "Viandes & poissons"
+"VENTE DIVERSE POISSON AR" = "Viandes & poissons"
+"VOL.LS INDUST." = "Viandes & poissons"
+"VOL.LS STANDARD" = "Viandes & poissons"
+"VOLAILLE TRAD." = "Viandes & poissons"
+
+# Épicerie salée (dont traiteur et plats cuisinés)
+"AIDES A LA CUISINE" = "Épicerie salée"
+"CHIPS" = "Épicerie salée"
+"CONDIMENTS-SAUCES FROIDE" = "Épicerie salée"
+"CONSERVES DE LEGUMES" = "Épicerie salée"
+"COUSCOUS PUREE LEG SECS BLE" = "Épicerie salée"
+"EPICERIE" = "Épicerie salée"
+"EPICES" = "Épicerie salée"
+"FARINES ET FECULENTS" = "Épicerie salée"
+"HUILES" = "Épicerie salée"
+"PATES" = "Épicerie salée"
+"PLATS CUISINES" = "Épicerie salée"
+"PRODUITS ETRANGERS" = "Épicerie salée"
+"PRODUITS SALES POUR APERITIFS" = "Épicerie salée"
+"RIZ" = "Épicerie salée"
+"SAUCES CHAUDES" = "Épicerie salée"
+"SEL" = "Épicerie salée"
+"TRAITEUR LS UVCI" = "Épicerie salée"
+"TRAITEUR TRADT." = "Épicerie salée"
+"VINAIGRES ET VINAIGRETTES" = "Épicerie salée"
+
+# Épicerie sucrée
+"AIDE PATISSERIE" = "Épicerie sucrée"
+"BISCUITS SUCRES" = "Épicerie sucrée"
+"CAFE TORREFIE/SOLUBLE" = "Épicerie sucrée"
+"CONFISERIE" = "Épicerie sucrée"
+"CONFISERIE CAISSE" = "Épicerie sucrée"
+"CONFITURES MIEL P.A.TARTINER" = "Épicerie sucrée"
+"SUCRES" = "Épicerie sucrée"
+"THES ET INFUSIONS" = "Épicerie sucrée"
+
+# Boissons
+"ALCOOLS" = "Boissons"
+"APERITIFS" = "Boissons"
+"BIERES PANACHES" = "Boissons"
+"BOISSONS SANS ALCOOL" = "Boissons"
+"JUS ET NECTARS" = "Boissons"
+"LIQUIDES" = "Boissons"
+"SIROPS" = "Boissons"
+"VINS COURANTS" = "Boissons"
+
+# Surgelés
+"SURGELE SUCRE" = "Surgelés"
+"SURGELES" = "Surgelés"
+
+# Boulangerie & pâtisserie
+"BOULANGERIE" = "Boulangerie & pâtisserie"
+"BVP" = "Boulangerie & pâtisserie"
+"PAIN DE MIE (LS)" = "Boulangerie & pâtisserie"
+"PAT INDUSTRIELLE" = "Boulangerie & pâtisserie"
+"PATIS.INDUSTRIELLE" = "Boulangerie & pâtisserie"
+"PATISSERIE" = "Boulangerie & pâtisserie"
+
+# Hygiène & beauté
+"BEAUTE SANTE" = "Hygiène & beauté"
+"MOUCHOIRS" = "Hygiène & beauté"
+"PAPIER TOILETTE" = "Hygiène & beauté"
+"PARFUMERIE" = "Hygiène & beauté"
+
+# Entretien
+"EMBALLAGE MENAGER" = "Entretien"
+"ENTRETIEN" = "Entretien"
+"ENTRETIEN DE LA MAISON" = "Entretien"
+"ENTRETIEN DU LINGE" = "Entretien"
+"OUTILS D'ESSUYAGE" = "Entretien"
+"PRODUITS VAISSELLE" = "Entretien"
+
+# Maison & divers
+"AUTO" = "Maison & divers"
+"AUTRES COMMERCES" = "Maison & divers"
+"BAZAR A SERVICE" = "Maison & divers"
+"CULTURE" = "Maison & divers"
+"EQUIPEMENT DE LA MAISON" = "Maison & divers"
+"LA CUISINE" = "Maison & divers"
+"LIBRAIRIE" = "Maison & divers"
+"LOISIRS" = "Maison & divers"

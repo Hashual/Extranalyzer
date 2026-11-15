@@ -597,6 +597,34 @@ def test_reanalyse_final_pass_reraises_second_failure(tmp_path, conn, pdf_dir):
     assert {r[0] for r in conn.execute("SELECT suggestion_reason FROM transactions")} == {None}
 
 
+def test_reanalysis_moves_receipt_links(tmp_path, conn, pdf_dir):
+    import_pdf(conn, _pdf(tmp_path, "a.pdf", [_cc_section(), _livret_section()]), "a.pdf", pdf_dir,
+               PARSERS, Recorder())
+    old_key = conn.execute("SELECT tx_key FROM transactions WHERE label = ?", ("PRLV SEPA BETA",)).fetchone()[0]
+    conn.execute("INSERT INTO receipts(store, sha256, stored_path, origin, status, tx_key, link_mode, imported_at)"
+                 " VALUES ('superu', 'x', 'x.pdf', 'upload', 'ok', ?, 'manual', '2025-01-01T00:00:00')", (old_key,))
+    conn.commit()
+
+    class _Relabel:
+        """Parseur qui relit autrement le libellé : l'identité de l'opération change."""
+        name = "creditmutuel"
+
+        def can_parse(self, pdf_path):
+            return CreditMutuelParser().can_parse(pdf_path)
+
+        def parse(self, pdf_path):
+            doc = CreditMutuelParser().parse(pdf_path)
+            s = doc.sections[0]
+            txs = [replace(t, label=t.label + " X") if t.label == "PRLV SEPA BETA" else t for t in s.transactions]
+            doc.sections[0] = replace(s, transactions=txs)
+            return doc
+
+    reanalyse_all(conn, pdf_dir, [_Relabel()], Recorder())
+    new_key = conn.execute("SELECT tx_key FROM transactions WHERE label LIKE 'PRLV SEPA BETA%'").fetchone()[0]
+    assert new_key != old_key
+    assert conn.execute("SELECT tx_key FROM receipts").fetchone()[0] == new_key
+
+
 # --- Suppression d'un relevé -------------------------------------------------------------------
 
 def _doc_count(conn):
