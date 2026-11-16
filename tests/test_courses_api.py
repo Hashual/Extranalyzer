@@ -251,13 +251,13 @@ def test_sync_disabled_returns_409(env_courses):
     env = env_courses
     assert env.get("/sync") == {"enabled": False, "labels": []}
     assert env.post("/sync").status_code == 409
-    assert env.app.state.mail_thread is None and env.app.state.mail_enabled is False
+    assert env.app.state.mail.thread is None and env.app.state.mail.enabled is False
 
 
 def test_sync_enabled_runs_a_pass_then_matches(tmp_path, monkeypatch):
     env = Env(tmp_path, mail=FAKE_MAIL)
     try:
-        assert env.app.state.mail_enabled is True and env.app.state.mail_thread is None
+        assert env.app.state.mail.enabled is True and env.app.state.mail.thread is None
         rid = env.upload("ticket_c.pdf", when=datetime(2025, 1, 19, 9, 0, 0),
                          aisles=[("CREMERIE L.S.", [Item("BEURRE FICTIF", 1000)])])["receipt_id"]
         env.tx("2025-01-20", -1000)              # le débit arrive après le ticket
@@ -287,7 +287,7 @@ def test_mail_thread_started_only_when_enabled_and_requested(tmp_path, monkeypat
     monkeypatch.setattr(main_module.MailSyncThread, "start", lambda self: started.append(self))
     settings = Settings(data_dir=tmp_path / "data", password_hash=hash_password(PASSWORD), mail=FAKE_MAIL)
     app = create_app(settings)
-    assert started == [app.state.mail_thread] and app.state.mail_enabled is True
+    assert started == [app.state.mail.thread] and app.state.mail.enabled is True
     create_app(Settings(data_dir=tmp_path / "data2", password_hash=hash_password(PASSWORD)))
     assert len(started) == 1
 

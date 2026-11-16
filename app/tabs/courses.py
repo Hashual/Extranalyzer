@@ -27,6 +27,7 @@ from app.analytics.totals import SIGNED_AMOUNT, scope_clause
 from app.deps import get_conn
 from app.importer.amounts import from_cents
 from app.receipts import PARSERS_RECEIPTS
+from app.receipts.mailruntime import MailNotConfigured
 from app.receipts.matching import candidates, link_manual, match_receipts
 from app.receipts.service import FileResult, ingest_file, reread
 from app.store.db import transactional
@@ -418,16 +419,16 @@ def sync_status(conn: Conn, request: Request):
     labels = [{"label": label, "store": store, "last_success_at": success, "last_attempt_at": attempt,
                "last_error": error} for label, store, success, attempt, error in conn.execute(
         "SELECT label, store, last_success_at, last_attempt_at, last_error FROM mail_sync ORDER BY label")]
-    return {"enabled": request.app.state.mail_enabled, "labels": labels}
+    return {"enabled": request.app.state.mail.enabled, "labels": labels}
 
 
 @router.post("/sync")
 async def sync_now(request: Request):
     """Un passage de relève (jamais en même temps qu'un passage de fond), suivi du rapprochement."""
-    syncer = request.app.state.mail_syncer
-    if syncer is None:
-        raise HTTPException(409, "relève des tickets désactivée")
-    return await run_in_threadpool(syncer.run_once)
+    try:
+        return await run_in_threadpool(request.app.state.mail.run_once)
+    except MailNotConfigured as exc:
+        raise HTTPException(409, str(exc)) from None
 
 
 @router.post("/reread")

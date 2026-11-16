@@ -3,6 +3,7 @@ relevés.
 
 Lancement : `uvicorn --factory app.main:get_app` (rien n'est construit à l'import du module).
 """
+import imaplib
 import logging
 import re
 import sqlite3
@@ -32,6 +33,7 @@ from app.importer.service import ImportReport, delete_document, import_pdf, rean
 from app.model import ParseError
 from app.receipts import PARSERS_RECEIPTS
 from app.receipts.aisles import load_aisle_seed
+from app.receipts.mailruntime import MailRuntime
 from app.receipts.mailsync import MailSyncThread
 from app.receipts.matching import match_receipts
 from app.receipts.service import reread
@@ -159,7 +161,8 @@ class MatchingMailSync(MailSyncThread):
 
 def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
                bank_transport: Transport = urllib_transport,
-               solana_transport: Transport = urllib_transport, start_mail_thread: bool = True) -> FastAPI:
+               solana_transport: Transport = urllib_transport, start_mail_thread: bool = True,
+               mail_connect=imaplib.IMAP4_SSL) -> FastAPI:
     tabs = load_tabs(ENABLED_TABS if enabled_tabs is None else enabled_tabs)
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
@@ -204,21 +207,24 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         finally:
             for task in schedulers:
                 task.stop()
+            mail.stop()
 
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
     app.state.receipts_dir = receipts_dir
     app.state.write = write
     app.state.max_upload_bytes = max_bytes
-    # Relève : l'objet existe dès qu'elle est configurée (bouton « Relever maintenant ») ; le fil de fond
-    # n'est démarré que sur demande (jamais dans les tests).
-    syncer = MatchingMailSync(settings.mail, write, receipts_dir, PARSERS_RECEIPTS) if settings.mail else None
-    app.state.mail_enabled = syncer is not None
-    app.state.mail_syncer = syncer
-    app.state.mail_thread = None
-    if syncer is not None and start_mail_thread:
-        syncer.start()
-        app.state.mail_thread = syncer
+    # Relève Gmail : identifiants du serveur, sinon ceux saisis dans l'onglet Connexions (data_dir/gmail.json).
+    # Le fil de fond n'est démarré que sur demande (jamais dans les tests) ; une connexion depuis l'interface
+    # le (re)démarre sans redémarrage de l'application.
+    mail = MailRuntime(settings.mail,
+                       lambda cfg, lock: MatchingMailSync(cfg, write, receipts_dir, PARSERS_RECEIPTS,
+                                                          connect=mail_connect, lock=lock),
+                       settings.data_dir / "gmail.json", labels=settings.mail_labels,
+                       interval_min=settings.mail_interval_min, connect=mail_connect)
+    if start_mail_thread:
+        mail.start()
+    app.state.mail = mail
     app.state.bank = bank
     app.state.solana = solana
 

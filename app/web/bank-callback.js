@@ -1,6 +1,6 @@
 // Retour de la banque : la page arrive sans cookie de session (SameSite=Strict lors d'une navigation venue de la
 // banque). Elle renvoie code et state à l'API depuis l'origine de l'appli, où le cookie est cette fois envoyé, puis
-// retire ces paramètres de l'adresse et ouvre l'onglet Banque.
+// retire ces paramètres de l'adresse et ouvre l'onglet Connexions.
 const status = document.getElementById("callback-status");
 const params = new URLSearchParams(window.location.search);
 const body = {};
@@ -11,7 +11,7 @@ history.replaceState(null, "", window.location.pathname);
 
 async function finish() {
   if (!body.state) {
-    status.textContent = "Adresse de retour incomplète : relancez la connexion depuis l'onglet Banque.";
+    status.textContent = "Adresse de retour incomplète : relancez la connexion depuis l'onglet Connexions.";
     return;
   }
   const response = await fetch("/api/tabs/banque/session", {
@@ -31,7 +31,7 @@ async function finish() {
     // corps non JSON
   }
   status.textContent = response.status === 401
-    ? "Session Extranalyzer expirée : connectez-vous puis relancez la connexion bancaire depuis l'onglet Banque."
+    ? "Session Extranalyzer expirée : connectez-vous puis relancez la connexion bancaire depuis l'onglet Connexions."
     : `Connexion bancaire impossible : ${detail}`;
 }
 

@@ -234,7 +234,7 @@ def test_default_tabs(client):
         {"id": "epargne", "title": "Épargne", "order": 40},
         {"id": "a_classer", "title": "À classer", "order": 50},
         {"id": "releves", "title": "Relevés", "order": 60},
-        {"id": "banque", "title": "Banque", "order": 65},
+        {"id": "banque", "title": "Connexions", "order": 65},
         {"id": "regles", "title": "Règles", "order": 70},
     ]
 

@@ -1,4 +1,4 @@
-"""Portefeuilles Solana : section de l'onglet Banque (suivi en lecture seule, valeurs en euros)."""
+"""Portefeuilles Solana : section de l'onglet Connexions (suivi en lecture seule, valeurs en euros)."""
 import sqlite3
 from datetime import datetime, timezone
 from typing import Annotated
