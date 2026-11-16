@@ -356,3 +356,95 @@ def test_bank_balance_on_statement_day_is_ignored_and_op_on_statement_day_not_co
     _tx(conn, a, "2026-10-31", 7_000)                    # déjà dans la clôture du relevé
     _bank_balance(conn, a, "2026-10-31", 1)
     assert h.savings_balance(conn, a, date(2026, 11, 2)) == 100_000
+
+
+# --- livret non synchronisé : virements déduits du compte courant, solde saisi à la main ----------------------
+
+def _checking_transfer(conn, checking, day, cents, category_id, mirror_of=None):
+    t = _tx(conn, checking, day, cents, source="enablebanking", mirror_of=mirror_of)
+    conn.execute("UPDATE transactions SET category_id = ? WHERE id = ?", (category_id, t))
+    return t
+
+
+def _livret_with_category(conn, label="LIVRET BLEU"):
+    a = _account(conn, label)
+    cat = savings_category_for_account(conn, a)          # « Épargne / Livret Bleu »
+    return a, cat
+
+
+def test_transfers_from_checking_complete_an_unsynced_livret(conn):
+    a, cat = _livret_with_category(conn)
+    cc = _account(conn, "C/C EUROCOMPTE", "checking")
+    _statement(conn, a, "2026-10-31", 100_000)
+    _checking_transfer(conn, cc, "2026-11-05", -20_000, cat)     # versement vers le livret
+    _checking_transfer(conn, cc, "2026-11-08", 5_000, cat)       # retrait du livret
+    _checking_transfer(conn, cc, "2026-10-20", -99_000, cat)     # avant le relevé : déjà dans sa clôture
+    led = h._Ledger(conn, a)
+    assert led.value(date(2026, 11, 10)) == 115_000
+    assert led.value(date(2026, 11, 6)) == 120_000
+    assert led.source(date(2026, 11, 10)) == "estimated"
+    assert led.source(date(2026, 10, 31)) == "statement"
+
+
+def test_paired_transfers_are_not_counted_twice(conn):
+    a, cat = _livret_with_category(conn)
+    cc = _account(conn, "C/C EUROCOMPTE", "checking")
+    _statement(conn, a, "2026-10-31", 100_000)
+    leg = _tx(conn, a, "2026-11-05", 20_000)                      # jambe côté livret (relevé ultérieur non encore…)
+    _checking_transfer(conn, cc, "2026-11-05", -20_000, cat, mirror_of=leg)
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 120_000
+
+
+def test_synced_livret_does_not_use_inferred_transfers(conn):
+    a, cat = _livret_with_category(conn)
+    cc = _account(conn, "C/C EUROCOMPTE", "checking")
+    _statement(conn, a, "2026-10-31", 100_000)
+    _bank_balance(conn, a, "2026-11-10", 130_000)
+    _checking_transfer(conn, cc, "2026-11-05", -20_000, cat)
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 130_000
+
+
+def test_manual_balance_anchors_and_transfers_continue_after_it(conn):
+    a, cat = _livret_with_category(conn)
+    cc = _account(conn, "C/C EUROCOMPTE", "checking")
+    _statement(conn, a, "2026-10-31", 100_000)
+    _checking_transfer(conn, cc, "2026-11-05", -20_000, cat)
+    h.set_manual_balance(conn, a, date(2026, 11, 10), 125_000, "2026-11-10T09:00:00+00:00")
+    _checking_transfer(conn, cc, "2026-11-12", -1_000, cat)
+    led = h._Ledger(conn, a)
+    assert led.value(date(2026, 11, 10)) == 125_000
+    assert led.value(date(2026, 11, 12)) == 126_000
+    assert led.value(date(2026, 11, 6)) == 125_000              # remonté depuis la saisie
+    assert led.value(date(2026, 11, 4)) == 105_000
+    assert led.source(date(2026, 11, 12)) == "manual"
+
+
+def test_manual_balance_wins_over_older_bank_balance_and_newer_bank_wins_over_it(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _bank_balance(conn, a, "2026-11-05", 110_000)
+    h.set_manual_balance(conn, a, date(2026, 11, 8), 111_111, "x")
+    assert h.savings_balance(conn, a, date(2026, 11, 9)) == 111_111
+    _bank_balance(conn, a, "2026-11-12", 120_000)
+    assert h.savings_balance(conn, a, date(2026, 11, 12)) == 120_000
+
+
+def test_manual_balance_replaced_and_cleared(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    h.set_manual_balance(conn, a, date(2026, 11, 8), 1, "x")
+    h.set_manual_balance(conn, a, date(2026, 11, 8), 2, "y")
+    assert h.savings_balance(conn, a, date(2026, 11, 9)) == 2
+    h.clear_manual_balance(conn, a)
+    assert h.savings_balance(conn, a, date(2026, 11, 9)) == 100_000
+
+
+def test_dashboard_place_exposes_balance_source(conn):
+    a, cat = _livret_with_category(conn)
+    cc = _account(conn, "C/C EUROCOMPTE", "checking")
+    _statement(conn, a, "2026-10-31", 100_000)
+    _checking_transfer(conn, cc, "2026-11-05", -20_000, cat)
+    d = h.dashboard(conn, Period(date(2026, 11, 1), date(2026, 11, 30)), date(2026, 11, 15))
+    place = next(p for p in d["places"] if p["kind"] == "savings")
+    assert place["value"] == 120_000
+    assert place["balance_source"] == "estimated" and place["balance_as_of"] == date(2026, 10, 31)

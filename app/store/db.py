@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -227,6 +227,19 @@ COMMIT;
 """
 
 
+# 8 -> 9 : solde d'un livret saisi à la main
+_MIGRATE_8_TO_9 = """
+BEGIN;
+CREATE TABLE balance_overrides (
+    account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+PRAGMA user_version = 9;
+COMMIT;
+"""
+
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
 
@@ -265,6 +278,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 7
         if version == 7:    # 7 -> 8 : tickets de caisse
             conn.executescript(_MIGRATE_7_TO_8)
+            version = 8
+        if version == 8:    # 8 -> 9 : solde d'un livret saisi à la main
+            conn.executescript(_MIGRATE_8_TO_9)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

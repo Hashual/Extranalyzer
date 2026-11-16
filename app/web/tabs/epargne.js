@@ -204,12 +204,53 @@ function placeCard(p, ctx) {
         p.gap !== null ? el("span", {}, " · écart ", signedGap(p.gap)) : null)
       : null,
   ];
+  if (p.kind === "savings" && p.balance_source) {
+    lines.push(el("span", { className: "muted place-origin", text: balanceOrigin(p) }));
+  }
   const open = p.kind === "wallet" && openWallet === p.id;
-  return target
+  const card = target
     ? el("button", { type: "button", className: `place-card clickable${open ? " open" : ""}`, on: { click: target },
       attrs: p.kind === "wallet" ? { "aria-expanded": String(open), title: "Voir le détail des positions" } : {} },
     ...lines)
     : el("div", { className: "place-card" }, ...lines);
+  return p.kind === "savings" ? el("div", { className: "place-wrap" }, card, balanceActions(p, ctx)) : card;
+}
+
+const BALANCE_ORIGINS = {
+  statement: (d) => `relevé du ${d}`,
+  estimated: (d) => `relevé du ${d} + virements depuis`,
+  bank: (d) => `solde de la banque au ${d}`,
+  manual: (d) => `solde saisi pour le ${d}`,
+};
+
+function balanceOrigin(p) {
+  const when = p.balance_as_of ? formatDate(p.balance_as_of) : "?";
+  return (BALANCE_ORIGINS[p.balance_source] || (() => ""))(when);
+}
+
+/** Corriger le solde réel d'un livret (il fait foi), ou revenir au calcul automatique. */
+function balanceActions(p, ctx) {
+  const error = el("span", { className: "error", attrs: { role: "alert" } });
+  const run = async (fn) => {
+    error.textContent = "";
+    try {
+      if ((await fn()) !== false) await ctx.refresh();
+    } catch (e) {
+      error.textContent = e.message;
+    }
+  };
+  const fix = el("button", { type: "button", className: "link", text: "Corriger le solde", on: { click: () => run(async () => {
+    const value = window.prompt(`Solde réel de « ${p.name} » aujourd'hui (en euros) :`, "");
+    if (value === null || !value.trim()) return false;
+    await ctx.api.put(`/tabs/epargne/balance/${p.id}`, { amount: value.trim() });
+  }) } });
+  const reset = p.balance_source === "manual"
+    ? el("button", { type: "button", className: "link", text: "Revenir au calcul automatique", on: { click: () => run(async () => {
+      if (!window.confirm("Oublier le solde saisi ? Le montant sera de nouveau calculé.")) return false;
+      await ctx.api.delete(`/tabs/epargne/balance/${p.id}`);
+    }) } })
+    : null;
+  return el("div", { className: "place-actions" }, fix, reset, error);
 }
 
 function flowsTiles(total) {
