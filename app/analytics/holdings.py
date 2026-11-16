@@ -50,8 +50,8 @@ class _Ledger:
         i = bisect_right(self._section_days, iso) - 1
         if self._bank is not None and (i == len(self._section_days) - 1 and (i < 0 or iso > self._section_days[i])):
             bank_day, bank_cents = self._bank
-            if i < 0 and (not self._op_days or iso < self._op_days[0]):
-                return None          # sans relevé PDF : rien de connu avant la première opération
+            if i < 0 and iso < min(bank_day, self._op_days[0] if self._op_days else bank_day):
+                return None          # sans relevé PDF : rien de connu avant la première opération ou le solde
             return bank_cents + self._ops_through(iso) - self._ops_through(bank_day)
         if i < 0:
             return None

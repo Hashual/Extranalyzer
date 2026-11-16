@@ -23,9 +23,18 @@ async function walletDetail(ctx, places) {
     openWallet = null;
     return null;
   }
-  const data = await ctx.api.get("/tabs/banque/wallets");
+  let data;
+  try {
+    data = await ctx.api.get("/tabs/banque/wallets");
+  } catch (e) {               // le détail ne doit jamais empêcher l'affichage du tableau de bord
+    openWallet = null;
+    return el("p", { className: "error", attrs: { role: "alert" }, text: `Détail indisponible : ${e.message}` });
+  }
   const wallet = data.wallets.find((w) => w.id === openWallet);
-  if (!wallet) return null;
+  if (!wallet) {
+    openWallet = null;
+    return null;
+  }
   return section(`Positions · ${wallet.label}`,
     wallet.last_error ? el("p", { className: "error", attrs: { role: "alert" },
       text: `Dernière actualisation en échec : ${wallet.last_error}` }) : null,
@@ -181,7 +190,8 @@ function evolutionCard(d) {
 }
 
 function placeCard(p, ctx) {
-  const target = p.kind === "wallet" ? () => { openWallet = openWallet === p.id ? null : p.id; ctx.refresh(); }
+  const target = p.kind === "wallet"
+    ? (hasTab(ctx, "banque") ? () => { openWallet = openWallet === p.id ? null : p.id; ctx.refresh(); } : null)
     : p.category_id !== null && hasTab(ctx, "categories") ? () => ctx.navigate("categories", { id: p.category_id })
       : null;
   const lines = [
@@ -298,7 +308,7 @@ export async function render(container, ctx) {
     dashboardTiles(d),
     el("div", { className: "grid-2 dash-cols" }, allocationCard(d), evolutionCard(d)),
     section("Où", el("div", { className: "place-cards" }, d.places.map((p) => placeCard(p, ctx))),
-      d.places.some((p) => p.kind === "wallet")
+      d.places.some((p) => p.kind === "wallet") && hasTab(ctx, "banque")
         ? el("p", { className: "muted", text: "Cliquez sur un portefeuille pour voir ses positions." }) : null),
     detail,
     flowsSection(ctx),
