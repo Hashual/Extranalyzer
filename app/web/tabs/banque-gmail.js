@@ -52,7 +52,7 @@ function credentialsForm(ctx, label) {
   const address = el("input", { type: "email", placeholder: "votre.adresse@gmail.com",
     attrs: { "aria-label": "Adresse Gmail", autocomplete: "off", spellcheck: "false" } });
   const password = el("input", { type: "password", placeholder: "Mot de passe d'application (16 lettres)",
-    attrs: { "aria-label": "Mot de passe d'application Gmail", autocomplete: "off", spellcheck: "false" } });
+    attrs: { "aria-label": "Mot de passe d'application Gmail", autocomplete: "new-password", spellcheck: "false" } });
   const save = action(label, async () => {
     if (!address.value.trim() || !password.value.trim()) {
       throw new Error("renseignez l'adresse Gmail et le mot de passe d'application");

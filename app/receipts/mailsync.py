@@ -221,6 +221,10 @@ class MailSyncThread(threading.Thread):
 
     def run_once(self) -> dict:
         with self._lock:
+            # relève arrêtée (déconnexion, remplacement) pendant l'attente du verrou : aucun passage de plus
+            # avec les anciens identifiants
+            if self._stopping.is_set():
+                return {"messages": 0, "files": 0, "error": None}
             return sync_once(self._cfg, self._write, self._dir, self._parsers, self._connect)
 
     def run(self) -> None:

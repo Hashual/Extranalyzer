@@ -57,12 +57,12 @@ def mask_address(address: str | None) -> str | None:
 def normalize(user: str, app_password: str) -> tuple[str, str]:
     """Adresse sans espaces autour, mot de passe sans aucun espace (Google l'affiche par groupes de 4)."""
     address = (user or "").strip()
-    if not EMAIL_PATTERN.fullmatch(address):
+    if not address.isascii() or not EMAIL_PATTERN.fullmatch(address):      # IMAP n'accepte que l'ASCII
         raise MailCredentialsInvalid("adresse Gmail invalide (exemple : votre.adresse@gmail.com)")
     password = "".join((app_password or "").split())
     if not password:
         raise MailCredentialsInvalid("collez le mot de passe d'application (16 lettres)")
-    if len(password) > MAX_PASSWORD_LEN or not password.isprintable():
+    if len(password) > MAX_PASSWORD_LEN or not password.isascii() or not password.isprintable():
         raise MailCredentialsInvalid("mot de passe d'application invalide : collez les 16 lettres données par Google")
     return address, password
 
@@ -79,6 +79,8 @@ def check_login(user: str, app_password: str, connect=imaplib.IMAP4_SSL) -> None
             imap.login(user, app_password)
         except imaplib.IMAP4.abort:
             raise MailUnreachable("connexion à Gmail interrompue : réessayez") from None
+        except UnicodeError:            # garde-fou : normalize() écarte déjà les caractères non ASCII
+            raise MailCredentialsInvalid("caractère non accepté par Gmail dans l'adresse ou le mot de passe")                 from None
         except imaplib.IMAP4.error:
             raise MailCredentialsInvalid(
                 "Gmail a refusé la connexion : vérifiez l'adresse et le mot de passe d'application (la validation "
@@ -107,12 +109,19 @@ def _read_file(path: Path) -> tuple[str, str] | None:
 
 
 def _write_file(path: Path, user: str, app_password: str) -> None:
-    """Écriture atomique en 600 ; aucune copie ne reste derrière un échec."""
+    """Écriture atomique en 600 ; aucune copie ne reste derrière un échec.
+
+    Un `.tmp` resté d'un arrêt brutal est supprimé d'abord, puis recréé en exclusif (O_EXCL : jamais un fichier
+    préexistant aux droits plus larges) ; fsync avant le renommage pour qu'un arrêt ne laisse pas un fichier vide.
+    """
     tmp = path.with_name(path.name + ".tmp")
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump({"user": user, "app_password": app_password}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
@@ -178,6 +187,8 @@ class MailRuntime:
         with self._config_lock:
             self._run_threads = True
             if self.syncer is not None and self.thread is None:
+                if self.syncer.ident is not None:       # déjà démarré puis arrêté : un fil ne redémarre pas
+                    self.syncer = self._make(self.settings, self._pass_lock)
                 self.syncer.start()
                 self.thread = self.syncer
 

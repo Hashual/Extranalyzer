@@ -25,11 +25,13 @@ class FakeSyncer:
     def __init__(self, cfg, lock, log):
         self.cfg, self.lock, self.log = cfg, lock, log
         self.started = self.stopped = False
+        self.ident = None
         log.append(self)
 
     def start(self):
         assert not any(s.started and not s.stopped for s in self.log if s is not self), "deux relèves à la fois"
         self.started = True
+        self.ident = id(self)
 
     def stop(self):
         self.stopped = True
@@ -59,7 +61,7 @@ def test_mask_and_normalize():
     assert mask_address("ab@x.test") == "a…@x.test"
     assert mask_address(None) is None
     assert normalize("  a.b@example.test ", " abcd efgh\tijkl\nmnop ") == ("a.b@example.test", "abcdefghijklmnop")
-    for user, pw in [("pas-une-adresse", "abcd"), ("a@b", "abcd"), ("a@example.test", "   "), ("", "x")]:
+    for user, pw in [("pas-une-adresse", "abcd"), ("léa.fictive@example.test", "abcd"), ("a@example.test", "abcd’efgh"), ("a@b", "abcd"), ("a@example.test", "   "), ("", "x")]:
         with pytest.raises(MailCredentialsInvalid):
             normalize(user, pw)
 
@@ -187,3 +189,64 @@ def test_stop_prevents_further_start(tmp_path):
     assert log[0].stopped and rt.thread is None
     rt.connect("autre.fictif@example.test", "qrst uvwx yzab cdef")
     assert not log[1].started and rt.thread is None
+
+
+@pytest.mark.parametrize("user, pw", [("léa.fictive@example.test", PASSWORD), (USER, "abcd efgh ijkl mnoé"),
+                                      (USER, "abcd’efgh ijkl mnop")])
+def test_non_ascii_refused_before_imap(tmp_path, user, pw):
+    imap = FakeImap({"INBOX": (1, {})})
+    rt, log = runtime(tmp_path, imap=imap)
+    with pytest.raises(MailCredentialsInvalid):
+        rt.connect(user, pw)
+    assert imap.commands == [] and not (tmp_path / "gmail.json").exists() and log == []
+
+
+def test_stale_tmp_is_replaced_by_private_file(tmp_path):
+    stale = tmp_path / "gmail.json.tmp"
+    stale.write_text("reste", encoding="utf-8")
+    if os.name == "posix":
+        stale.chmod(0o644)
+    rt, _ = runtime(tmp_path)
+    rt.connect(USER, PASSWORD)
+    assert not stale.exists()
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "gmail.json").stat().st_mode) == 0o600
+
+
+def test_start_after_stop_rebuilds_thread(tmp_path, monkeypatch):
+    """Vrais fils de relève : un fil arrêté n'est jamais redémarré (Thread.start deux fois lèverait)."""
+    import app.receipts.mailsync as mailsync
+    monkeypatch.setattr(mailsync, "sync_once", lambda *a, **k: {"messages": 0, "files": 0, "error": None})
+    made = []
+
+    def make(cfg, lock):
+        made.append(mailsync.MailSyncThread(cfg, None, tmp_path, [], lock=lock))
+        return made[-1]
+    rt = MailRuntime(None, make, tmp_path / "gmail.json", labels=LABELS, connect=FakeImap({"INBOX": (1, {})}))
+    rt.connect(USER, PASSWORD)
+    rt.start()
+    assert made[0].wait_pass(5)
+    rt.stop()
+    assert not made[0].is_alive()
+    rt.start()
+    assert len(made) == 2 and rt.thread is made[1] and made[1].is_alive() and made[1].wait_pass(5)
+    rt.stop()
+    assert not made[1].is_alive()
+
+
+def test_stopped_thread_skips_pass_waiting_for_lock(tmp_path, monkeypatch):
+    import app.receipts.mailsync as mailsync
+    calls = []
+    monkeypatch.setattr(mailsync, "sync_once", lambda *a, **k: calls.append(1) or {"messages": 1, "files": 0,
+                                                                                    "error": None})
+    lock = threading.Lock()
+    lock.acquire()                         # un passage de la nouvelle relève est en cours
+    thread = mailsync.MailSyncThread(SERVER, None, tmp_path, [], lock=lock)
+    thread.start()
+    thread.stop()                          # remplacée pendant qu'elle attend le verrou
+    lock.release()
+    thread.join(5)
+    assert not thread.is_alive() and calls == []
+    idle = mailsync.MailSyncThread(SERVER, None, tmp_path, [], lock=lock)
+    idle.stop()
+    assert idle.run_once() == {"messages": 0, "files": 0, "error": None} and calls == []   # contrôle sous verrou
