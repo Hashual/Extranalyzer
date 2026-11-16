@@ -46,7 +46,8 @@ class _Ledger:
             category = savings_category_for_account(conn, account_id, create=False)
             if category is not None:
                 inferred = conn.execute(
-                    "SELECT t.op_date, -t.amount_cents FROM transactions t WHERE t.category_id = ? "
+                    "SELECT t.op_date, -t.amount_cents FROM transactions t JOIN accounts a ON a.id = t.account_id "
+                    "WHERE t.category_id = ? AND a.kind = 'checking' "
                     "AND t.account_id != ? AND t.mirror_of IS NULL AND t.op_date > ? "
                     "AND NOT EXISTS (SELECT 1 FROM transactions m WHERE m.mirror_of = t.id)",
                     (category, account_id, last_statement or "")).fetchall()

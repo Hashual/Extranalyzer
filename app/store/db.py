@@ -240,6 +240,7 @@ PRAGMA user_version = 9;
 COMMIT;
 """
 
+
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
 
