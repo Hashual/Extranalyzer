@@ -4,6 +4,7 @@ Convention de signe, nature et périmètre : ceux de `app.analytics.totals` (SIG
 scope_clause) ; jambes miroir exclues. Les virements internes appariés encore non classés forment une
 destination sans id.
 """
+import re
 import sqlite3
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -104,7 +105,14 @@ def _savings_account(conn: sqlite3.Connection, account_id: int) -> None:
 
 
 def _amount_cents(raw: str) -> int:
-    text = raw.replace(" ", "").replace("\xa0", "").replace(" ", "").replace("€", "").replace(",", ".")
+    """Montant en euros saisi à la française : « 12345,67 », « 12 345,67 », « 12.345,67 » ou « 12345.67 ».
+
+    Un point suivi d'exactement trois chiffres sans virgule (« 1.234 ») est ambigu : refusé."""
+    text = raw.replace(" ", "").replace("\xa0", "").replace(" ", "").replace("€", "")
+    if "," in text:
+        text = text.replace(".", "").replace(",", ".")          # point = séparateur de milliers
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", text):
+        raise HTTPException(422, "montant ambigu : utilisez une virgule pour les centimes (ex. 1234,00)")
     try:
         value = Decimal(text)
     except InvalidOperation:
@@ -121,6 +129,10 @@ def set_balance(account_id: int, body: BalanceBody, conn: Annotated[sqlite3.Conn
     day = body.day or _today()
     if day > _today():
         raise HTTPException(422, "la date ne peut pas être dans le futur")
+    last = conn.execute("SELECT MAX(statement_date) FROM sections WHERE account_id = ? AND status = 'ok'",
+                        (account_id,)).fetchone()[0]
+    if last is not None and day.isoformat() < last:
+        raise HTTPException(422, f"date antérieure au dernier relevé ({last}) : le relevé fait foi")
     with conn:
         holdings.set_manual_balance(conn, account_id, day, _amount_cents(body.amount),
                                     datetime.now(timezone.utc).isoformat())

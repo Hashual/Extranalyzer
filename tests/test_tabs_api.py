@@ -1064,3 +1064,31 @@ def test_epargne_manual_balance_route(env, monkeypatch):
     d = get(client, "/epargne/dashboard", **JAN)
     livret = next(p for p in d["places"] if p["id"] == 2 and p["kind"] == "savings")
     assert livret["value"] != "1234.56" and livret["balance_source"] in ("statement", "estimated")
+
+
+@pytest.mark.parametrize("raw, cents", [("12345,67", 1234567), ("12 345,67", 1234567), ("12.345,67", 1234567),
+                                        ("12345.67", 1234567), ("1234", 123400), ("1 234 €", 123400)])
+def test_epargne_amount_parsing(raw, cents):
+    from app.tabs.epargne import _amount_cents
+    assert _amount_cents(raw) == cents
+
+
+@pytest.mark.parametrize("raw", ["1.234", "12.345.678", "-3", "abc", "1,2,3"])
+def test_epargne_amount_parsing_rejects(raw):
+    from fastapi import HTTPException
+
+    from app.tabs.epargne import _amount_cents
+    with pytest.raises(HTTPException):
+        _amount_cents(raw)
+
+
+def test_epargne_manual_balance_before_last_statement_422(env, monkeypatch):
+    client, conn, _, _ = env
+    monkeypatch.setattr("app.tabs.epargne._today", lambda: date(2025, 1, 31))
+    conn.execute("INSERT INTO documents(sha256, filename, stored_path, parser, statement_date, imported_at) "
+                 "VALUES ('shaN', 'f', 'p', 'x', '2025-01-15', '2025-02-01')")
+    conn.execute("INSERT INTO sections(document_id, account_id, statement_date, closing_cents, gap_cents, status,"
+                 " content_hash) VALUES (last_insert_rowid(), 2, '2025-01-15', 100000, 0, 'ok', 'h')")
+    conn.commit()
+    r = client.put("/api/tabs/epargne/balance/2", json={"amount": "10", "day": "2025-01-10"}, headers=H)
+    assert r.status_code == 422

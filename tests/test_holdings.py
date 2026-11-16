@@ -448,3 +448,11 @@ def test_dashboard_place_exposes_balance_source(conn):
     place = next(p for p in d["places"] if p["kind"] == "savings")
     assert place["value"] == 120_000
     assert place["balance_source"] == "estimated" and place["balance_as_of"] == date(2026, 10, 31)
+
+
+def test_only_checking_transfers_are_inferred(conn):
+    a, cat = _livret_with_category(conn)
+    other = _account(conn, "LIVRET JEUNE")                       # un autre livret, pas un compte courant
+    _statement(conn, a, "2026-10-31", 100_000)
+    _checking_transfer(conn, other, "2026-11-05", -20_000, cat)
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 100_000
