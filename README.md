@@ -81,14 +81,6 @@ docker build -t extranalyzer:arm64 .
    (The `secrets/` folder, with mode 700, belongs to your user. Docker can still traverse it, because it
    reads the file as root.)
 
-   Also create `secrets/gmail_app_password.txt`: `docker compose` requires this file to exist, even if
-   empty. An empty file disables receipt fetching; to enable it, see "Receipts".
-
-   ```bash
-   : > secrets/gmail_app_password.txt
-   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
-   ```
-
 2. Choose the listening address in a `.env` file next to the compose file (ignored by git; this way
    `docker compose stop/ps/down` also work in a new SSH session). `BIND_ADDR` is the Pi's WireGuard IP
    (for example `10.8.0.1`) or its LAN IP. It is required: `docker compose` refuses to start without it.
@@ -175,7 +167,7 @@ Design document: `docs/superpowers/specs/2026-11-12-enable-banking-design.md`.
    Optional: `SYNC_HOURS` (defaults to 12; 0 disables scheduled sync, the button remains) and `EB_ASPSP`
    (the bank preselected in the Enable Banking list, "Crédit Mutuel" by default). The container must be
    able to reach `https://api.enablebanking.com` outbound.
-5. **Banque** (Bank) tab → "Connecter une banque" (Connect a bank): choose the country and bank from the
+5. **Connexions** (Connections) tab → "Connecter une banque" (Connect a bank): choose the country and bank from the
    Enable Banking list, authenticate on the bank's website, return to the app, link the accounts
    (automatic when the IBAN contains the statement account number) and run the first sync. Then check the
    balance check of each account.
@@ -201,7 +193,7 @@ mixed into the statement totals.
 
 1. Create a free account on [dashboard.helius.dev](https://dashboard.helius.dev) and copy the key shown
    under "API Keys".
-2. In Extranalyzer, **Banque** (Bank) tab, "Portefeuilles Solana" (Solana wallets) section: paste the key
+2. In Extranalyzer, **Connexions** (Connections) tab, "Portefeuilles Solana" (Solana wallets) section: paste the key
    and click "Enregistrer la clé" (Save key). The application checks it with Helius before saving it.
 3. Add your public addresses.
 
@@ -223,48 +215,42 @@ sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
 
 ### Troubleshooting
 
-- Bank tab shows "non configurée" (not configured) even though `.env` is filled in: `docker compose logs`
+- Connexions tab shows "non configurée" (not configured) even though `.env` is filled in: `docker compose logs`
   gives the cause (`clé privée illisible`, unreadable private key: redo the `chown`/`chmod` on
   `secrets/enablebanking.pem`).
 - `lecture impossible de EXTRANALYZER_PASSWORD_FILE` (cannot read) in `docker compose logs`: the secret is
   not readable by uid 10001; redo the `chown 10001:10001` and `chmod 400` above, then
   `docker compose up -d --force-recreate`.
 - `required variable BIND_ADDR is missing`: the `.env` file is missing or is not next to the compose file.
-- `secrets/gmail_app_password.txt` not found on `docker compose up`: create the file (empty to disable
-  fetching, see "Receipts").
-- `lecture impossible de EXTRANALYZER_GMAIL_APP_PASSWORD_FILE` in `docker compose logs`: same cause as for
-  the password; redo the `chown 10001:10001` and `chmod 400` on this file.
+- `lecture impossible de EXTRANALYZER_GMAIL_APP_PASSWORD_FILE` in `docker compose logs` (advanced receipt
+  setup only): same cause as for the password; redo the `chown 10001:10001` and `chmod 400` on this file.
 
 ## Receipts
 
 The application can fetch shopping receipts (PDF) received by email in Gmail, then match them with card
-debits ("Courses" / Groceries tab). Fetching is disabled as long as the app password or `GMAIL_USER` is
-missing.
+debits ("Courses" / Groceries tab). Fetching is enabled from the interface; nothing to configure on the
+server.
 
-1. On the Google account, enable 2-Step Verification, then create an app password (Google account,
-   Security, App passwords). Google displays it in groups of 4 characters; the application removes the
-   spaces, so you can paste it as is.
-2. On the Pi, write it into the secret (the file already exists, owned by uid 10001 and read-only, so you
-   need `sudo tee`), keeping the same permissions as the application password:
+1. On the Google account, enable 2-Step Verification (Security), then open "App passwords" and create
+   one (any name, for example "Extranalyzer").
+2. In Extranalyzer, **Connexions** (Connections) tab, "Tickets de caisse (Gmail)" section: enter the Gmail
+   address (`votre.adresse@gmail.com`) and paste the 16 letters shown by Google (spaces are removed), then
+   click "Connecter" (Connect).
 
-   ```bash
-   printf '%s' 'xxxx xxxx xxxx xxxx' | sudo tee secrets/gmail_app_password.txt >/dev/null
-   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
-   ```
-
-3. Add the Gmail address to `.env` (ignored by git), then recreate the container:
-
-   ```bash
-   echo 'GMAIL_USER=your.address@gmail.com' >> .env
-   docker compose up -d --force-recreate
-   ```
+The application first tests the connection (IMAP login and read-only opening of the inbox, no email read);
+a refused password is never saved. Once accepted, the credentials are stored in the data volume
+(`/data/gmail.json`, mode 600), so they are part of the volume backups. The password is never written to
+the database, logged or displayed again (only the partially masked address is shown). Fetching starts at
+once, without restarting the container. The same section shows the last successful fetch and the last error
+of each label, and has "Relever maintenant" (Fetch now) and "Déconnecter" (Disconnect, which stops fetching
+and deletes the credentials; receipts already fetched remain).
 
 What fetching does:
 
 - Gmail is opened **read-only**: no email is marked as read, moved or deleted.
 - It reads two Gmail labels, by default `Super U/Tickets de caisses` (store `superu`) and
-  `intermarche/Tickets de caisses` (store `intermarche`), once an hour and at startup; the "Relever
-  maintenant" (Fetch now) button in the Courses tab runs it on demand.
+  `intermarche/Tickets de caisses` (store `intermarche`), once an hour and at startup; "Relever
+  maintenant" (Fetch now), in the Connexions or Courses tab, runs it on demand.
 - PDFs are stored in `receipts/` in the `data` volume.
 - The only outbound connection used for fetching is `imap.gmail.com:993` (verified TLS).
 - Logs contain no address, password, product name or amount.
@@ -274,9 +260,16 @@ Optional variables (in `.env` next to the compose file): `RECEIPT_LABELS` (forma
 `EXTRANALYZER_MAIL_INTERVAL_MIN` (defaults to 60, positive integer; add it to the compose file's
 `environment:` to change it).
 
-To disable fetching: empty the secret (`sudo sh -c ': > secrets/gmail_app_password.txt'`, permissions
-unchanged) or leave `GMAIL_USER` empty (delete the line from `.env` or set it to `GMAIL_USER=`), then run
-`docker compose up -d --force-recreate`. Receipts already fetched remain in the application.
+**Administrator variant (advanced, optional)**: provide the credentials through the environment. They then
+take precedence over the interface, which shows "géré par la configuration du serveur" (managed by the
+server configuration) and can no longer change them. Add both variables to the service's `environment:`
+in `docker-compose.yml`, for example with a Docker secret for the password (file owned by uid 10001, mode
+400, declared under `secrets:` like `password`):
+
+```yaml
+      EXTRANALYZER_GMAIL_USER: votre.adresse@gmail.com
+      EXTRANALYZER_GMAIL_APP_PASSWORD_FILE: /run/secrets/gmail_app_password
+```
 
 ## Backing up and restoring the `data` volume
 
@@ -304,18 +297,15 @@ outside the repository, encrypted if it leaves the Pi.
 
 ## Updating
 
-- **First update to the version with receipt fetching** (all options): the compose file now declares the
-  `secrets/gmail_app_password.txt` secret, and `docker compose up -d` fails until it exists. Before
-  updating, copy the new `docker-compose.yml` to the Pi (the published image does not contain it; with
-  option B it comes with `git pull`), then create the secret (empty: fetching stays disabled, see
-  "Receipts" to enable it):
-
-  ```bash
-  sudo sh -c ': > secrets/gmail_app_password.txt'
-  sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
-  ```
-
-  On first startup, the database migrates to schema 8 (receipt tables) on its own; nothing else to do.
+- **Update to the version with the Connexions tab** (all options): copy the new `docker-compose.yml` to
+  the Pi (the published image does not contain it; with option B it comes with `git pull`). It no longer
+  declares a Gmail secret: nothing to create. Receipt fetching is now enabled from the Connexions tab (see
+  "Receipts"). **If you had enabled fetching through the old secret and `GMAIL_USER`, it stops after the
+  update**: the old secret is not migrated. Enter the Gmail address and app password again in the
+  Connexions tab, "Tickets de caisse (Gmail)" section. Then `secrets/gmail_app_password.txt` is no longer
+  used and can be deleted (`sudo rm secrets/gmail_app_password.txt`), as can the `GMAIL_USER=` line in
+  `.env`. On first startup with
+  receipts, the database migrates to schema 8 (receipt tables) on its own; nothing else to do.
 - **GitHub option**: push to `main`, wait for the workflow to finish (*Actions* tab), then on the Pi:
   `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
 - **Option A** (build on the PC): redo the `buildx`, `docker save` and `scp` above, then on the Pi:

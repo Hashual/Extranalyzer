@@ -251,7 +251,8 @@ async function syncPanel(ctx) {
                  text: l.last_error || (l.last_success_at
                    ? `relevé le ${localTime(l.last_success_at)}` : "jamais relevé") })));
   return el("details", { className: "card" }, el("summary", { text: "Relève des tickets" }),
-    el("p", { className: "muted", text: state.enabled ? "Relève automatique activée." : "Relève automatique désactivée." }),
+    el("p", { className: "muted", text: state.enabled ? "Relève automatique activée."
+      : "Relève automatique désactivée : connectez Gmail dans l'onglet Connexions." }),
     labels.length ? el("ul", { className: "plain-list" }, labels) : null,
     el("div", { className: "actions" }, now, reread), message);
 }

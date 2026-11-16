@@ -19,6 +19,26 @@ class ConfigError(RuntimeError):
     pass
 
 
+DEFAULT_RECEIPT_LABELS = "Super U/Tickets de caisses=superu;intermarche/Tickets de caisses=intermarche"
+DEFAULT_MAIL_INTERVAL_MIN = 60
+
+
+def parse_receipt_labels(raw: str) -> tuple[tuple[str, str], ...]:
+    """`libellé=enseigne;libellé=enseigne` → ((libellé, enseigne), ...)."""
+    pairs = []
+    for item in raw.split(";"):
+        if not item.strip():
+            continue
+        label, sep, store = item.rpartition("=")
+        if not sep or not label.strip() or not store.strip():
+            raise ConfigError(f"EXTRANALYZER_RECEIPT_LABELS invalide : {item!r} (format libellé=enseigne)")
+        pairs.append((label.strip(), store.strip()))
+    return tuple(pairs)
+
+
+DEFAULT_RECEIPT_LABEL_PAIRS = parse_receipt_labels(DEFAULT_RECEIPT_LABELS)
+
+
 @dataclass(frozen=True)
 class MailSettings:
     user: str = field(repr=False)           # hors repr : ni adresse ni secret dans les journaux
@@ -50,7 +70,9 @@ class Settings:
     password_hash: bytes          # sel || scrypt, voir app.auth.hash_password
     max_upload_mb: int = 20
     auto_threshold: float = 0.90  # seuil du classement automatique par le modèle
-    mail: MailSettings | None = None    # None : relève des tickets de caisse désactivée
+    mail: MailSettings | None = None    # identifiants Gmail du serveur ; None : saisis dans l'onglet Connexions
+    mail_labels: tuple[tuple[str, str], ...] = DEFAULT_RECEIPT_LABEL_PAIRS   # libellés relevés (toutes sources)
+    mail_interval_min: int = DEFAULT_MAIL_INTERVAL_MIN
     bank: BankSettings | None = None   # None : récupération bancaire désactivée
     sync_hours: int = 0           # période de la synchro planifiée (0 : désactivée)
     solana: SolanaSettings | None = None   # clé Helius du serveur ; None : clé saisie dans l'interface
@@ -100,10 +122,6 @@ def auto_threshold() -> float:
     return value
 
 
-DEFAULT_RECEIPT_LABELS = "Super U/Tickets de caisses=superu;intermarche/Tickets de caisses=intermarche"
-DEFAULT_MAIL_INTERVAL_MIN = 60
-
-
 def _gmail_password() -> str:
     direct = os.environ.get("EXTRANALYZER_GMAIL_APP_PASSWORD")
     file = os.environ.get("EXTRANALYZER_GMAIL_APP_PASSWORD_FILE")
@@ -119,16 +137,7 @@ def _gmail_password() -> str:
 
 
 def _receipt_labels() -> tuple[tuple[str, str], ...]:
-    raw = os.environ.get("EXTRANALYZER_RECEIPT_LABELS", DEFAULT_RECEIPT_LABELS)
-    pairs = []
-    for item in raw.split(";"):
-        if not item.strip():
-            continue
-        label, sep, store = item.rpartition("=")
-        if not sep or not label.strip() or not store.strip():
-            raise ConfigError(f"EXTRANALYZER_RECEIPT_LABELS invalide : {item!r} (format libellé=enseigne)")
-        pairs.append((label.strip(), store.strip()))
-    return tuple(pairs)
+    return parse_receipt_labels(os.environ.get("EXTRANALYZER_RECEIPT_LABELS", DEFAULT_RECEIPT_LABELS))
 
 
 def _mail_interval_min() -> int:
@@ -154,7 +163,7 @@ def mail_settings() -> MailSettings | None:
 
 def _bank_settings() -> BankSettings | None:
     """Enable Banking : activé si EXTRANALYZER_EB_APP_ID est défini, la clé lisible et l'URL de retour fournie ;
-    sinon désactivé (l'appli démarre, l'onglet Banque explique quoi configurer)."""
+    sinon désactivé (l'appli démarre, l'onglet Connexions explique quoi configurer)."""
     app_id = os.environ.get("EXTRANALYZER_EB_APP_ID", "").strip()
     if not app_id:
         return None
@@ -183,7 +192,7 @@ def _helius_url() -> str | None:
 
 def _solana_settings() -> SolanaSettings | None:
     """Clé Helius fournie par la configuration du serveur (secret Docker), facultative : sans elle, la clé se saisit
-    dans l'onglet Banque. Un fichier absent au chemin par défaut n'est pas une erreur."""
+    dans l'onglet Connexions. Un fichier absent au chemin par défaut n'est pas une erreur."""
     base_url = _helius_url()
     if base_url is None:
         return None
@@ -219,6 +228,8 @@ def load_settings() -> Settings:
                     max_upload_mb=_max_upload_mb(),
                     auto_threshold=auto_threshold(),
                     mail=mail_settings(),
+                    mail_labels=_receipt_labels(),
+                    mail_interval_min=_mail_interval_min(),
                     bank=_bank_settings(),
                     sync_hours=_sync_hours(),
                     solana=_solana_settings(),
