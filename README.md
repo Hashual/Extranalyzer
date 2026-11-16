@@ -1,131 +1,134 @@
 # Extranalyzer
 
-Application web personnelle d'analyse de relevés bancaires (FastAPI + SQLite), prévue pour tourner
-sur un Raspberry Pi (linux/arm64), derrière WireGuard. Les relevés réels ne doivent **jamais** être
-versionnés ni copiés dans l'image : ils sont déposés via l'interface web et vivent uniquement dans le
-volume Docker `data`.
+Personal web application for analyzing bank statements (FastAPI + SQLite), designed to run on a
+Raspberry Pi (linux/arm64) behind WireGuard. Real statements must **never** be committed or copied into
+the image: they are uploaded through the web interface and live only in the `data` Docker volume.
 
-## Image Docker
+> The application's interface is in French. In this guide, interface labels are quoted in French, with
+> an English translation where helpful.
 
-- Build multi-stage sur `python:3.12-alpine` ; l'étape `build` n'accepte que des wheels binaires
-  (`--only-binary=:all:`), aucune compilation. L'image finale ne contient ni pip-cache ni outils de build,
-  tourne en utilisateur non privilégié (uid 10001) avec un système de fichiers racine en lecture seule.
-- Contexte de build minimal (`.dockerignore` en liste blanche : `app/`, `pyproject.toml` et
-  `constraints.txt` seulement).
-- Dépendances figées : l'étape `build` installe les versions exactes de `constraints.txt` (voir
-  « Dépendances figées »), deux builds du même commit donnent donc les mêmes paquets.
-- Taille de l'image : environ 122 Mo en arm64 (voir « Tailles mesurées »).
-- Repli : si une dépendance n'avait pas de wheel `musllinux` pour aarch64, passer les deux `FROM` du
-  `Dockerfile` sur `python:3.12-slim` (non nécessaire à ce jour).
+## Docker image
 
-## Construire et installer l'image
+- Multi-stage build on `python:3.12-alpine`; the `build` stage only accepts binary wheels
+  (`--only-binary=:all:`), with no compilation. The final image contains no pip cache or build tools, runs
+  as an unprivileged user (uid 10001) and uses a read-only root filesystem.
+- Minimal build context (`.dockerignore` as an allowlist: only `app/`, `pyproject.toml` and
+  `constraints.txt`).
+- Pinned dependencies: the `build` stage installs the exact versions from `constraints.txt` (see
+  "Pinned dependencies"), so two builds of the same commit produce the same packages.
+- Image size: about 122 MB on arm64 (see "Measured sizes").
+- Fallback: if a dependency had no `musllinux` wheel for aarch64, switch both `FROM` lines in the
+  `Dockerfile` to `python:3.12-slim` (not needed so far).
 
-Trois routes, au choix. Dans tous les cas, le Pi a besoin de Docker et de `docker-compose.yml` (un seul
-fichier à copier, pas besoin du dépôt complet).
+## Building and installing the image
 
-**Route GitHub (recommandée) : l'image est construite par GitHub Actions, le Pi la télécharge.** Le dépôt
-doit être **privé**. À chaque push sur `main`, le workflow `.github/workflows/docker.yml` lance les tests puis
-publie l'image `linux/arm64` sur `ghcr.io/<compte>/<dépôt>` (étiquettes `arm64` et `arm64-<commit>`), sans
-secret à configurer. Le paquet ghcr.io créé par un dépôt privé est privé lui aussi. Une seule fois :
+There are three options. In every case, the Pi needs Docker and `docker-compose.yml` (a single file to
+copy; the full repository is not needed).
 
-1. Sur GitHub, créer un jeton classique (*Settings → Developer settings → Personal access tokens →
-   Tokens (classic)*) avec la seule permission `read:packages`.
-2. Sur le Pi, s'identifier (le jeton est demandé comme mot de passe, il n'apparaît pas dans l'historique) :
+**GitHub option (recommended): GitHub Actions builds the image and the Pi downloads it.** The repository
+must be **private**. On every push to `main`, the `.github/workflows/docker.yml` workflow runs the tests,
+then publishes the `linux/arm64` image to `ghcr.io/<account>/<repository>` (tags `arm64` and
+`arm64-<commit>`), with no secret to configure. A ghcr.io package created by a private repository is
+private too. One-time setup:
 
-   ```bash
-   docker login ghcr.io -u <compte-github>
-   ```
-
-3. Ajouter au `.env` du Pi (étape 2 ci-dessous) le nom de l'image, **en minuscules** :
+1. On GitHub, create a classic token (*Settings → Developer settings → Personal access tokens →
+   Tokens (classic)*) with only the `read:packages` permission.
+2. On the Pi, log in (the token is requested as the password, so it does not appear in the shell
+   history):
 
    ```bash
-   echo 'IMAGE=ghcr.io/<compte>/<depot>' >> .env
+   docker login ghcr.io -u <github-account>
    ```
 
-Puis `docker compose pull && docker compose up -d`. Le Pi ne reçoit que l'image arm64, jamais le code.
+3. Add the image name, **in lowercase**, to the Pi's `.env` (step 2 below):
 
-**Route A : construire sur le PC, envoyer l'image au Pi** (Docker Desktop, buildx, émulation QEMU) :
+   ```bash
+   echo 'IMAGE=ghcr.io/<account>/<repository>' >> .env
+   ```
+
+Then run `docker compose pull && docker compose up -d`. The Pi only receives the arm64 image, never the
+code.
+
+**Option A: build on the PC and send the image to the Pi** (Docker Desktop, buildx, QEMU emulation):
 
 ```bash
 docker buildx build --platform linux/arm64 -t extranalyzer:arm64 --load .
 docker save extranalyzer:arm64 | gzip > extranalyzer-arm64.tar.gz
-scp extranalyzer-arm64.tar.gz docker-compose.yml pi@<ip-du-pi>:~/extranalyzer/
-# sur le Pi :
+scp extranalyzer-arm64.tar.gz docker-compose.yml pi@<pi-ip>:~/extranalyzer/
+# on the Pi:
 cd ~/extranalyzer && gunzip -c extranalyzer-arm64.tar.gz | docker load
 ```
 
-**Route B : construire sur le Pi** (dépôt cloné sur le Pi) :
+**Option B: build on the Pi** (repository cloned on the Pi):
 
 ```bash
-git clone <url-du-depot> ~/extranalyzer && cd ~/extranalyzer
+git clone <repository-url> ~/extranalyzer && cd ~/extranalyzer
 docker build -t extranalyzer:arm64 .
 ```
 
-## Déployer (sur le Pi, dans le dossier contenant `docker-compose.yml`)
+## Deploying (on the Pi, in the folder containing `docker-compose.yml`)
 
-1. Créer le secret (dossier ignoré par git, jamais commité). Sous Linux, le secret du compose est monté
-   avec le propriétaire et les droits du fichier hôte : le conteneur tourne en uid 10001, il faut donc
-   que ce soit lui le propriétaire, sinon l'application ne peut pas le lire et redémarre en boucle.
+1. Create the secret (in a folder ignored by git, never committed). On Linux, the compose secret is
+   mounted with the owner and permissions of the host file. The container runs as uid 10001, so that uid
+   must own the file; otherwise the application cannot read it and keeps restarting.
 
    ```bash
    mkdir -p secrets && chmod 700 secrets
-   printf '%s' 'votre-mot-de-passe-long' > secrets/password.txt
+   printf '%s' 'your-long-password' > secrets/password.txt
    sudo chown 10001:10001 secrets/password.txt && sudo chmod 400 secrets/password.txt
    ```
 
-   (Le dossier `secrets/` en 700 appartient à votre utilisateur : il reste traversable par Docker, qui
-   lit le fichier en root.)
+   (The `secrets/` folder, with mode 700, belongs to your user. Docker can still traverse it, because it
+   reads the file as root.)
 
-   Créer aussi `secrets/gmail_app_password.txt` : `docker compose` exige que ce fichier existe, même
-   vide. Un fichier vide désactive la relève des tickets de caisse ; pour l'activer, voir « Tickets de
-   caisse ».
+   Also create `secrets/gmail_app_password.txt`: `docker compose` requires this file to exist, even if
+   empty. An empty file disables receipt fetching; to enable it, see "Receipts".
 
    ```bash
    : > secrets/gmail_app_password.txt
    sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
    ```
 
-2. Choisir l'adresse d'écoute dans un fichier `.env` à côté du compose (ignoré par git ; ainsi
-   `docker compose stop/ps/down` fonctionnent aussi dans une nouvelle session SSH) :
-   `BIND_ADDR` = l'IP WireGuard du Pi (par exemple `10.8.0.1`), ou son IP LAN. Elle est obligatoire :
-   `docker compose` refuse de démarrer sans elle. Ne jamais mettre `0.0.0.0`.
+2. Choose the listening address in a `.env` file next to the compose file (ignored by git; this way
+   `docker compose stop/ps/down` also work in a new SSH session). `BIND_ADDR` is the Pi's WireGuard IP
+   (for example `10.8.0.1`) or its LAN IP. It is required: `docker compose` refuses to start without it.
+   Never use `0.0.0.0`.
 
    ```bash
    echo 'BIND_ADDR=10.8.0.1' > .env
    ```
 
-   `IMAGE` (facultatif, `extranalyzer` par défaut : image construite en local) donne le nom de l'image,
-   `ghcr.io/<compte>/<depot>` pour la route GitHub. `IMAGE_TAG` (facultatif, `arm64` par défaut) permet
-   d'utiliser une autre étiquette, par exemple `IMAGE_TAG=arm64-<commit>` pour revenir à une version
-   précise, ou `IMAGE_TAG=amd64` pour un essai sur un PC x86.
+   `IMAGE` (optional, defaults to `extranalyzer`, the locally built image) sets the image name; use
+   `ghcr.io/<account>/<repository>` for the GitHub option. `IMAGE_TAG` (optional, defaults to `arm64`)
+   selects another tag, for example `IMAGE_TAG=arm64-<commit>` to roll back to a specific version, or
+   `IMAGE_TAG=amd64` to try it on an x86 PC.
 
-3. Démarrer :
+3. Start:
 
    ```bash
    docker compose up -d
-   docker compose ps          # l'état doit passer à « healthy »
+   docker compose ps          # the status should become "healthy"
    ```
 
-4. Ouvrir `http://<BIND_ADDR>:8000` depuis un appareil connecté au VPN WireGuard.
+4. Open `http://<BIND_ADDR>:8000` from a device connected to the WireGuard VPN.
 
-Le conteneur est durci : système de fichiers en lecture seule (écriture uniquement dans le volume
-`/data` et le tmpfs `/tmp` de 64 Mo), `cap_drop: ALL`, `no-new-privileges`, 256 Mo de mémoire, 1 CPU,
-journaux limités (`max-size: 1m`, `max-file: "3"`). Variable facultative : `EXTRANALYZER_MAX_UPLOAD_MB`
-(20 par défaut).
+The container is hardened: read-only filesystem (writes only to the `/data` volume and a 64 MB `/tmp`
+tmpfs), `cap_drop: ALL`, `no-new-privileges`, 256 MB of memory, 1 CPU, capped logs (`max-size: 1m`,
+`max-file: "3"`). Optional variable: `EXTRANALYZER_MAX_UPLOAD_MB` (defaults to 20).
 
-### Démarrage au boot : attendre WireGuard
+### Starting at boot: waiting for WireGuard
 
-> Le Pi actuel n'utilise pas WireGuard mais WolfNet (`10.10.10.95`, `wolfnet.service`). Son réseau réel est décrit
-> dans [docs/reseau.md](docs/reseau.md).
+> The current Pi does not use WireGuard but WolfNet (`10.10.10.95`, `wolfnet.service`). Its actual network
+> setup is described in [docs/reseau.md](docs/reseau.md).
 
-Docker ne peut pas publier le port sur l'IP `wg0` tant que l'interface n'existe pas. Méthode recommandée :
-faire démarrer le service Docker après `wg-quick@wg0`.
+Docker cannot publish the port on the `wg0` IP until the interface exists. Recommended method: start the
+Docker service after `wg-quick@wg0`.
 
 ```bash
 sudo systemctl edit docker.service
 ```
 
-puis y coller :
+then paste:
 
 ```ini
 [Unit]
@@ -133,149 +136,151 @@ After=wg-quick@wg0.service
 Wants=wg-quick@wg0.service
 ```
 
-(Sauvegarder, puis `sudo systemctl daemon-reload`.) Avec `restart: unless-stopped`, le conteneur redémarre
-alors tout seul après un reboot, une fois `wg0` monté.
+(Save, then run `sudo systemctl daemon-reload`.) With `restart: unless-stopped`, the container then
+restarts on its own after a reboot, once `wg0` is up.
 
-### Récupération bancaire (Enable Banking)
+### Bank data retrieval (Enable Banking)
 
-Facultative : sans elle, l'appli fonctionne avec les seuls relevés PDF. Avec elle, les opérations des comptes
-arrivent seules, via l'open banking (DSP2, lecture seule), **après le dernier relevé PDF de chaque compte**.
-Conception : `docs/superpowers/specs/2026-11-12-enable-banking-design.md`.
+Optional: without it, the app works with PDF statements only. With it, account transactions arrive
+automatically through open banking (PSD2, read-only), **after the latest PDF statement of each account**.
+Design document: `docs/superpowers/specs/2026-11-12-enable-banking-design.md`.
 
-1. **Importer d'abord tous les relevés PDF** jusqu'au plus récent : la banque ne fournit souvent que 90 jours
-   d'historique, et un relevé dont la période contient déjà des opérations de la banque est refusé.
-2. Créer un compte sur enablebanking.com, puis une application **Production** dans le Control Panel
-   (`https://enablebanking.com/cp/applications`) :
-   - adresse de retour (liste blanche) : `http://<BIND_ADDR>:8000/bank/callback` ; si elle est refusée,
-     déclarer par exemple `https://localhost/bank/callback` et utiliser le repli par copier-coller (étape 6) ;
-   - la clé privée est téléchargée par le navigateur sous le nom `<identifiant>.pem` ;
-   - « Activate by linking accounts » : lier ses propres comptes Crédit Mutuel (mode restreint, usage
-     personnel). Vérifier au passage les conditions tarifaires affichées.
-3. Déposer la clé en secret, lisible par l'uid du conteneur :
+1. **Import all PDF statements first**, up to the most recent one: banks often provide only 90 days of
+   history, and a statement whose period already contains transactions from the bank is rejected.
+2. Create an account on enablebanking.com, then a **Production** application in the Control Panel
+   (`https://enablebanking.com/cp/applications`):
+   - redirect URL (allowlist): `http://<BIND_ADDR>:8000/bank/callback`; if it is rejected, register for
+     example `https://localhost/bank/callback` and use the copy-paste fallback (step 6);
+   - the browser downloads the private key as `<identifier>.pem`;
+   - "Activate by linking accounts": link your own Crédit Mutuel accounts (restricted mode, personal
+     use). Check the displayed pricing terms at the same time.
+3. Store the key as a secret, readable by the container's uid:
 
    ```bash
-   cp <identifiant>.pem secrets/enablebanking.pem
+   cp <identifier>.pem secrets/enablebanking.pem
    sudo chown 10001:10001 secrets/enablebanking.pem && sudo chmod 400 secrets/enablebanking.pem
    ```
 
-4. Compléter `.env` :
+4. Complete `.env`:
 
    ```bash
    cat >> .env <<'EOF'
    COMPOSE_FILE=docker-compose.yml:docker-compose.banque.yml
-   EB_APP_ID=<identifiant de l'application>
+   EB_APP_ID=<application identifier>
    EB_REDIRECT_URL=http://10.8.0.1:8000/bank/callback
    EOF
    docker compose up -d
    ```
 
-   Facultatif : `SYNC_HOURS` (12 par défaut ; 0 désactive la synchro planifiée, le bouton reste) et
-   `EB_ASPSP` (banque proposée par défaut dans la liste d'Enable Banking, « Crédit Mutuel » par défaut).
-   Le conteneur doit pouvoir joindre `https://api.enablebanking.com` en sortie.
-5. Onglet **Banque** → « Connecter une banque » : choisir le pays et la banque dans la liste d'Enable Banking,
-   authentification sur le site de la banque, retour dans l'appli, rattachement des comptes (automatique quand
-   l'IBAN contient le numéro des relevés) et première synchro. Regarder ensuite le contrôle de solde de chaque compte.
-   Plusieurs banques peuvent être connectées (« Ajouter une banque ») : chacune a son consentement, son
-   renouvellement et sa déconnexion ; la synchro planifiée les parcourt toutes, la panne de l'une n'arrête pas les
-   autres. En mode restreint, chaque nouvelle banque doit aussi être liée dans le Control Panel (« Link accounts »).
-   Les comptes d'une banque sans relevé PDF sont créés « API seulement » ; leur type (courant ou épargne) est déduit
-   de la banque et de leur nom, et se corrige dans l'onglet.
-6. Repli : si la page de retour ne s'ouvre pas, copier l'adresse complète affichée par le navigateur (avec
-   `code=` et `state=`) dans « Le retour de la banque n'a pas abouti ? », dans les 30 minutes.
+   Optional: `SYNC_HOURS` (defaults to 12; 0 disables scheduled sync, the button remains) and `EB_ASPSP`
+   (the bank preselected in the Enable Banking list, "Crédit Mutuel" by default). The container must be
+   able to reach `https://api.enablebanking.com` outbound.
+5. **Banque** (Bank) tab → "Connecter une banque" (Connect a bank): choose the country and bank from the
+   Enable Banking list, authenticate on the bank's website, return to the app, link the accounts
+   (automatic when the IBAN contains the statement account number) and run the first sync. Then check the
+   balance check of each account.
+   Several banks can be connected ("Ajouter une banque", Add a bank): each has its own consent, renewal
+   and disconnection; scheduled sync goes through all of them, and a failure at one bank does not stop
+   the others. In restricted mode, each new bank must also be linked in the Control Panel ("Link
+   accounts"). Accounts from a bank with no PDF statement are created as "API only"; their type
+   (checking or savings) is inferred from the bank and the account name, and can be corrected in the tab.
+6. Fallback: if the return page does not open, copy the full address shown by the browser (with `code=`
+   and `state=`) into "Le retour de la banque n'a pas abouti ?" (Bank return failed?) within 30 minutes.
 
-Le consentement dure en général 180 jours ; une pastille « Banque : renouveler » apparaît 14 jours avant
-l'échéance de la première banque concernée (« Renouveler le consentement » dans l'onglet). La clé ne quitte jamais le secret Docker ; aucun jeton,
-identifiant de session ni IBAN complet n'est journalisé ou affiché.
+Consent usually lasts 180 days; a "Banque : renouveler" (Bank: renew) badge appears 14 days before the
+first bank's consent expires ("Renouveler le consentement", Renew consent, in the tab). The key never
+leaves the Docker secret; no token, session identifier or full IBAN is ever logged or displayed.
 
-### Portefeuilles Solana (Helius)
+### Solana wallets (Helius)
 
-Facultatif : suit en lecture seule la valeur en euros de portefeuilles Solana (SOL, jetons, comptes de staking), à
-partir de leur adresse publique. Aucune clé privée ni phrase de récupération, aucune écriture sur la blockchain. Les
-valeurs ne sont pas mêlées aux totaux des relevés.
+Optional: tracks, read-only, the euro value of Solana wallets (SOL, tokens, staking accounts) from their
+public address. No private key or recovery phrase, and no writes to the blockchain. These values are not
+mixed into the statement totals.
 
-**Mise en route, depuis l'interface (rien à configurer sur le serveur) :**
+**Setup, from the interface (nothing to configure on the server):**
 
-1. Créer un compte gratuit sur [dashboard.helius.dev](https://dashboard.helius.dev) et copier la clé affichée dans
-   « API Keys ».
-2. Dans Extranalyzer, onglet **Banque**, section « Portefeuilles Solana » : coller la clé et cliquer sur
-   « Enregistrer la clé ». L'application la vérifie auprès de Helius avant de l'enregistrer.
-3. Ajouter ses adresses publiques.
+1. Create a free account on [dashboard.helius.dev](https://dashboard.helius.dev) and copy the key shown
+   under "API Keys".
+2. In Extranalyzer, **Banque** (Bank) tab, "Portefeuilles Solana" (Solana wallets) section: paste the key
+   and click "Enregistrer la clé" (Save key). The application checks it with Helius before saving it.
+3. Add your public addresses.
 
-La clé est gardée dans le volume de données (`/data/helius.key`, droits 600) : elle fait donc partie des sauvegardes
-du volume. Elle n'est jamais écrite en base, journalisée ni réaffichée ; on peut la remplacer ou la supprimer depuis
-la même section. Le conteneur doit pouvoir joindre `https://mainnet.helius-rpc.com` en sortie. L'actualisation
-planifiée reprend `SYNC_HOURS` (12 par défaut ; 0 la désactive).
+The key is stored in the data volume (`/data/helius.key`, mode 600), so it is part of the volume
+backups. It is never written to the database, logged or displayed again; it can be replaced or deleted
+from the same section. The container must be able to reach `https://mainnet.helius-rpc.com` outbound.
+Scheduled refresh follows `SYNC_HOURS` (defaults to 12; 0 disables it).
 
-**Variante pour administrateur (facultative)** : fournir la clé en secret Docker. Elle prend alors le pas sur la clé
-saisie dans l'interface, qui ne peut plus la modifier.
+**Administrator variant (optional)**: provide the key as a Docker secret. It then takes precedence over
+the key entered in the interface, which can no longer change it.
 
 ```bash
 read -rs HK && printf '%s' "$HK" > secrets/helius.key && unset HK
 sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
-# .env : ajouter docker-compose.solana.yml à COMPOSE_FILE, puis docker compose up -d
+# .env: add docker-compose.solana.yml to COMPOSE_FILE, then docker compose up -d
 ```
 
-`HELIUS_URL` (facultatif) remplace l'adresse du service ; elle doit commencer par `https://`.
+`HELIUS_URL` (optional) overrides the service address; it must start with `https://`.
 
-### Dépannage
+### Troubleshooting
 
-- Onglet Banque « non configurée » alors que `.env` est rempli : `docker compose logs` indique la cause
-  (`clé privée illisible` : refaire le `chown`/`chmod` de `secrets/enablebanking.pem`).
-- `lecture impossible de EXTRANALYZER_PASSWORD_FILE` dans `docker compose logs` : le secret n'est pas
-  lisible par l'uid 10001 ; refaire le `chown 10001:10001` et `chmod 400` ci-dessus, puis
+- Bank tab shows "non configurée" (not configured) even though `.env` is filled in: `docker compose logs`
+  gives the cause (`clé privée illisible`, unreadable private key: redo the `chown`/`chmod` on
+  `secrets/enablebanking.pem`).
+- `lecture impossible de EXTRANALYZER_PASSWORD_FILE` (cannot read) in `docker compose logs`: the secret is
+  not readable by uid 10001; redo the `chown 10001:10001` and `chmod 400` above, then
   `docker compose up -d --force-recreate`.
-- `required variable BIND_ADDR is missing` : le fichier `.env` est absent ou ne se trouve pas à côté du compose.
-- `secrets/gmail_app_password.txt` introuvable au `docker compose up` : créer le fichier (vide pour
-  désactiver la relève, voir « Tickets de caisse »).
-- `lecture impossible de EXTRANALYZER_GMAIL_APP_PASSWORD_FILE` dans `docker compose logs` : même cause
-  que pour le mot de passe, refaire le `chown 10001:10001` et `chmod 400` sur ce fichier.
+- `required variable BIND_ADDR is missing`: the `.env` file is missing or is not next to the compose file.
+- `secrets/gmail_app_password.txt` not found on `docker compose up`: create the file (empty to disable
+  fetching, see "Receipts").
+- `lecture impossible de EXTRANALYZER_GMAIL_APP_PASSWORD_FILE` in `docker compose logs`: same cause as for
+  the password; redo the `chown 10001:10001` and `chmod 400` on this file.
 
-## Tickets de caisse
+## Receipts
 
-L'application peut relever les tickets de caisse (PDF) reçus par mail dans Gmail, puis les rapprocher
-des débits de carte (onglet Courses). La relève est désactivée tant que le mot de passe d'application
-ou `GMAIL_USER` manque.
+The application can fetch shopping receipts (PDF) received by email in Gmail, then match them with card
+debits ("Courses" / Groceries tab). Fetching is disabled as long as the app password or `GMAIL_USER` is
+missing.
 
-1. Sur le compte Google, activer la validation en deux étapes, puis créer un mot de passe
-   d'application (compte Google, Sécurité, Mots de passe des applications). Google l'affiche par groupes
-   de 4 caractères : les espaces sont retirés par l'application, on peut le coller tel quel.
-2. Sur le Pi, l'écrire dans le secret (le fichier existe déjà, propriété de l'uid 10001 en lecture seule :
-   il faut donc passer par `sudo tee`), en gardant les mêmes droits que le mot de passe de l'application :
+1. On the Google account, enable 2-Step Verification, then create an app password (Google account,
+   Security, App passwords). Google displays it in groups of 4 characters; the application removes the
+   spaces, so you can paste it as is.
+2. On the Pi, write it into the secret (the file already exists, owned by uid 10001 and read-only, so you
+   need `sudo tee`), keeping the same permissions as the application password:
 
    ```bash
    printf '%s' 'xxxx xxxx xxxx xxxx' | sudo tee secrets/gmail_app_password.txt >/dev/null
    sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
    ```
 
-3. Ajouter l'adresse Gmail dans le `.env` (ignoré par git), puis recréer le conteneur :
+3. Add the Gmail address to `.env` (ignored by git), then recreate the container:
 
    ```bash
-   echo 'GMAIL_USER=votre.adresse@gmail.com' >> .env
+   echo 'GMAIL_USER=your.address@gmail.com' >> .env
    docker compose up -d --force-recreate
    ```
 
-Ce que fait la relève :
+What fetching does:
 
-- Gmail est ouvert en **lecture seule** : aucun mail n'est marqué lu, déplacé ni supprimé.
-- Elle lit deux libellés Gmail, par défaut `Super U/Tickets de caisses` (enseigne `superu`) et
-  `intermarche/Tickets de caisses` (enseigne `intermarche`), une fois toutes les heures et au démarrage ;
-  le bouton « Relever maintenant » de l'onglet Courses la lance à la demande.
-- Les PDF sont rangés dans `receipts/` du volume `data`.
-- La seule connexion sortante de la relève est `imap.gmail.com:993` (TLS vérifié).
-- Les journaux ne contiennent ni adresse, ni mot de passe, ni libellé de produit, ni montant.
+- Gmail is opened **read-only**: no email is marked as read, moved or deleted.
+- It reads two Gmail labels, by default `Super U/Tickets de caisses` (store `superu`) and
+  `intermarche/Tickets de caisses` (store `intermarche`), once an hour and at startup; the "Relever
+  maintenant" (Fetch now) button in the Courses tab runs it on demand.
+- PDFs are stored in `receipts/` in the `data` volume.
+- The only outbound connection used for fetching is `imap.gmail.com:993` (verified TLS).
+- Logs contain no address, password, product name or amount.
 
-Variables facultatives (dans `.env` à côté du compose) : `RECEIPT_LABELS` (format
-`libellé=enseigne;libellé=enseigne`, les deux libellés ci-dessus par défaut) et, dans le service,
-`EXTRANALYZER_MAIL_INTERVAL_MIN` (60 par défaut, entier positif ; à ajouter à `environment:` du compose
-pour le changer).
+Optional variables (in `.env` next to the compose file): `RECEIPT_LABELS` (format
+`label=store;label=store`, the two labels above by default) and, in the service,
+`EXTRANALYZER_MAIL_INTERVAL_MIN` (defaults to 60, positive integer; add it to the compose file's
+`environment:` to change it).
 
-Désactiver la relève : vider le secret (`sudo sh -c ': > secrets/gmail_app_password.txt'`, droits
-inchangés) ou laisser `GMAIL_USER` vide (supprimer la ligne du `.env` ou la mettre à `GMAIL_USER=`), puis `docker compose up -d --force-recreate`. Les tickets déjà
-récupérés restent dans l'application.
+To disable fetching: empty the secret (`sudo sh -c ': > secrets/gmail_app_password.txt'`, permissions
+unchanged) or leave `GMAIL_USER` empty (delete the line from `.env` or set it to `GMAIL_USER=`), then run
+`docker compose up -d --force-recreate`. Receipts already fetched remain in the application.
 
-## Sauvegarde et restauration du volume `data`
+## Backing up and restoring the `data` volume
 
-Le nom réel du volume est préfixé par le projet (`docker volume ls`, souvent `extranalyzer_data`).
+The actual volume name is prefixed with the project name (`docker volume ls`, often `extranalyzer_data`).
 
 ```bash
 docker compose stop
@@ -284,78 +289,78 @@ docker run --rm -v extranalyzer_data:/data:ro -v "$PWD":/backup alpine \
 docker compose start
 ```
 
-Restauration (pile arrêtée, volume créé s'il manque, puis redémarrage) :
+Restoring (stack stopped, volume created if missing, then restart):
 
 ```bash
 docker compose down
 docker volume create extranalyzer_data
 docker run --rm -v extranalyzer_data:/data -v "$PWD":/backup alpine \
-  sh -c "tar xzf /backup/extranalyzer-data-AAAA-MM-JJ.tar.gz -C /data && chown -R 10001:10001 /data"
+  sh -c "tar xzf /backup/extranalyzer-data-YYYY-MM-DD.tar.gz -C /data && chown -R 10001:10001 /data"
 docker compose up -d
 ```
 
-L'archive contient les PDF des relevés, les PDF des tickets de caisse (`receipts/`) et la base : la ranger hors du dépôt, chiffrée si elle quitte le Pi.
+The archive contains the statement PDFs, the receipt PDFs (`receipts/`) and the database: store it
+outside the repository, encrypted if it leaves the Pi.
 
-## Mettre à jour
+## Updating
 
-- **Première mise à jour vers la relève des tickets** (toutes routes) : le compose déclare maintenant le secret
-  `secrets/gmail_app_password.txt`, et `docker compose up -d` échoue tant qu'il n'existe pas. Avant de
-  mettre à jour, copier le nouveau `docker-compose.yml` sur le Pi (l'image publiée ne le contient pas ;
-  route B : il arrive avec le `git pull`), puis créer le secret (vide : la relève reste désactivée, voir
-  « Tickets de caisse » pour l'activer) :
+- **First update to the version with receipt fetching** (all options): the compose file now declares the
+  `secrets/gmail_app_password.txt` secret, and `docker compose up -d` fails until it exists. Before
+  updating, copy the new `docker-compose.yml` to the Pi (the published image does not contain it; with
+  option B it comes with `git pull`), then create the secret (empty: fetching stays disabled, see
+  "Receipts" to enable it):
 
   ```bash
   sudo sh -c ': > secrets/gmail_app_password.txt'
   sudo chown 10001:10001 secrets/gmail_app_password.txt && sudo chmod 400 secrets/gmail_app_password.txt
   ```
 
-  Au premier démarrage, la base passe d'elle-même au schéma 8 (tables des tickets) ; rien d'autre à faire.
-- **Route GitHub** : pousser sur `main`, attendre la fin du workflow (onglet *Actions*), puis sur le Pi :
+  On first startup, the database migrates to schema 8 (receipt tables) on its own; nothing else to do.
+- **GitHub option**: push to `main`, wait for the workflow to finish (*Actions* tab), then on the Pi:
   `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
-- **Route A** (build sur le PC) : refaire le `buildx`, le `docker save` et le `scp` ci-dessus, puis sur le Pi :
+- **Option A** (build on the PC): redo the `buildx`, `docker save` and `scp` above, then on the Pi:
   `gunzip -c extranalyzer-arm64.tar.gz | docker load && docker compose up -d`.
-- **Route B** (build sur le Pi) : `git pull && docker build -t extranalyzer:arm64 . && docker compose up -d`.
+- **Option B** (build on the Pi): `git pull && docker build -t extranalyzer:arm64 . && docker compose up -d`.
 
-`docker compose up -d` recrée le conteneur ; le volume `data` est conservé.
+`docker compose up -d` recreates the container; the `data` volume is kept.
 
-## Développement local
+## Local development
 
 ```bash
 python -m venv .venv && .venv/Scripts/python -m pip install -e ".[dev]"
 .venv/Scripts/python -m pytest
 ```
 
-## Dépendances figées
+## Pinned dependencies
 
-`constraints.txt` fixe la version exacte de chaque paquet de l'image : outils de build (`setuptools`,
-`wheel`), dépendances de `pyproject.toml` et toutes leurs dépendances transitives. Le `Dockerfile`
-l'applique (`-c constraints.txt`) ; `pyproject.toml` garde des dépendances sans version pour le
-développement local. `tests/test_constraints.py` vérifie que rien n'y manque et que le `Dockerfile`
-s'en sert.
+`constraints.txt` pins the exact version of every package in the image: build tools (`setuptools`,
+`wheel`), the dependencies from `pyproject.toml` and all their transitive dependencies. The `Dockerfile`
+applies it (`-c constraints.txt`); `pyproject.toml` keeps unversioned dependencies for local development.
+`tests/test_constraints.py` checks that nothing is missing and that the `Dockerfile` uses it.
 
-Chaque version doit exister en wheel pour linux/arm64 musl (`python:3.12-alpine`), sans quoi le build
-échoue (`--only-binary=:all:`). Pour mettre à jour :
+Every version must exist as a wheel for linux/arm64 musl (`python:3.12-alpine`), otherwise the build
+fails (`--only-binary=:all:`). To update:
 
-1. Mettre à jour le venv (`.venv/Scripts/python -m pip install -U -e ".[dev]"`) et faire passer les tests.
-2. Reporter dans `constraints.txt` les versions installées (`.venv/Scripts/python -m pip freeze`),
-   sans `extranalyzer` ni les paquets de développement (`pytest`, `httpx2`, `reportlab`…).
-3. Vérifier, sans Docker, que tout se résout en wheels pour l'image (les deux étiquettes `musllinux`
-   sont nécessaires : certains paquets, comme `pydantic_core`, ne publient que `musllinux_1_1`) :
+1. Update the venv (`.venv/Scripts/python -m pip install -U -e ".[dev]"`) and make the tests pass.
+2. Copy the installed versions (`.venv/Scripts/python -m pip freeze`) into `constraints.txt`, without
+   `extranalyzer` or the development packages (`pytest`, `httpx2`, `reportlab`…).
+3. Check, without Docker, that everything resolves to wheels for the image (both `musllinux` tags are
+   needed: some packages, such as `pydantic_core`, only publish `musllinux_1_1`):
 
    ```bash
    .venv/Scripts/python -m pip install --dry-run --ignore-installed --target .tmp-check -c constraints.txt --only-binary=:all: --platform musllinux_1_2_aarch64 --platform musllinux_1_1_aarch64 --python-version 3.12 --implementation cp --abi cp312 setuptools wheel fastapi uvicorn python-multipart pdfplumber itsdangerous
    ```
 
-   La liste « Would install » doit reprendre exactement les versions de `constraints.txt`.
-4. Reconstruire l'image (« Construire et installer l'image ») et vérifier qu'elle passe « healthy ».
+   The "Would install" list must match the versions in `constraints.txt` exactly.
+4. Rebuild the image ("Building and installing the image") and check that it becomes "healthy".
 
-## Tailles mesurées
+## Measured sizes
 
-Mesurées avec `docker image ls extranalyzer` :
+Measured with `docker image ls extranalyzer`:
 
-| Plateforme   | Taille de l'image |
-|--------------|-------------------|
-| linux/arm64  | 122 Mo            |
-| linux/amd64  | 117 Mo            |
+| Platform     | Image size |
+|--------------|------------|
+| linux/arm64  | 122 MB     |
+| linux/amd64  | 117 MB     |
 
-Mémoire au repos (conteneur démarré, un relevé importé) : environ 48 Mo.
+Idle memory (container started, one statement imported): about 48 MB.
