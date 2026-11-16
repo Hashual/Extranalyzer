@@ -340,3 +340,19 @@ def test_dashboard_uses_bank_balance(conn):
     d = h.dashboard(conn, Period(date(2026, 11, 1), date(2026, 11, 30)), date(2026, 11, 15))
     assert d["savings"]["value"] == 130_000
     assert d["places"][0]["value"] == 130_000
+
+
+def test_bank_balance_alone_without_ops_or_statement(conn):
+    a = _account(conn)
+    _bank_balance(conn, a, "2026-11-10", 42_000)
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 42_000
+    assert h.savings_balance(conn, a, date(2026, 11, 15)) == 42_000
+    assert h.savings_balance(conn, a, date(2026, 11, 9)) is None
+
+
+def test_bank_balance_on_statement_day_is_ignored_and_op_on_statement_day_not_counted(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _tx(conn, a, "2026-10-31", 7_000)                    # déjà dans la clôture du relevé
+    _bank_balance(conn, a, "2026-10-31", 1)
+    assert h.savings_balance(conn, a, date(2026, 11, 2)) == 100_000
