@@ -5,6 +5,7 @@ import { cssVar, mountChart, palette } from "../charts.js";
 import { amount, el, emptyNote, formatDate, formatMonth, hasTab, money, scopeParams, section,
   signedMoney } from "../ui.js";
 import { isMasked, MASK } from "../privacy.js";
+import { positionsBlock } from "./banque-wallets.js";
 
 export const id = "epargne";
 export const title = "Épargne";
@@ -13,6 +14,23 @@ const PCT = new Intl.NumberFormat("fr-FR", { style: "percent", maximumFractionDi
 
 let allocationView = "by_place";        // choix de l'anneau, gardé d'un rafraîchissement à l'autre
 let flowsOpen = false;                  // section « Mouvements de la période » dépliée ou non
+let openWallet = null;                  // portefeuille dont le détail des positions est déplié (id)
+
+/** Détail des positions du portefeuille déplié (masquer un jeton, nommer un validateur). */
+async function walletDetail(ctx, places) {
+  const place = places.find((p) => p.kind === "wallet" && p.id === openWallet);
+  if (!place) {
+    openWallet = null;
+    return null;
+  }
+  const data = await ctx.api.get("/tabs/banque/wallets");
+  const wallet = data.wallets.find((w) => w.id === openWallet);
+  if (!wallet) return null;
+  return section(`Positions · ${wallet.label}`,
+    wallet.last_error ? el("p", { className: "error", attrs: { role: "alert" },
+      text: `Dernière actualisation en échec : ${wallet.last_error}` }) : null,
+    positionsBlock(wallet, ctx));
+}
 
 /** "2025-01-31" → "31/01" (ou "31/01/25" quand la courbe couvre plusieurs années). */
 const dayMonth = (iso, withYear = false) =>
@@ -163,7 +181,7 @@ function evolutionCard(d) {
 }
 
 function placeCard(p, ctx) {
-  const target = p.kind === "wallet" ? (hasTab(ctx, "banque") ? () => ctx.navigate("banque") : null)
+  const target = p.kind === "wallet" ? () => { openWallet = openWallet === p.id ? null : p.id; ctx.refresh(); }
     : p.category_id !== null && hasTab(ctx, "categories") ? () => ctx.navigate("categories", { id: p.category_id })
       : null;
   const lines = [
@@ -176,8 +194,11 @@ function placeCard(p, ctx) {
         p.gap !== null ? el("span", {}, " · écart ", signedGap(p.gap)) : null)
       : null,
   ];
+  const open = p.kind === "wallet" && openWallet === p.id;
   return target
-    ? el("button", { type: "button", className: "place-card clickable", on: { click: target } }, ...lines)
+    ? el("button", { type: "button", className: `place-card clickable${open ? " open" : ""}`, on: { click: target },
+      attrs: p.kind === "wallet" ? { "aria-expanded": String(open), title: "Voir le détail des positions" } : {} },
+    ...lines)
     : el("div", { className: "place-card" }, ...lines);
 }
 
@@ -272,9 +293,14 @@ export async function render(container, ctx) {
     container.replaceChildren(welcome(ctx), flowsSection(ctx));
     return;
   }
-  container.replaceChildren(
+  const detail = await walletDetail(ctx, d.places);
+  container.replaceChildren(...[
     dashboardTiles(d),
     el("div", { className: "grid-2 dash-cols" }, allocationCard(d), evolutionCard(d)),
-    section("Où", el("div", { className: "place-cards" }, d.places.map((p) => placeCard(p, ctx)))),
-    flowsSection(ctx));
+    section("Où", el("div", { className: "place-cards" }, d.places.map((p) => placeCard(p, ctx))),
+      d.places.some((p) => p.kind === "wallet")
+        ? el("p", { className: "muted", text: "Cliquez sur un portefeuille pour voir ses positions." }) : null),
+    detail,
+    flowsSection(ctx),
+  ].filter(Boolean));
 }

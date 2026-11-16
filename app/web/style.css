@@ -591,3 +591,5 @@ details.card summary { cursor: pointer; font-weight: 600; }
 @media (max-width: 768px) {
   .dash-cols { grid-template-columns: 1fr; }
 }
+
+.place-card.open { outline: 2px solid var(--accent, #3b6fd8); }
