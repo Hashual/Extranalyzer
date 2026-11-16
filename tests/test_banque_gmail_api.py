@@ -127,3 +127,26 @@ def test_guard_requires_csrf_and_session(tmp_path):
     assert anonymous.get(URL).status_code == 401
     assert anonymous.put(f"{URL}/credentials", json=body, headers=H).status_code == 401
     assert not (tmp_path / "data" / "gmail.json").exists()
+
+
+@pytest.mark.parametrize("body", [{"address": "léa.fictive@example.test", "app_password": APP_PASSWORD},
+                                  {"address": ADDRESS, "app_password": "wxyz wxyz wxyz wxy’"}])
+def test_non_ascii_credentials_refused_with_422(tmp_path, body):
+    imap = FakeImap({"INBOX": (1, {})})
+    client = _client(tmp_path, imap)
+    r = client.put(f"{URL}/credentials", json=body, headers=H)
+    assert r.status_code == 422 and r.json()["detail"]
+    _no_secret(r)
+    assert imap.commands == [] and not (tmp_path / "data" / "gmail.json").exists()
+
+
+def test_oversized_body_refused(tmp_path):
+    client = _client(tmp_path)
+    big = {"address": ADDRESS, "app_password": APP_PASSWORD, "bourrage": "x" * 5000}
+    r = client.put(f"{URL}/credentials", json=big, headers=H)
+    assert r.status_code == 413
+    _no_secret(r)
+    chunks = (part for part in [b'{"address": "', b"x" * 5000, b'"}'])
+    r = client.put(f"{URL}/credentials", content=chunks, headers=H)     # sans Content-Length (transfert par blocs)
+    assert r.status_code == 411
+    assert not (tmp_path / "data" / "gmail.json").exists()

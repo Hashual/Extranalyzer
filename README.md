@@ -300,8 +300,11 @@ outside the repository, encrypted if it leaves the Pi.
 - **Update to the version with the Connexions tab** (all options): copy the new `docker-compose.yml` to
   the Pi (the published image does not contain it; with option B it comes with `git pull`). It no longer
   declares a Gmail secret: nothing to create. Receipt fetching is now enabled from the Connexions tab (see
-  "Receipts"). An existing `secrets/gmail_app_password.txt` is no longer used and can be deleted
-  (`sudo rm secrets/gmail_app_password.txt`), as can a `GMAIL_USER=` line in `.env`. On first startup with
+  "Receipts"). **If you had enabled fetching through the old secret and `GMAIL_USER`, it stops after the
+  update**: the old secret is not migrated. Enter the Gmail address and app password again in the
+  Connexions tab, "Tickets de caisse (Gmail)" section. Then `secrets/gmail_app_password.txt` is no longer
+  used and can be deleted (`sudo rm secrets/gmail_app_password.txt`), as can the `GMAIL_USER=` line in
+  `.env`. On first startup with
   receipts, the database migrates to schema 8 (receipt tables) on its own; nothing else to do.
 - **GitHub option**: push to `main`, wait for the workflow to finish (*Actions* tab), then on the Pi:
   `cd ~/extranalyzer && docker compose pull && docker compose up -d`.
