@@ -23,14 +23,6 @@ function dateTime(iso) {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
 }
 
-function unpricedText(n) {
-  return `hors ${n} position(s) sans prix`;
-}
-
-function unreadText(n) {
-  return `hors ${n} portefeuille(s) sans relevé`;
-}
-
 /** Bouton qui lance une action, affiche son erreur et rafraîchit l'appli. */
 function action(label, run, ctx, { className = "", confirm = null } = {}) {
   const button = el("button", { type: "button", className, text: label });
@@ -107,7 +99,8 @@ function tokenRow(p, hidden, ctx) {
   return row(label, quantityText(p), priceText(p), valueText(p), hideButton(p, hidden, ctx));
 }
 
-function positionsBlock(wallet, ctx) {
+/** Détail des positions d'un portefeuille (avec « Masquer » et « Nommer ») : affiché dans l'onglet Épargne. */
+export function positionsBlock(wallet, ctx) {
   if (!wallet.positions.length) return emptyNote("Aucune position relevée pour l'instant : actualisez.");
   const visible = wallet.positions.filter((p) => !p.hidden);
   const hidden = wallet.positions.filter((p) => p.hidden);
@@ -131,32 +124,27 @@ function positionsBlock(wallet, ctx) {
       table(hidden.map((p) => tokenRow(p, true, ctx)))) : null);
 }
 
-function walletCard(wallet, ctx) {
-  const title = el("h2", { className: "wallet-title" }, wallet.label, " ",
-    el("a", { className: "wallet-address", href: SOLSCAN + encodeURIComponent(wallet.address), target: "_blank",
-      rel: "noreferrer", text: short(wallet.address), attrs: { title: "Voir sur Solscan" } }));
-  return el("section", { className: "card" }, title,
-    el("p", { className: "wallet-total" }, wallet.total_eur === null
-      ? el("strong", { className: "muted", text: "valeur inconnue" })
-      : el("strong", { text: money(wallet.total_eur, "balance") }),
-      wallet.unpriced_count ? el("span", { className: "muted", text: ` (${unpricedText(wallet.unpriced_count)})` }) : null),
-    wallet.category_name
-      ? el("p", { className: "muted", text: `Net versé depuis la banque : ${money(wallet.net_deposited, "balance")} `
-        + `(Épargne / ${wallet.category_name})` })
-      : null,
-    wallet.last_error ? el("p", { className: "error", attrs: { role: "alert" },
-      text: `Dernière actualisation en échec : ${wallet.last_error}` }) : null,
-    el("p", { className: "muted", text: `Dernier relevé : ${dateTime(wallet.last_sync_at)}` }),
-    positionsBlock(wallet, ctx),
-    el("div", { className: "filters" },
+/** Gestion seulement : la valeur et les positions se lisent dans l'onglet Épargne. */
+function walletsList(wallets, ctx) {
+  const head = el("thead", {}, el("tr", {},
+    ["Portefeuille", "Adresse", "Dernier relevé", ""].map((h) => el("th", { scope: "col", text: h }))));
+  const body = el("tbody", {}, wallets.map((wallet) => el("tr", {},
+    el("td", { text: wallet.label }),
+    el("td", {}, el("a", { className: "wallet-address", href: SOLSCAN + encodeURIComponent(wallet.address),
+      target: "_blank", rel: "noreferrer", text: short(wallet.address), attrs: { title: "Voir sur Solscan" } })),
+    el("td", {}, wallet.last_error
+      ? el("span", { className: "error", attrs: { role: "alert" }, text: `échec : ${wallet.last_error}` })
+      : dateTime(wallet.last_sync_at)),
+    el("td", {}, el("div", { className: "filters" },
       action("Renommer", async () => {
         const value = window.prompt("Nouveau nom du portefeuille :", wallet.label);
         if (value === null || !value.trim()) return false;
         await ctx.api.patch(`/tabs/banque/wallets/${wallet.id}`, { label: value.trim() });
-      }, ctx),
-      action("Retirer", () => ctx.api.delete(`/tabs/banque/wallets/${wallet.id}`), ctx, { className: "danger",
+      }, ctx, { className: "link" }),
+      action("Retirer", () => ctx.api.delete(`/tabs/banque/wallets/${wallet.id}`), ctx, { className: "link danger",
         confirm: `Retirer « ${wallet.label} » ? Son suivi et son historique sont supprimés ; la catégorie `
-          + "d'épargne et les virements déjà importés sont conservés." })));
+          + "d'épargne et les virements déjà importés sont conservés." }))))));
+  return el("div", { className: "table-wrap scroll-x" }, el("table", { className: "data-table" }, head, body));
 }
 
 function addForm(ctx, configured) {
@@ -225,19 +213,16 @@ function header(data, notice, ctx) {
     el("div", { className: "wallets-head" },
       el("div", {},
         el("h2", { text: "Portefeuilles Solana" }),
-        el("p", {}, "Total : ", el("strong", { text: money(data.total_eur, "balance") }),
-          data.unpriced_count ? el("span", { className: "muted", text: ` (${unpricedText(data.unpriced_count)})` }) : null,
-          data.unread_count ? el("span", { className: "muted", text: ` (${unreadText(data.unread_count)})` }) : null),
         el("p", { className: "muted", text: `Dernière actualisation : ${dateTime(data.last_refresh)}` })),
       data.wallets.length
         ? action("Actualiser", async () => refreshNotice(await ctx.api.post("/tabs/banque/wallets/refresh", {})), ctx,
           { className: "primary" })
         : null),
     notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
-    data.wallets.length ? null : emptyNote("Aucun portefeuille : ajoutez une adresse ci-dessous."),
+    data.wallets.length ? walletsList(data.wallets, ctx) : emptyNote("Aucun portefeuille : ajoutez une adresse ci-dessous."),
     data.wallets.length && hasTab(ctx, "epargne")
-      ? el("p", {}, el("button", { type: "button", className: "link", text: "Voir l'analyse dans Épargne",
-        on: { click: () => ctx.navigate("epargne") } }))
+      ? el("p", {}, el("button", { type: "button", className: "link",
+        text: "Valeur, positions et évolution : voir l'onglet Épargne", on: { click: () => ctx.navigate("epargne") } }))
       : null);
 }
 
@@ -249,6 +234,5 @@ export async function walletsSection(ctx) {
     return el("div", {}, notice ? el("p", { className: "muted", attrs: { role: "status" }, text: notice }) : null,
       notConfigured(data, ctx), addForm(ctx, false));
   }
-  return el("div", {}, header(data, notice, ctx), ...data.wallets.map((w) => walletCard(w, ctx)), addForm(ctx, true),
-    keySettings(data, ctx));
+  return el("div", {}, header(data, notice, ctx), addForm(ctx, true), keySettings(data, ctx));
 }
