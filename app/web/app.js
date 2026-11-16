@@ -81,6 +81,22 @@ function comparePeriod(period, mode) {
   return null;
 }
 
+/** Date du jour dans le fuseau du navigateur (toISOString donnerait la veille après minuit en France). */
+function localToday() {
+  const now = new Date();
+  return utc(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+/**
+ * Repère des raccourcis Mois / Trimestre / Année : aujourd'hui s'il est dans la période affichée
+ * (sinon, après « Année », la fin au 31/12 ferait afficher décembre), la fin de la période sinon.
+ */
+function shortcutAnchor(route) {
+  const today = localToday();
+  if (!route.from || !route.to) return today;
+  return route.from <= today && today <= route.to ? today : route.to;
+}
+
 function formatDate(isoDate) {
   const { y, m, d } = parts(isoDate);
   return `${String(d).padStart(2, "0")}/${String(m + 1).padStart(2, "0")}/${y}`;
@@ -355,7 +371,7 @@ function setupBar() {
 
   for (const button of document.querySelectorAll("[data-shortcut]")) {
     button.addEventListener("click", () => {
-      const anchor = readRoute().to || iso(new Date());
+      const anchor = shortcutAnchor(readRoute());
       const kind = button.dataset.shortcut;
       if (kind === "month") updateRoute(monthRange(anchor));
       else if (kind === "quarter") updateRoute(quarterRange(anchor));
