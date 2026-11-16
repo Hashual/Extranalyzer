@@ -17,7 +17,14 @@ _END_OF_DAY = "T23:59:59.999999+00:00"
 
 
 class _Ledger:
-    """Solde d'un livret jour par jour : dernier relevé `ok` ≤ jour, plus les opérations postérieures à ce relevé."""
+    """Solde d'un livret jour par jour.
+
+    Deux ancres : la clôture des relevés PDF `ok`, et le solde annoncé par la banque à la dernière synchro Enable
+    Banking (le plus récent, compte rattaché et non ignoré). Le solde de la banque fait foi à partir du dernier relevé
+    PDF : il corrige un trou d'historique (opération jamais importée). Les jours entre le dernier relevé et ce solde
+    sont remontés depuis lui (solde − opérations postérieures au jour) ; avant, le relevé PDF fait foi. Un solde de la
+    banque antérieur au dernier relevé est ignoré.
+    """
 
     def __init__(self, conn: sqlite3.Connection, account_id: int):
         sections = conn.execute("SELECT statement_date, closing_cents FROM sections WHERE account_id = ? "
@@ -29,15 +36,26 @@ class _Ledger:
                            "ORDER BY op_date", (account_id,)).fetchall()
         self._op_days = [d for d, _ in ops]
         self._cumulative = [0, *accumulate(a for _, a in ops)]
+        bank = conn.execute("SELECT balance_date, balance_cents FROM external_accounts WHERE account_id = ? "
+                            "AND ignored = 0 AND balance_cents IS NOT NULL AND balance_date IS NOT NULL "
+                            "ORDER BY balance_date DESC, id DESC LIMIT 1", (account_id,)).fetchone()
+        last_statement = self._section_days[-1] if self._section_days else None
+        self._bank = bank if bank is not None and (last_statement is None or bank[0] > last_statement) else None
 
     def _ops_through(self, day_iso: str) -> int:
         return self._cumulative[bisect_right(self._op_days, day_iso)]
 
     def value(self, day: date) -> int | None:
-        i = bisect_right(self._section_days, day.isoformat()) - 1
+        iso = day.isoformat()
+        i = bisect_right(self._section_days, iso) - 1
+        if self._bank is not None and (i == len(self._section_days) - 1 and (i < 0 or iso > self._section_days[i])):
+            bank_day, bank_cents = self._bank
+            if i < 0 and (not self._op_days or iso < self._op_days[0]):
+                return None          # sans relevé PDF : rien de connu avant la première opération
+            return bank_cents + self._ops_through(iso) - self._ops_through(bank_day)
         if i < 0:
             return None
-        return self._closings[i] + self._ops_through(day.isoformat()) - self._ops_through(self._section_days[i])
+        return self._closings[i] + self._ops_through(iso) - self._ops_through(self._section_days[i])
 
 
 class _Snapshots:

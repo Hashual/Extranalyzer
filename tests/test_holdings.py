@@ -265,3 +265,78 @@ def test_dashboard_unpriced_never_negative(conn):
     _pos(conn, s, "token", None, mint="hid", symbol="HID")
     c = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))["crypto"]
     assert c["unpriced_count"] == 0 and c["value"] == 5_000
+
+
+# --- solde annoncé par la banque (Enable Banking) -------------------------------------------------------------
+
+def _bank_balance(conn, account_id, day, cents, ignored=0, link_status="active"):
+    _n[0] += 1
+    link = conn.execute("INSERT INTO bank_links(provider, session_id, aspsp_name, aspsp_country, valid_until, status,"
+                        " created_at) VALUES ('enablebanking', ?, 'Banque', 'FR', '2099-01-01', ?, '2026-01-01')",
+                        (f"s{_n[0]}", link_status)).lastrowid
+    conn.execute("INSERT INTO external_accounts(link_id, uid, account_id, ignored, balance_cents, balance_date) "
+                 "VALUES (?, ?, ?, ?, ?, ?)", (link, f"u{_n[0]}", account_id, ignored, cents, day))
+
+
+def test_bank_balance_is_the_current_value_despite_a_history_hole(conn):
+    """Un trou d'historique (opération jamais importée) : la valeur actuelle suit la banque."""
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _tx(conn, a, "2026-11-05", 10_000, source="enablebanking")
+    _bank_balance(conn, a, "2026-11-10", 130_000)          # 20 000 versés que l'appli n'a jamais vus
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 130_000
+    assert h.savings_balance(conn, a, date(2026, 11, 15)) == 130_000
+
+
+def test_bank_balance_then_later_ops(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _bank_balance(conn, a, "2026-11-10", 130_000)
+    _tx(conn, a, "2026-11-12", 1_000, source="enablebanking")
+    assert h.savings_balance(conn, a, date(2026, 11, 12)) == 131_000
+
+
+def test_days_between_last_statement_and_bank_balance_are_anchored_backwards(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _tx(conn, a, "2026-11-05", 10_000, source="enablebanking")
+    _bank_balance(conn, a, "2026-11-10", 130_000)
+    # remonté depuis le solde de la banque : 130 000 − opérations après le jour demandé
+    assert h.savings_balance(conn, a, date(2026, 11, 7)) == 130_000
+    assert h.savings_balance(conn, a, date(2026, 11, 4)) == 120_000
+    # avant (et au jour du) dernier relevé PDF : le relevé fait foi
+    assert h.savings_balance(conn, a, date(2026, 10, 31)) == 100_000
+
+
+def test_bank_balance_without_any_statement(conn):
+    a = _account(conn)
+    _tx(conn, a, "2026-11-02", 5_000, source="enablebanking")
+    _bank_balance(conn, a, "2026-11-10", 50_000)
+    assert h.savings_balance(conn, a, date(2026, 11, 10)) == 50_000
+    assert h.savings_balance(conn, a, date(2026, 11, 3)) == 50_000
+    assert h.savings_balance(conn, a, date(2026, 11, 1)) is None        # avant la première opération connue
+
+
+def test_latest_bank_balance_wins_and_ignored_rows_do_not_count(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _bank_balance(conn, a, "2026-11-05", 110_000, link_status="replaced")
+    _bank_balance(conn, a, "2026-11-10", 120_000)
+    _bank_balance(conn, a, "2026-11-12", 999_999, ignored=1)
+    assert h.savings_balance(conn, a, date(2026, 11, 12)) == 120_000
+
+
+def test_bank_balance_older_than_last_statement_is_ignored(conn):
+    a = _account(conn)
+    _bank_balance(conn, a, "2026-10-15", 1)
+    _statement(conn, a, "2026-10-31", 100_000)
+    assert h.savings_balance(conn, a, date(2026, 11, 2)) == 100_000
+
+
+def test_dashboard_uses_bank_balance(conn):
+    a = _account(conn)
+    _statement(conn, a, "2026-10-31", 100_000)
+    _bank_balance(conn, a, "2026-11-10", 130_000)
+    d = h.dashboard(conn, Period(date(2026, 11, 1), date(2026, 11, 30)), date(2026, 11, 15))
+    assert d["savings"]["value"] == 130_000
+    assert d["places"][0]["value"] == 130_000
