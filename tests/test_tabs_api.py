@@ -1,5 +1,6 @@
 """API des onglets Vue d'ensemble, Catégories, Transactions, Épargne, À classer, Relevés et Règles
 (données fictives, insérées en SQL)."""
+from datetime import date
 import subprocess
 import sys
 
@@ -1038,3 +1039,28 @@ def test_epargne_dashboard_crypto_amounts_are_euro_strings(env):
     assert wallet["deposited"] == c["deposited"] and wallet["gap"] == c["gap"]
     assert isinstance(wallet["gap"], str) and "." in wallet["gap"]
     assert d["series"][-1]["crypto"] == "800.00"
+
+
+def test_epargne_manual_balance_route(env, monkeypatch):
+    client, conn, _, _ = env
+    monkeypatch.setattr("app.tabs.epargne._today", lambda: date(2025, 1, 31))
+    conn.execute("INSERT INTO documents(sha256, filename, stored_path, parser, statement_date, imported_at) "
+                 "VALUES ('shaM', 'f', 'p', 'x', '2025-01-15', '2025-02-01')")
+    conn.execute("INSERT INTO sections(document_id, account_id, statement_date, closing_cents, gap_cents, status,"
+                 " content_hash) VALUES (last_insert_rowid(), 2, '2025-01-15', 100000, 0, 'ok', 'h')")
+    conn.commit()
+    url = "/api/tabs/epargne/balance/2"
+    assert client.put(url, json={"amount": "1 234,56"}, headers=H).status_code == 200
+    d = get(client, "/epargne/dashboard", **JAN)
+    livret = next(p for p in d["places"] if p["id"] == 2 and p["kind"] == "savings")
+    assert livret["value"] == "1234.56" and livret["balance_source"] == "manual"
+    assert livret["balance_as_of"] == "2025-01-31"
+    assert client.put(url, json={"amount": "-5"}, headers=H).status_code == 422
+    assert client.put(url, json={"amount": "abc"}, headers=H).status_code == 422
+    assert client.put(url, json={"amount": "10", "day": "2025-02-02"}, headers=H).status_code == 422   # futur
+    assert client.put("/api/tabs/epargne/balance/1", json={"amount": "10"}, headers=H).status_code == 404  # courant
+    assert client.put(url, json={"amount": "10"}).status_code == 403                                      # CSRF
+    assert client.delete(url, headers=H).status_code == 200
+    d = get(client, "/epargne/dashboard", **JAN)
+    livret = next(p for p in d["places"] if p["id"] == 2 and p["kind"] == "savings")
+    assert livret["value"] != "1234.56" and livret["balance_source"] in ("statement", "estimated")

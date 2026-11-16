@@ -593,3 +593,6 @@ details.card summary { cursor: pointer; font-weight: 600; }
 }
 
 .place-card.open { outline: 2px solid var(--accent, #3b6fd8); }
+.place-wrap { display: flex; flex-direction: column; gap: 0.25rem; }
+.place-wrap > .place-card { flex: 1; }
+.place-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.85em; }

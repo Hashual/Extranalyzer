@@ -19,11 +19,15 @@ _END_OF_DAY = "T23:59:59.999999+00:00"
 class _Ledger:
     """Solde d'un livret jour par jour.
 
-    Deux ancres : la clôture des relevés PDF `ok`, et le solde annoncé par la banque à la dernière synchro Enable
-    Banking (le plus récent, compte rattaché et non ignoré). Le solde de la banque fait foi à partir du dernier relevé
-    PDF : il corrige un trou d'historique (opération jamais importée). Les jours entre le dernier relevé et ce solde
-    sont remontés depuis lui (solde − opérations postérieures au jour) ; avant, le relevé PDF fait foi. Un solde de la
-    banque antérieur au dernier relevé est ignoré.
+    - **Relevés PDF** `ok` : leur clôture fait foi jusqu'au dernier relevé.
+    - **Ancre plus récente** que le dernier relevé, la plus récente des deux :
+      - le solde annoncé par la banque à la dernière synchro Enable Banking (compte rattaché, non ignoré) ;
+      - le solde saisi à la main (`balance_overrides`), qui l'emporte à date égale.
+      Elle corrige un trou d'historique. Les jours entre le dernier relevé et l'ancre sont remontés depuis elle
+      (solde − opérations postérieures au jour).
+    - **Livret non synchronisé** (aucun compte Enable Banking rattaché) : les virements du compte courant classés dans
+      sa sous-catégorie d'épargne, postérieurs au dernier relevé et non appariés, comptent comme ses opérations (signe
+      inversé). Les intérêts n'apparaissent qu'au relevé suivant ou à une saisie.
     """
 
     def __init__(self, conn: sqlite3.Connection, account_id: int):
@@ -32,30 +36,88 @@ class _Ledger:
                                 "ORDER BY statement_date, id", (account_id,)).fetchall()
         self._section_days = [d for d, _ in sections]
         self._closings = [c for _, c in sections]
-        ops = conn.execute("SELECT op_date, amount_cents FROM transactions WHERE account_id = ? "
-                           "ORDER BY op_date", (account_id,)).fetchall()
+        last_statement = self._section_days[-1] if self._section_days else None
+        ops = conn.execute("SELECT op_date, amount_cents FROM transactions WHERE account_id = ?",
+                           (account_id,)).fetchall()
+        synced = conn.execute("SELECT 1 FROM external_accounts WHERE account_id = ? AND ignored = 0 LIMIT 1",
+                              (account_id,)).fetchone() is not None
+        self._inferred_days: list[str] = []
+        if not synced:
+            category = savings_category_for_account(conn, account_id, create=False)
+            if category is not None:
+                inferred = conn.execute(
+                    "SELECT t.op_date, -t.amount_cents FROM transactions t WHERE t.category_id = ? "
+                    "AND t.account_id != ? AND t.mirror_of IS NULL AND t.op_date > ? "
+                    "AND NOT EXISTS (SELECT 1 FROM transactions m WHERE m.mirror_of = t.id)",
+                    (category, account_id, last_statement or "")).fetchall()
+                ops += inferred
+                self._inferred_days = sorted(d for d, _ in inferred)
+        ops.sort(key=lambda o: o[0])
         self._op_days = [d for d, _ in ops]
         self._cumulative = [0, *accumulate(a for _, a in ops)]
         bank = conn.execute("SELECT balance_date, balance_cents FROM external_accounts WHERE account_id = ? "
                             "AND ignored = 0 AND balance_cents IS NOT NULL AND balance_date IS NOT NULL "
                             "ORDER BY balance_date DESC, id DESC LIMIT 1", (account_id,)).fetchone()
-        last_statement = self._section_days[-1] if self._section_days else None
-        self._bank = bank if bank is not None and (last_statement is None or bank[0] > last_statement) else None
+        manual = conn.execute("SELECT day, cents FROM balance_overrides WHERE account_id = ?",
+                              (account_id,)).fetchone()
+        anchors = []
+        if bank is not None and (last_statement is None or bank[0] > last_statement):
+            anchors.append((bank[0], 0, bank[1], "bank"))
+        if manual is not None and (last_statement is None or manual[0] >= last_statement):
+            anchors.append((manual[0], 1, manual[1], "manual"))        # à date égale, la saisie l'emporte
+        best = max(anchors) if anchors else None
+        self._anchor = None if best is None else (best[0], best[2], best[3])
 
     def _ops_through(self, day_iso: str) -> int:
         return self._cumulative[bisect_right(self._op_days, day_iso)]
 
+    def _uses_anchor(self, iso: str, i: int) -> bool:
+        if self._anchor is None or i != len(self._section_days) - 1:
+            return False
+        return i < 0 or iso > self._section_days[i] or (iso == self._section_days[i] and self._anchor[0] == iso)
+
     def value(self, day: date) -> int | None:
         iso = day.isoformat()
         i = bisect_right(self._section_days, iso) - 1
-        if self._bank is not None and (i == len(self._section_days) - 1 and (i < 0 or iso > self._section_days[i])):
-            bank_day, bank_cents = self._bank
-            if i < 0 and iso < min(bank_day, self._op_days[0] if self._op_days else bank_day):
-                return None          # sans relevé PDF : rien de connu avant la première opération ou le solde
-            return bank_cents + self._ops_through(iso) - self._ops_through(bank_day)
+        if self._uses_anchor(iso, i):
+            anchor_day, anchor_cents, _ = self._anchor
+            if i < 0 and iso < min(anchor_day, self._op_days[0] if self._op_days else anchor_day):
+                return None          # sans relevé PDF : rien de connu avant la première opération ou l'ancre
+            return anchor_cents + self._ops_through(iso) - self._ops_through(anchor_day)
         if i < 0:
             return None
         return self._closings[i] + self._ops_through(iso) - self._ops_through(self._section_days[i])
+
+    def source(self, day: date) -> str | None:
+        """Origine du solde au jour : 'bank', 'manual', 'estimated' (relevé + virements déduits) ou 'statement'."""
+        iso = day.isoformat()
+        i = bisect_right(self._section_days, iso) - 1
+        if self._uses_anchor(iso, i):
+            return self._anchor[2] if self.value(day) is not None else None
+        if i < 0:
+            return None
+        start = self._section_days[i]
+        j = bisect_right(self._inferred_days, start)
+        return "estimated" if j < len(self._inferred_days) and self._inferred_days[j] <= iso else "statement"
+
+    def as_of(self, day: date) -> date | None:
+        """Date du solde de référence utilisé au jour (relevé, synchro ou saisie)."""
+        iso = day.isoformat()
+        i = bisect_right(self._section_days, iso) - 1
+        if self._uses_anchor(iso, i):
+            return date.fromisoformat(self._anchor[0])
+        return None if i < 0 else date.fromisoformat(self._section_days[i])
+
+
+def set_manual_balance(conn: sqlite3.Connection, account_id: int, day: date, cents: int, now: str) -> None:
+    """Solde d'un livret saisi à la main (remplace la saisie précédente). Ne valide pas."""
+    conn.execute("INSERT INTO balance_overrides(account_id, day, cents, created_at) VALUES (?, ?, ?, ?) "
+                 "ON CONFLICT(account_id) DO UPDATE SET day = excluded.day, cents = excluded.cents, "
+                 "created_at = excluded.created_at", (account_id, day.isoformat(), cents, now))
+
+
+def clear_manual_balance(conn: sqlite3.Connection, account_id: int) -> None:
+    conn.execute("DELETE FROM balance_overrides WHERE account_id = ?", (account_id,))
 
 
 class _Snapshots:
@@ -181,7 +243,8 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
         places.append({"kind": "savings", "id": account_id, "name": label,
                        "category_id": savings_category_for_account(conn, account_id, create=False),
                        "value": value, "change": _change(value, ledger.value(before)),
-                       "deposited": None, "gap": None, "unknown": value is None})
+                       "deposited": None, "gap": None, "unknown": value is None,
+                       "balance_source": ledger.source(as_of), "balance_as_of": ledger.as_of(as_of)})
     for wallet_id, label, category_id in conn.execute("SELECT id, label, savings_category_id FROM wallets ORDER BY id"):
         snaps = _Snapshots(conn, wallet_id)
         found = snaps.visible_at(conn, as_of, hidden)

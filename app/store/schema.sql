@@ -261,6 +261,15 @@ CREATE TABLE mail_sync (
 );
 -- fin v8
 
-PRAGMA user_version = 8;
+-- v9 : solde d'un livret saisi à la main
+CREATE TABLE balance_overrides (
+    account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+-- fin v9
+
+PRAGMA user_version = 9;
 
 COMMIT;

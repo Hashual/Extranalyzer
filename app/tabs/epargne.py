@@ -5,16 +5,18 @@ scope_clause) ; jambes miroir exclues. Les virements internes appariés encore n
 destination sans id.
 """
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.analytics import holdings
 from app.analytics.periods import month_keys
 from app.analytics.totals import ANALYSIS_FROM, EFFECTIVE_KIND, INTERNAL_TRANSFERS, SIGNED_AMOUNT, scope_clause
 from app.deps import get_conn
-from app.importer.amounts import from_cents
+from app.importer.amounts import from_cents, to_cents
 from app.tabs._params import Scope, scope
 from app.tabs.registry import Tab
 from app.web_json import to_jsonable
@@ -89,6 +91,48 @@ def _today() -> date:
 def dashboard(conn: Annotated[sqlite3.Connection, Depends(get_conn)], s: Annotated[Scope, Depends(scope)]):
     """Avoirs de tous les comptes d'épargne et portefeuilles ; le sélecteur de comptes est ignoré."""
     return to_jsonable(_euros(holdings.dashboard(conn, s.period, _today())))
+
+
+class BalanceBody(BaseModel):
+    amount: str                     # euros, ex. "12345.67" ou "12 345,67"
+    day: date | None = None         # par défaut : aujourd'hui
+
+
+def _savings_account(conn: sqlite3.Connection, account_id: int) -> None:
+    if conn.execute("SELECT 1 FROM accounts WHERE id = ? AND kind = 'savings'", (account_id,)).fetchone() is None:
+        raise HTTPException(404, "compte d'épargne introuvable")
+
+
+def _amount_cents(raw: str) -> int:
+    text = raw.replace(" ", "").replace("\xa0", "").replace(" ", "").replace("€", "").replace(",", ".")
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise HTTPException(422, "montant invalide : saisissez par exemple 12345,67") from None
+    if not value.is_finite() or value < 0 or value > Decimal("100000000"):
+        raise HTTPException(422, "montant invalide : saisissez un solde positif")
+    return to_cents(value)
+
+
+@router.put("/balance/{account_id}")
+def set_balance(account_id: int, body: BalanceBody, conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
+    """Solde réel d'un livret à une date, saisi à la main : il fait foi (voir holdings._Ledger)."""
+    _savings_account(conn, account_id)
+    day = body.day or _today()
+    if day > _today():
+        raise HTTPException(422, "la date ne peut pas être dans le futur")
+    with conn:
+        holdings.set_manual_balance(conn, account_id, day, _amount_cents(body.amount),
+                                    datetime.now(timezone.utc).isoformat())
+    return {"ok": True}
+
+
+@router.delete("/balance/{account_id}")
+def clear_balance(account_id: int, conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
+    _savings_account(conn, account_id)
+    with conn:
+        holdings.clear_manual_balance(conn, account_id)
+    return {"ok": True}
 
 
 TAB = Tab("epargne", "Épargne", 40, router)
