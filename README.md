@@ -25,11 +25,11 @@ the image: they are uploaded through the web interface and live only in the `dat
 There are three options. In every case, the Pi needs Docker and `docker-compose.yml` (a single file to
 copy; the full repository is not needed).
 
-**GitHub option (recommended): GitHub Actions builds the image and the Pi downloads it.** The repository
-must be **private**. On every push to `main`, the `.github/workflows/docker.yml` workflow runs the tests,
-then publishes the `linux/arm64` image to `ghcr.io/<account>/<repository>` (tags `arm64` and
-`arm64-<commit>`), with no secret to configure. A ghcr.io package created by a private repository is
-private too. One-time setup:
+**GitHub option (recommended): GitHub Actions builds the image and the Pi downloads it.** On every push to
+`main`, the `.github/workflows/docker.yml` workflow runs the tests, then publishes the `linux/arm64` image
+to `ghcr.io/<account>/<repository>` (tags `arm64` and `arm64-<commit>`), with no secret to configure. The
+ghcr.io package is created **private**, even when the repository is public; keep it that way. The Pi then
+needs a token to pull it. One-time setup:
 
 1. On GitHub, create a classic token (*Settings → Developer settings → Personal access tokens →
    Tokens (classic)*) with only the `read:packages` permission.
@@ -118,8 +118,8 @@ tmpfs), `cap_drop: ALL`, `no-new-privileges`, 256 MB of memory, 1 CPU, capped lo
 
 ### Starting at boot: waiting for WireGuard
 
-> The current Pi does not use WireGuard but WolfNet (`10.10.10.95`, `wolfnet.service`). Its actual network
-> setup is described in [docs/reseau.md](docs/reseau.md).
+> If the Pi joins the VPN through another service (another VPN or a mesh network), use the same drop-in with
+> that service's unit name instead of `wg-quick@wg0.service`.
 
 Docker cannot publish the port on the `wg0` IP until the interface exists. Recommended method: start the
 Docker service after `wg-quick@wg0`.

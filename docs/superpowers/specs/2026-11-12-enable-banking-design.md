@@ -60,7 +60,7 @@ Sources consultées le 2026-11-12. Les points non trouvés sont signalés comme 
 ## 4. Contraintes
 
 - Toutes celles de la spec de refonte (§ 3 de `2026-11-10-extranalyzer-refonte-design.md`) : données sur le Pi,
-  accès par le VPN WolfNet uniquement (`http://10.10.10.95:8000`), image Alpine arm64 minimale, dépendances figées.
+  accès par le VPN uniquement (`http://<BIND_ADDR>:8000`), image Alpine arm64 minimale, dépendances figées.
 - **Aucune nouvelle dépendance** : `cryptography` (déjà dans l'image via pdfminer) signe le JWT en RS256 ;
   `urllib.request` (bibliothèque standard) fait les appels HTTPS.
 - Le conteneur a besoin d'un accès sortant vers `api.enablebanking.com` (et c'est tout).
@@ -123,13 +123,13 @@ app/
    (32 octets) enregistré en base, à usage unique, valable 30 minutes.
 2. Le navigateur part vers l'`url` de la banque ; l'utilisateur s'authentifie.
 3. **Retour** : la banque renvoie vers `EXTRANALYZER_EB_REDIRECT_URL`, prévue comme
-   `http://10.10.10.95:8000/bank/callback`. Le navigateur de l'utilisateur est sur le VPN : la redirection
+   `http://<BIND_ADDR>:8000/bank/callback`. Le navigateur de l'utilisateur est sur le VPN : la redirection
    fonctionne sans exposer l'appli, Enable Banking n'appelle jamais cette adresse lui-même.
    - Le cookie de session est `SameSite=Strict` : il **n'est pas envoyé** lors d'une navigation venue du site de la
      banque. `/bank/callback` est donc une page statique (sans donnée) dont le script lit `code` et `state` dans
      l'URL puis les envoie par `POST /api/bank/session` : cette requête part de la page de l'appli, le cookie suit
      et l'authentification habituelle s'applique.
-   - **Repli** si le Control Panel refuse `http://10.10.10.95` : déclarer une autre URL (par exemple
+   - **Repli** si le Control Panel refuse `http://<BIND_ADDR>` : déclarer une autre URL (par exemple
      `https://localhost/bank/callback`) ; la page d'erreur affichée par le navigateur contient `code` et `state`
      dans sa barre d'adresse ; l'utilisateur colle cette adresse dans un champ de l'onglet Banque, qui l'envoie à
      la même route.
@@ -336,7 +336,7 @@ Aucun appel réseau : un faux transport rejoue des réponses JSON fictives.
   soit la plus tardive possible (§ 5.5).
 - Après la première synchro : regarder le contrôle de solde de chaque compte.
 
-- Le Control Panel accepte-t-il `http://10.10.10.95:8000/bank/callback` ? Sinon, utiliser le repli par copier-coller.
+- Le Control Panel accepte-t-il `http://<BIND_ADDR>:8000/bank/callback` ? Sinon, utiliser le repli par copier-coller.
 - Coût réel du mode restreint.
 - Nom exact de la banque renvoyé par `/aspsps` et prise en charge des comptes de particuliers.
 - Forme des libellés API : après la première synchro, vérifier dans « À classer » si les règles existantes les

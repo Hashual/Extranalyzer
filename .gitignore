@@ -6,6 +6,9 @@ extraits/
 data/
 secrets/
 .superpowers/
+# Notes locales sur l'infrastructure (dépôt public)
+CLAUDE.local.md
+*.local.md
 # Python
 __pycache__/
 *.pyc
