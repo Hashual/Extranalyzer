@@ -552,7 +552,7 @@ details.card summary { cursor: pointer; font-weight: 600; }
 /* Onglet Banque : liste des banques proposées par Enable Banking */
 .bank-list { display: block; width: 100%; max-width: 28rem; margin: 0.5rem 0; }
 
-/* Portefeuilles Solana (onglet Banque) */
+/* Portefeuilles Solana (onglet Connexions) */
 .wallets-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--gap); }
 .wallets-head h2, .wallets-head p { margin: 0 0 0.25rem; }
 .wallet-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; }

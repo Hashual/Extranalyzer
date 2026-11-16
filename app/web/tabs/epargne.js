@@ -334,7 +334,7 @@ function welcome(ctx) {
         hasTab(ctx, "banque")
           ? el("button", { type: "button", className: "link", text: "ajouter un portefeuille",
             on: { click: () => ctx.navigate("banque") } })
-          : "onglet Banque"),
+          : "onglet Connexions"),
       el("li", { text: "Ou déposez les relevés PDF de vos livrets avec le bouton « Déposer des relevés » en haut de la page." })));
 }
 

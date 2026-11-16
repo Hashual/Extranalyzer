@@ -1,4 +1,4 @@
-// Section « Portefeuilles Solana » de l'onglet Banque : suivi en lecture seule (SOL, jetons, staking) valorisé en euros.
+// Section « Portefeuilles Solana » de l'onglet Connexions : suivi en lecture seule (SOL, jetons, staking) valorisé en euros.
 // Tous les montants en euros passent par money(…, "balance") : ils suivent le masquage des soldes.
 import { el, emptyNote, hasTab, money, section } from "../ui.js";
 import { isMasked, MASK } from "../privacy.js";

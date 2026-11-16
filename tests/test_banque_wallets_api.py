@@ -1,4 +1,4 @@
-"""Routes des portefeuilles Solana de l'onglet Banque (faux Helius, données fictives)."""
+"""Routes des portefeuilles Solana de l'onglet Connexions (faux Helius, données fictives)."""
 import threading
 
 import pytest

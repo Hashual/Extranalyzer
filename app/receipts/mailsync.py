@@ -209,10 +209,11 @@ class MailSyncThread(threading.Thread):
     """Relève au démarrage puis toutes les `interval_min` minutes ; `trigger()` force un passage."""
 
     def __init__(self, cfg: MailSettings, write: Write, receipts_dir: Path, parsers: list[ReceiptParser],
-                 connect=imaplib.IMAP4_SSL):
+                 connect=imaplib.IMAP4_SSL, lock=None):
         super().__init__(daemon=True, name="mailsync")
         self._cfg, self._write, self._dir, self._parsers, self._connect = cfg, write, receipts_dir, parsers, connect
-        self._lock = threading.Lock()           # un seul passage à la fois
+        # un seul passage à la fois ; `lock` partagé : aussi entre l'ancienne et la nouvelle relève d'une reconnexion
+        self._lock = lock or threading.Lock()
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._passed = threading.Event()
