@@ -270,6 +270,10 @@ CREATE TABLE balance_overrides (
 );
 -- fin v9
 
-PRAGMA user_version = 9;
+-- v10 : cryptos regroupées (ex. Altcoins) dans la répartition
+CREATE TABLE crypto_groups (asset_key TEXT PRIMARY KEY, group_name TEXT NOT NULL);
+-- fin v10
+
+PRAGMA user_version = 10;
 
 COMMIT;

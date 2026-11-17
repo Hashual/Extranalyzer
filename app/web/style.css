@@ -595,4 +595,11 @@ details.card summary { cursor: pointer; font-weight: 600; }
 .place-card.open { outline: 2px solid var(--accent, #3b6fd8); }
 .place-wrap { display: flex; flex-direction: column; gap: 0.25rem; }
 .place-wrap > .place-card { flex: 1; }
-.place-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.85em; }
+.place-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.85em; min-height: 1.6em; }
+.place-info { font-size: 0.85rem; }
+.places-cols .place-cards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr)); }
+.crypto-legend > li { display: block; }
+.legend-row, .group-members li { display: flex; align-items: center; gap: 0.5rem; }
+.legend-row .link, .group-members .link { padding: 0; font-size: 0.85em; white-space: nowrap; }
+.group-members { margin: 0.15rem 0 0.35rem 1.25rem; font-size: 0.9em; }
+.small { font-size: 0.85rem; }

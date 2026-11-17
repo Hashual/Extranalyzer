@@ -456,3 +456,48 @@ def test_only_checking_transfers_are_inferred(conn):
     _statement(conn, a, "2026-10-31", 100_000)
     _checking_transfer(conn, other, "2026-11-05", -20_000, cat)
     assert h.savings_balance(conn, a, date(2026, 11, 10)) == 100_000
+
+
+def _crypto_fixture(conn):
+    w1, w2 = _wallet(conn), _wallet(conn)
+    s1 = _snap(conn, w1, "2026-02-01T08:00:00+00:00", 0)
+    s2 = _snap(conn, w2, "2026-02-01T08:00:00+00:00", 0)
+    _pos(conn, s1, "sol", 30_000)
+    _pos(conn, s2, "stake", 20_000)
+    _pos(conn, s1, "token", 10_000, mint="mJUP", symbol="JUP")
+    _pos(conn, s2, "token", 5_000, mint="mJUP", symbol="JUP")
+    _pos(conn, s1, "token", 4_000, mint="mBONK", symbol="BONK")
+    _pos(conn, s1, "token", 1_000, mint="mWIF", symbol="WIF")
+    _pos(conn, s1, "token", 9_000, mint="mHID", symbol="HID")
+    _pos(conn, s1, "token", None, mint="mNOV", symbol="NOV")
+    conn.execute("INSERT INTO hidden_mints(mint) VALUES ('mHID')")
+
+
+def _categories(conn):
+    return h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))["crypto_categories"]
+
+
+def test_crypto_categories_merge_sol_and_wallets(conn):
+    _crypto_fixture(conn)
+    cats = _categories(conn)
+    assert [(c["key"], c["name"], c["value"]) for c in cats] == [
+        ("SOL", "SOL", 50_000), ("mJUP", "JUP", 15_000), ("mBONK", "BONK", 4_000), ("mWIF", "WIF", 1_000)]
+    assert not any(c["group"] for c in cats)
+
+
+def test_crypto_group(conn):
+    _crypto_fixture(conn)
+    h.set_crypto_group(conn, "mBONK", "Altcoins")
+    h.set_crypto_group(conn, "mWIF", "Altcoins")
+    cats = {c["key"]: c for c in _categories(conn)}
+    alt = cats["Altcoins"]
+    assert alt["group"] and alt["value"] == 5_000
+    assert [m["key"] for m in alt["members"]] == ["mBONK", "mWIF"]
+    assert "mBONK" not in cats and "mWIF" not in cats
+    h.set_crypto_group(conn, "mBONK", None)          # retiré du groupe : redevient une catégorie à lui seul
+    cats = {c["key"]: c for c in _categories(conn)}
+    assert cats["mBONK"]["value"] == 4_000 and cats["Altcoins"]["value"] == 1_000
+
+
+def test_crypto_categories_empty_without_wallets(conn):
+    assert _categories(conn) == []

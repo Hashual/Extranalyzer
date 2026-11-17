@@ -228,6 +228,65 @@ def _group_slices(parts: dict[str, int]) -> list[dict]:
     return kept
 
 
+SOL_KEY = "SOL"             # SOL disponible et SOL en staking : un seul actif dans la répartition des cryptos
+ASSET_KEY_MAX = 64
+GROUP_NAME_MAX = 40
+
+
+def _crypto_assets(conn: sqlite3.Connection, snapshot_ids: list[int], hidden: frozenset[str]) -> dict[str, dict]:
+    """Actifs des relevés retenus, additionnés tous portefeuilles confondus : clé → {name, value}.
+
+    Clé : SOL_KEY pour le SOL (disponible ou en staking), l'adresse du jeton (mint) sinon."""
+    assets: dict[str, dict] = {}
+    for snapshot_id in snapshot_ids:
+        for kind, mint, symbol, cents in conn.execute(
+                "SELECT kind, mint, symbol, value_eur_cents FROM wallet_positions WHERE snapshot_id = ?",
+                (snapshot_id,)):
+            if cents is None or (kind == "token" and mint in hidden):
+                continue
+            if kind in ("sol", "stake"):
+                key, name = SOL_KEY, "SOL"
+            else:
+                key = mint or "?"
+                name = symbol or (_short(mint) if mint else "Jeton inconnu")
+            entry = assets.setdefault(key, {"name": name, "value": 0})
+            entry["value"] += cents
+    return assets
+
+
+def crypto_categories(conn: sqlite3.Connection, snapshot_ids: list[int], hidden: frozenset[str]) -> list[dict]:
+    """Répartition des cryptos par catégorie : un actif seul, ou un groupe (ex. « Altcoins ») qui réunit les actifs
+    que l'utilisateur y a rangés."""
+    assets = _crypto_assets(conn, snapshot_ids, hidden)
+    groups = dict(conn.execute("SELECT asset_key, group_name FROM crypto_groups"))
+    categories: dict[str, dict] = {}
+    for key, asset in assets.items():
+        group = groups.get(key)
+        if group is None:
+            categories[key] = {"key": key, "name": asset["name"], "group": False, "value": asset["value"],
+                               "members": []}
+            continue
+        entry = categories.setdefault(group, {"key": group, "name": group, "group": True, "value": 0, "members": []})
+        entry["value"] += asset["value"]
+        entry["members"].append({"key": key, "name": asset["name"], "value": asset["value"]})
+    result = []
+    for entry in categories.values():
+        entry["members"].sort(key=lambda m: (-m["value"], m["name"]))
+        result.append(entry)
+    result.sort(key=lambda c: (-c["value"], c["name"]))
+    return result
+
+
+def set_crypto_group(conn: sqlite3.Connection, asset_key: str, group: str | None) -> None:
+    """Range un actif dans un groupe, ou l'en retire (group=None). Ne valide pas."""
+    if group is None:
+        conn.execute("DELETE FROM crypto_groups WHERE asset_key = ?", (asset_key,))
+    else:
+        conn.execute("INSERT INTO crypto_groups(asset_key, group_name) VALUES (?, ?) "
+                     "ON CONFLICT(asset_key) DO UPDATE SET group_name = excluded.group_name", (asset_key, group))
+
+
+
 def _change(end: int | None, before: int | None) -> int | None:
     return None if end is None or before is None else end - before
 
@@ -297,4 +356,5 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
         "allocation": {"by_place": [{"name": p["name"], "value": p["value"]} for p in known if p["value"] > 0],
                        "by_asset": _group_slices(by_asset)},
         "series": series(conn, period.start, as_of),
+        "crypto_categories": crypto_categories(conn, [snapshot_id for _, snapshot_id, _ in retained], hidden),
     }
