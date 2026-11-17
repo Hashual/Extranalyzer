@@ -147,4 +147,26 @@ def clear_balance(account_id: int, conn: Annotated[sqlite3.Connection, Depends(g
     return {"ok": True}
 
 
+class GroupBody(BaseModel):
+    group: str | None = None        # ex. "Altcoins" ; None : l'actif redevient une catégorie à lui seul
+
+
+def _key(raw: str, limit: int, what: str) -> str:
+    text = raw.strip()
+    if not text or len(text) > limit or not text.isprintable():
+        raise HTTPException(422, f"{what} invalide")
+    return text
+
+
+@router.put("/crypto/group/{asset_key}")
+def set_crypto_group(asset_key: str, body: GroupBody, conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
+    """Range une crypto dans un groupe (ex. « Altcoins ») de la répartition, ou l'en retire."""
+    key = _key(asset_key, holdings.ASSET_KEY_MAX, "actif")
+    group = None if body.group is None else _key(body.group, holdings.GROUP_NAME_MAX, "nom de groupe")
+    with conn:
+        holdings.set_crypto_group(conn, key, group)
+    return {"ok": True}
+
+
+
 TAB = Tab("epargne", "Épargne", 40, router)
