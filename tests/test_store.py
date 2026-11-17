@@ -20,10 +20,10 @@ def conn(tmp_path):
 def test_connect_twice_keeps_user_version(tmp_path):
     path = tmp_path / "t.db"
     c1 = connect(path)
-    assert c1.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c1.execute("PRAGMA user_version").fetchone()[0] == 10
     c1.close()
     c2 = connect(path)
-    assert c2.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c2.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c2.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     assert c2.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     c2.close()
@@ -109,9 +109,28 @@ def test_connect_waits_on_busy_database(tmp_path):
     c.close()
 
 
+def _as_v9(schema: str) -> str:
+    """Schéma courant ramené à la version 9 (sans les regroupements de cryptos)."""
+    v9 = re.sub(r"-- v10 :.*?-- fin v10\n\n?", "", schema, flags=re.S).replace("user_version = 10", "user_version = 9")
+    assert "crypto_groups" not in v9 and "user_version = 9" in v9
+    return v9
+
+
+def test_migrate_9_to_10(tmp_path):
+    from importlib import resources
+    schema = resources.files("app.store").joinpath("schema.sql").read_text(encoding="utf-8")
+    raw = sqlite3.connect(tmp_path / "v9.db")
+    raw.executescript(_as_v9(schema))
+    raw.close()
+    c = connect(tmp_path / "v9.db")
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
+    assert c.execute("SELECT name FROM sqlite_master WHERE name = 'crypto_groups'").fetchone() is not None
+    c.close()
+
+
 def _as_v8(schema: str) -> str:
     """Schéma courant ramené à la version 8 (sans les soldes saisis à la main)."""
-    v8 = re.sub(r"-- v9 :.*?-- fin v9\n\n?", "", schema, flags=re.S).replace("user_version = 9", "user_version = 8")
+    v8 = re.sub(r"-- v9 :.*?-- fin v9\n\n?", "", _as_v9(schema), flags=re.S).replace("user_version = 9", "user_version = 8")
     assert "balance_overrides" not in v8 and "user_version = 8" in v8
     return v8
 
@@ -123,7 +142,7 @@ def test_migrate_8_to_9(tmp_path):
     raw.executescript(_as_v8(schema))
     raw.close()
     c = connect(tmp_path / "v8.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT name FROM sqlite_master WHERE name = 'balance_overrides'").fetchone() is not None
     c.close()
 
@@ -177,7 +196,7 @@ def _v1_schema() -> str:
 
 def test_new_database_has_section_message(tmp_path):
     c = connect(tmp_path / "t.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert "message" in [r[1] for r in c.execute("PRAGMA table_info(sections)")]
     c.close()
 
@@ -194,11 +213,11 @@ def test_migration_from_v1_adds_section_message(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT status, message FROM sections").fetchall() == [("ok", None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     c.close()
 
 
@@ -235,14 +254,14 @@ def test_migration_2_to_3(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT id, classified_by, confidence, suggested_category_id, suggestion_reason "
                      "FROM transactions ORDER BY id").fetchall() == [
         (1, "manual", None, None, None), (2, "rule", None, None, None),
         (3, "pair", None, None, None), (4, None, None, None, None), (5, None, None, None, None)]
     c.close()
     c = connect(path)       # deuxième ouverture : rien à migrer
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT classified_by FROM transactions ORDER BY id").fetchall() == [
         ("manual",), ("rule",), ("pair",), (None,), (None,)]
     c.close()
@@ -300,7 +319,7 @@ def test_migration_3_to_4_adds_suggestion_support(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT confidence, suggestion_reason, suggestion_support FROM transactions").fetchone() == (
         0.5, "r", None)
     c.close()
@@ -314,7 +333,7 @@ def test_migration_4_to_5_adds_seed_dismissed(tmp_path):
     raw.executescript(_as_v4(schema))
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT COUNT(*) FROM seed_dismissed").fetchone()[0] == 0
     c.close()
 
@@ -338,7 +357,7 @@ def test_migration_from_v5_marks_existing_transactions_pdf(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT source FROM transactions").fetchall() == [("pdf",)]
     assert c.execute("SELECT COUNT(*) FROM bank_links").fetchone()[0] == 0
 
@@ -349,7 +368,7 @@ _V7_SCHEMA = (Path(__file__).parent / "schema_v7.sql").read_text(encoding="utf-8
 
 def test_fresh_db_is_v8_with_receipt_tables(tmp_path):
     conn = connect(tmp_path / "x.db")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 10
     for t in ("receipts", "receipt_slips", "receipt_lines", "receipt_payments", "aisles", "aisle_families",
               "mail_sync"):
         assert conn.execute("SELECT name FROM sqlite_master WHERE name = ?", (t,)).fetchone()
@@ -367,7 +386,7 @@ def test_v7_db_migrates_to_v8(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT tx_key, amount_cents, source FROM transactions").fetchall() == [("k", -100, "pdf")]
     for t in ("receipts", "receipt_slips", "receipt_lines", "receipt_payments", "aisles", "aisle_families",
               "mail_sync"):
@@ -387,7 +406,7 @@ _WALLET_TABLES = {"wallets", "wallet_snapshots", "wallet_positions", "validator_
 
 def test_fresh_schema_has_wallet_tables(tmp_path):
     c = connect(tmp_path / "t.db")
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert _WALLET_TABLES <= tables
     c.close()
@@ -402,7 +421,7 @@ def test_migrate_6_to_7(tmp_path):
     raw.commit()
     raw.close()
     c = connect(path)
-    assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 10
     assert c.execute("SELECT number FROM accounts").fetchall() == [("A1",)]
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert _WALLET_TABLES <= tables
