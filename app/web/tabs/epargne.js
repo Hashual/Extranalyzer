@@ -189,31 +189,55 @@ function evolutionCard(d) {
   return card;
 }
 
+/** Carte d'un livret ou d'un portefeuille : même structure (nom, valeur, variation, ligne d'info, actions). */
 function placeCard(p, ctx) {
-  const target = p.kind === "wallet"
-    ? (hasTab(ctx, "banque") ? () => { openWallet = openWallet === p.id ? null : p.id; ctx.refresh(); } : null)
+  const wallet = p.kind === "wallet";
+  const canDetail = wallet && hasTab(ctx, "banque");
+  const open = wallet && openWallet === p.id;
+  const toggleDetail = () => { openWallet = open ? null : p.id; ctx.refresh(); };
+  const target = wallet ? (canDetail ? toggleDetail : null)
     : p.category_id !== null && hasTab(ctx, "categories") ? () => ctx.navigate("categories", { id: p.category_id })
       : null;
   const lines = [
     el("span", { className: "place-name", text: p.name }),
     p.value === null ? el("span", { className: "place-value muted", text: "valeur inconnue" })
       : el("span", { className: "place-value", text: money(p.value, "balance") }),
-    variationNote(p.change, " sur la période", "span"),
-    p.kind === "wallet" && p.deposited !== null
-      ? el("span", { className: "variation" }, `Versé ${money(p.deposited, "balance")}`,
-        p.gap !== null ? el("span", {}, " · écart ", signedGap(p.gap)) : null)
-      : null,
+    variationNote(p.change, " sur la période", "span") || el("span", { className: "variation muted", text: "—" }),
+    wallet ? walletInfo(p) : el("span", { className: "muted place-info", text: p.balance_source ? balanceOrigin(p) : "" }),
   ];
-  if (p.kind === "savings" && p.balance_source) {
-    lines.push(el("span", { className: "muted place-origin", text: balanceOrigin(p) }));
-  }
-  const open = p.kind === "wallet" && openWallet === p.id;
   const card = target
     ? el("button", { type: "button", className: `place-card clickable${open ? " open" : ""}`, on: { click: target },
-      attrs: p.kind === "wallet" ? { "aria-expanded": String(open), title: "Voir le détail des positions" } : {} },
+      attrs: wallet ? { "aria-expanded": String(open), title: "Voir le détail des positions" }
+        : { title: "Voir la catégorie" } },
     ...lines)
     : el("div", { className: "place-card" }, ...lines);
-  return p.kind === "savings" ? el("div", { className: "place-wrap" }, card, balanceActions(p, ctx)) : card;
+  const actions = wallet
+    ? el("div", { className: "place-actions" }, canDetail
+      ? el("button", { type: "button", className: "link", text: open ? "Masquer les positions" : "Voir les positions",
+        on: { click: toggleDetail } })
+      : null)
+    : balanceActions(p, ctx);
+  return el("div", { className: "place-wrap" }, card, actions);
+}
+
+function walletInfo(p) {
+  if (p.deposited === null) return el("span", { className: "muted place-info", text: "versé inconnu" });
+  return el("span", { className: "place-info" }, `Versé ${money(p.deposited, "balance")}`,
+    p.gap !== null ? el("span", {}, " · écart ", signedGap(p.gap)) : null);
+}
+
+/** Livrets et portefeuilles crypto côte à côte, chacun dans son bloc. */
+function placesBlocks(d, ctx) {
+  const livrets = d.places.filter((p) => p.kind === "savings");
+  const wallets = d.places.filter((p) => p.kind === "wallet");
+  const cards = (list) => el("div", { className: "place-cards" }, list.map((p) => placeCard(p, ctx)));
+  return el("div", { className: "grid-2 places-cols" },
+    section("Livrets", livrets.length ? cards(livrets)
+      : emptyNote("Aucun livret : déposez ses relevés PDF avec « Déposer des relevés ».")),
+    section("Crypto", wallets.length ? cards(wallets)
+      : el("p", { className: "muted" }, "Aucun portefeuille suivi. ", hasTab(ctx, "banque")
+        ? el("button", { type: "button", className: "link", text: "Ajouter un portefeuille",
+          on: { click: () => ctx.navigate("banque") } }) : null)));
 }
 
 const BALANCE_ORIGINS = {
@@ -251,6 +275,71 @@ function balanceActions(p, ctx) {
     }) } })
     : null;
   return el("div", { className: "place-actions" }, fix, reset, error);
+}
+
+// ---- Cryptos : répartition par catégorie (actif seul ou groupe « Altcoins ») ----
+
+const ALTCOINS = "Altcoins";
+
+/** Lance une modification puis rafraîchit l'onglet ; l'erreur s'affiche dans `error`. */
+async function mutate(ctx, error, fn) {
+  error.textContent = "";
+  try {
+    if ((await fn()) !== false) await ctx.refresh();
+  } catch (e) {
+    error.textContent = e.message;
+  }
+}
+
+const setGroup = (ctx, key, group) =>
+  ctx.api.put(`/tabs/epargne/crypto/group/${encodeURIComponent(key)}`, { group });
+
+function cryptoAllocationCard(d, ctx) {
+  const cats = d.crypto_categories.filter((c) => Number(c.value) > 0);
+  const host = el("div", { className: "chart chart-donut" });
+  const error = el("p", { className: "error", attrs: { role: "alert" } });
+  const colors = palette(cats.length);
+  const total = cats.reduce((sum, c) => sum + Number(c.value), 0);
+  const masked = isMasked("balance");
+  const share = (value) => (masked ? MASK : PCT.format(Number(value) / total));
+  const link = (text, title, fn) => el("button", { type: "button", className: "link", text, attrs: { title },
+    on: { click: () => mutate(ctx, error, fn) } });
+
+  const legend = el("ul", { className: "plain-list donut-legend crypto-legend" }, cats.map((c, i) => el("li", {},
+    el("div", { className: "legend-row" },
+      swatch(colors[i]),
+      el("span", { className: "legend-name", text: c.group ? `${c.name} (${c.members.length})` : c.name }),
+      el("span", { className: "num muted", text: share(c.value) }),
+      c.group || c.key === "SOL" ? null : link(`→ ${ALTCOINS}`, `Regrouper ${c.name} dans ${ALTCOINS}`,
+        () => setGroup(ctx, c.key, ALTCOINS))),
+    c.group ? el("ul", { className: "plain-list group-members" }, c.members.map((m) => el("li", {},
+      el("span", { className: "legend-name", text: m.name }),
+      el("span", { className: "num muted", text: share(m.value) }),
+      link("Retirer", `Sortir ${m.name} de ${c.name}`, () => setGroup(ctx, m.key, null))))) : null)));
+
+  const card = section("Répartition des cryptos", host, legend, error,
+    el("p", { className: "muted small", text: `Regroupez les petites positions dans « ${ALTCOINS} » : elles forment une seule part.` }));
+  if (!cats.length) {
+    host.replaceChildren(emptyNote("Aucune crypto valorisée."));
+    return card;
+  }
+  requestAnimationFrame(() => {
+    if (!host.isConnected) return;
+    mountChart(host, {
+      type: "doughnut",
+      data: { labels: cats.map((c) => c.name),
+        datasets: [{ data: cats.map((c) => Number(c.value)), backgroundColor: colors,
+          borderColor: cssVar("--surface"), borderWidth: 2 }] },
+      options: { plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: (item) => `${item.label} : ${money(item.raw, "balance")}` } } } },
+    });
+  });
+  return card;
+}
+
+function cryptoSection(d, ctx) {
+  if (!d.crypto_categories.length) return null;
+  return el("div", { className: "grid-2 dash-cols" }, cryptoAllocationCard(d, ctx));
 }
 
 function flowsTiles(total) {
@@ -348,10 +437,9 @@ export async function render(container, ctx) {
   container.replaceChildren(...[
     dashboardTiles(d),
     el("div", { className: "grid-2 dash-cols" }, allocationCard(d), evolutionCard(d)),
-    section("Où", el("div", { className: "place-cards" }, d.places.map((p) => placeCard(p, ctx))),
-      d.places.some((p) => p.kind === "wallet") && hasTab(ctx, "banque")
-        ? el("p", { className: "muted", text: "Cliquez sur un portefeuille pour voir ses positions." }) : null),
+    placesBlocks(d, ctx),
     detail,
+    cryptoSection(d, ctx),
     flowsSection(ctx),
   ].filter(Boolean));
 }

@@ -1092,3 +1092,25 @@ def test_epargne_manual_balance_before_last_statement_422(env, monkeypatch):
     conn.commit()
     r = client.put("/api/tabs/epargne/balance/2", json={"amount": "10", "day": "2025-01-10"}, headers=H)
     assert r.status_code == 422
+
+
+def test_epargne_crypto_group_route(env):
+    client, conn, _, _ = env
+    conn.execute("INSERT INTO wallets(id, address, label, created_at) VALUES (1, 'addrfictive', 'W', '2025-01-01')")
+    conn.execute("INSERT INTO wallet_snapshots(id, wallet_id, taken_at, status, total_eur_cents, unpriced_count)"
+                 " VALUES (1, 1, '2025-01-31T10:00:00+00:00', 'ok', 3000, 0)")
+    for mint, symbol, cents in (("mA", "AAA", 2000), ("mB", "BBB", 1000)):
+        conn.execute("INSERT INTO wallet_positions(snapshot_id, kind, mint, symbol, amount, value_eur_cents)"
+                     " VALUES (1, 'token', ?, ?, '1', ?)", (mint, symbol, cents))
+    conn.commit()
+    base = "/api/tabs/epargne/crypto"
+    assert client.put(f"{base}/group/mA", json={"group": "Altcoins"}, headers=H).status_code == 200
+    assert client.put(f"{base}/group/mB", json={"group": "Altcoins"}, headers=H).status_code == 200
+    cats = get(client, "/epargne/dashboard", **JAN)["crypto_categories"]
+    assert cats == [{"key": "Altcoins", "name": "Altcoins", "group": True, "value": "30.00", "members": [{"key": "mA", "name": "AAA", "value": "20.00"},
+                                                  {"key": "mB", "name": "BBB", "value": "10.00"}]}]
+    assert client.put(f"{base}/group/mA", json={"group": " "}, headers=H).status_code == 422
+    assert client.put(f"{base}/group/mA", json={"group": None}).status_code == 403          # CSRF
+    assert client.put(f"{base}/group/mA", json={"group": None}, headers=H).status_code == 200
+    cats = {c["key"]: c for c in get(client, "/epargne/dashboard", **JAN)["crypto_categories"]}
+    assert cats["mA"]["group"] is False and cats["Altcoins"]["value"] == "10.00"

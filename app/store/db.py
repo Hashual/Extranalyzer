@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -240,6 +240,14 @@ PRAGMA user_version = 9;
 COMMIT;
 """
 
+# 9 -> 10 : cryptos regroupées (ex. Altcoins) dans la répartition
+_MIGRATE_9_TO_10 = """
+BEGIN;
+CREATE TABLE crypto_groups (asset_key TEXT PRIMARY KEY, group_name TEXT NOT NULL);
+PRAGMA user_version = 10;
+COMMIT;
+"""
+
 
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
@@ -282,6 +290,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 8
         if version == 8:    # 8 -> 9 : solde d'un livret saisi à la main
             conn.executescript(_MIGRATE_8_TO_9)
+            version = 9
+        if version == 9:    # 9 -> 10 : cryptos regroupées
+            conn.executescript(_MIGRATE_9_TO_10)
     except Exception:
         if conn.in_transaction:
             conn.rollback()
