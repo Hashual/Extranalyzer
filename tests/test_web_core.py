@@ -522,3 +522,9 @@ def test_startup_reclassifies_an_upgraded_database(settings):
     finally:
         conn.close()
     assert rows == [(1, "pair", "Livret Bleu"), (2, "pair", "Livret Bleu")]
+
+
+def test_courses_tab_has_two_step_delete_without_dialog(settings):
+    js = _client(settings).get("/static/tabs/courses.js").text
+    assert "Supprimer ce ticket" in js and "Confirmer la suppression" in js and "Annuler" in js
+    assert "ctx.api.delete(" in js and "window.confirm" not in js and "alert(" not in js

@@ -150,6 +150,33 @@ function receiptsList(ctx, receipts, filter) {
     shown.length ? table(["Date", "Ticket", "Total#"], rows) : emptyNote("Aucun ticket."));
 }
 
+// Suppression en deux temps, sans boîte de dialogue : le premier clic demande confirmation sur place.
+function deleteAction(ctx, receiptId) {
+  const error = el("p", { className: "error", attrs: { role: "alert" } });
+  const zone = el("div", { className: "row-actions" });
+  const ask = () => {
+    error.textContent = "";
+    zone.replaceChildren(
+      el("p", { className: "muted", text: "Le ticket ne sera pas réimporté par la relève, mais vous pourrez le remettre en déposant à nouveau son PDF." }),
+      el("button", { type: "button", className: "danger", text: "Confirmer la suppression", on: { click: confirmDelete } }),
+      el("button", { type: "button", text: "Annuler", on: { click: idle } }), error);
+  };
+  const idle = () => zone.replaceChildren(
+    el("button", { type: "button", className: "danger", text: "Supprimer ce ticket", on: { click: ask } }), error);
+  const confirmDelete = async (event) => {
+    event.currentTarget.disabled = true;
+    try {
+      await ctx.api.delete(`${BASE}/receipts/${receiptId}`);
+      ctx.navigate("courses");      // retour à la liste, dont le résumé est relu
+    } catch (e) {
+      error.textContent = `Suppression impossible : ${e.message}`;
+      event.currentTarget.disabled = false;
+    }
+  };
+  idle();
+  return zone;
+}
+
 async function receiptView(container, ctx, receiptId) {
   const r = await ctx.api.get(`${BASE}/receipts/${receiptId}`);
   const error = el("p", { className: "error", attrs: { role: "alert" } });
@@ -190,7 +217,8 @@ async function receiptView(container, ctx, receiptId) {
     section("Paiements", r.payments.length ? el("ul", { className: "plain-list" }, r.payments.map((p) => el("li", {},
       el("span", { text: PAYMENT_LABEL[p.method] || p.method }), el("span", { text: money(p.amount, "expense") }))))
       : emptyNote("Aucun paiement lu.")),
-    section("Débit bancaire", debit, error));
+    section("Débit bancaire", debit, error),
+    section("Suppression", deleteAction(ctx, receiptId)));
 }
 
 // --- Rayons et familles, relève, dépôt -----------------------------------------------------------

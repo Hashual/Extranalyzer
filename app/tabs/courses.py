@@ -29,7 +29,7 @@ from app.importer.amounts import from_cents
 from app.receipts import PARSERS_RECEIPTS
 from app.receipts.mailruntime import MailNotConfigured
 from app.receipts.matching import candidates, link_manual, match_receipts
-from app.receipts.service import FileResult, ingest_file, reread
+from app.receipts.service import FileResult, delete_receipt, ingest_file, reread
 from app.store.db import transactional
 from app.tabs._params import Scope, scope
 from app.tabs.registry import Tab
@@ -290,6 +290,27 @@ def link(receipt_id: int, body: LinkBody, request: Request):
         raise HTTPException(404, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+@router.delete("/receipts/{receipt_id}")
+def remove_receipt(receipt_id: int, request: Request):
+    """Supprime le ticket (et ses tickets CB), rapproche à nouveau, puis efface les PDF devenus orphelins."""
+    def run(conn: sqlite3.Connection) -> list[str]:
+        orphans = delete_receipt(conn, receipt_id)
+        if orphans is None:
+            raise NotFound(f"ticket {receipt_id} introuvable")
+        match_receipts(conn)
+        return orphans
+    try:
+        orphans = request.app.state.write(transactional(run))
+    except NotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    for name in orphans:
+        try:
+            (request.app.state.receipts_dir / name).unlink(missing_ok=True)
+        except OSError:
+            log.warning("PDF de ticket non supprimé")
+    return {"deleted": receipt_id}
 
 
 # --- Rayons et familles ------------------------------------------------------------------------

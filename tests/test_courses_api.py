@@ -346,3 +346,65 @@ def test_startup_rereads_pending_matches_and_keeps_user_families(env_courses):
     assert env.get(f"/receipts/{rid}")["link"] == "auto"
     names = [f["name"] for f in env.get("/aisles")["families"]]
     assert "Laitages" in names and "Crèmerie" not in names and "Animaux" not in names
+
+
+def test_delete_receipt_removes_rows_files_and_frees_debit(env_courses):
+    env = env_courses
+    rid = env.a["receipt_id"]
+    slip = env.tmp / "slip.pdf"
+    env.conn.execute("INSERT INTO receipt_slips(sha256, stored_path, stamp, receipt_id) VALUES ('s1', 's1.pdf', NULL, ?)",
+                     (rid,))
+    env.conn.commit()
+    receipts_dir = env.settings.data_dir / "receipts"
+    (receipts_dir / "s1.pdf").write_bytes(b"%PDF-slip")
+    stored = receipts_dir / env.conn.execute("SELECT stored_path FROM receipts WHERE id=?", (rid,)).fetchone()[0]
+    assert stored.is_file() and env.get(f"/receipts/{rid}")["link"] == "auto"
+    assert env.get("/summary", **JAN)["undetailed"] == "24.60"
+    r = env.client.delete(f"{URL}/receipts/{rid}", headers=H)
+    assert r.status_code == 200, r.text
+    for table in ("receipts", "receipt_lines", "receipt_payments", "receipt_slips"):
+        assert env.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+    assert not stored.exists() and not (receipts_dir / "s1.pdf").exists()
+    assert env.client.get(f"{URL}/receipts/{rid}").status_code == 404
+    assert env.get("/summary", **JAN)["undetailed"] == "42.60"       # le débit libéré compte de nouveau
+    assert env.client.delete(f"{URL}/receipts/{rid}", headers=H).status_code == 404
+
+
+def test_delete_receipt_rematches_freed_debit(env_courses):
+    env = env_courses
+    other = env.upload("ticket_b.pdf", **TICKET_A | {"aisles": [("CREMERIE L.S.", [Item("AUTRE FICTIF", 1800)])],
+                                                    "payments": [("CB", 1800)]})
+    assert env.get(f"/receipts/{other['receipt_id']}")["link"] == "to_link"       # débit pris par le ticket A
+    assert env.client.delete(f"{URL}/receipts/{env.a['receipt_id']}", headers=H).status_code == 200
+    assert env.get(f"/receipts/{other['receipt_id']}")["link"] == "auto"
+
+
+def test_delete_receipt_requires_auth_and_csrf_header(env_courses):
+    env = env_courses
+    rid = env.a["receipt_id"]
+    assert env.client.delete(f"{URL}/receipts/{rid}").status_code in (400, 403)
+    anonymous = TestClient(env.app)
+    assert anonymous.delete(f"{URL}/receipts/{rid}", headers=H).status_code == 401
+    assert env.conn.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 1
+
+
+def test_deleted_receipt_not_reimported_by_mail_but_manual_upload_restores(env_courses):
+    from app.receipts import PARSERS_RECEIPTS
+    from app.receipts.service import ingest_file
+    env = env_courses
+    data = (env.tmp / "ticket_a.pdf").read_bytes()
+    rid = env.a["receipt_id"]
+    env.conn.execute("UPDATE receipts SET message_id = '<m1@test>' WHERE id = ?", (rid,))
+    env.conn.commit()
+    assert env.client.delete(f"{URL}/receipts/{rid}", headers=H).status_code == 200
+    rdir = env.settings.data_dir / "receipts"
+    by_sha = ingest_file(env.conn, data, "ticket_a.pdf", rdir, PARSERS_RECEIPTS, origin="imap", store="superu")
+    by_mid = ingest_file(env.conn, b"%PDF-autre", "x.pdf", rdir, PARSERS_RECEIPTS, origin="imap", store="superu",
+                         message_id="<m1@test>")
+    env.conn.commit()
+    assert (by_sha.outcome, by_mid.outcome) == ("ignored", "ignored")
+    assert env.conn.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 0
+    assert not list(rdir.glob("*.pdf"))
+    r = env.client.post(f"{URL}/upload", files=[("files", ("ticket_a.pdf", data, "application/pdf"))], headers=H)
+    assert [f["outcome"] for f in r.json()] == ["stored"]
+    assert env.conn.execute("SELECT COUNT(*) FROM receipt_tombstones").fetchone()[0] == 0
