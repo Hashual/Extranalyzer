@@ -217,3 +217,19 @@ def test_unexpected_error_is_recorded_not_raised(tmp_path, write):
     result = sync_once(cfg(), write, tmp_path / "r", [], boom)
     assert result["error"].startswith("ValueError")
     assert rows(write, "SELECT last_error FROM mail_sync")[0][0].startswith("ValueError")
+
+
+def test_deleted_receipt_message_is_not_reingested_after_uidvalidity_change(tmp_path, write):
+    from app.receipts.service import delete_receipt
+    from app.store.db import transactional
+    sync_once(cfg(), write, tmp_path / "r", [], FakeImap({LABEL: (7, {1: make_mail(1, "<same>")})}))
+    [(rid,)] = rows(write, "SELECT id FROM receipts")
+    write(transactional(lambda conn: delete_receipt(conn, rid)))
+    # UIDVALIDITY change : tout est relu ; la pièce jointe diffère (autre empreinte), seul le message_id la bloque
+    boxes = {LABEL: (8, {1: make_mail(1, "<same>"), 2: make_mail(2, "<same>")})}
+    result = sync_once(cfg(), write, tmp_path / "r", [], FakeImap(boxes))
+    assert result["error"] is None and result["messages"] == 0
+    assert rows(write, "SELECT COUNT(*) FROM receipts") == [(0,)]
+    assert rows(write, "SELECT COUNT(*) FROM receipt_slips") == [(0,)]
+    assert rows(write, "SELECT last_uid, uidvalidity FROM mail_sync") == [(2, 8)]
+
