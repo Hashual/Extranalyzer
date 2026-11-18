@@ -23,7 +23,7 @@ NOT_SUPPORTED = "enseigne pas encore prise en charge"
 @dataclass
 class FileResult:
     name: str
-    outcome: str                    # stored | slip | duplicate | rejected
+    outcome: str                    # stored | slip | duplicate | ignored | rejected
     receipt_id: int | None = None
     status: str | None = None
     message: str | None = None
@@ -36,6 +36,38 @@ def _euros(cents: int) -> str:
 def _known(conn: sqlite3.Connection, sha: str) -> bool:
     return (conn.execute("SELECT 1 FROM receipts WHERE sha256=?", (sha,)).fetchone() is not None
             or conn.execute("SELECT 1 FROM receipt_slips WHERE sha256=?", (sha,)).fetchone() is not None)
+
+
+def _tombstoned(conn: sqlite3.Connection, sha: str, message_id: str | None) -> bool:
+    """Le fichier (ou son mail) appartient à un ticket supprimé : la relève ne le réimporte pas."""
+    keys = [sha] + ([message_id] if message_id else [])
+    marks = ",".join("?" * len(keys))
+    return conn.execute(f"SELECT 1 FROM receipt_tombstones WHERE key IN ({marks})", keys).fetchone() is not None
+
+
+def delete_receipt(conn: sqlite3.Connection, receipt_id: int) -> list[str] | None:
+    """Supprime le ticket, ses lignes, paiements et tickets CB, et laisse des pierres tombales (empreinte du
+    ticket, des tickets CB et identifiant du mail) pour que la relève ne le réimporte pas.
+
+    Renvoie les fichiers PDF désormais orphelins (à effacer après validation), ou None si le ticket n'existe pas.
+    """
+    row = conn.execute("SELECT sha256, stored_path, message_id FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+    if row is None:
+        return None
+    sha, stored, message_id = row
+    slips = conn.execute("SELECT sha256, stored_path FROM receipt_slips WHERE receipt_id=?", (receipt_id,)).fetchall()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    marks = [(sha, "sha256")] + [(s, "sha256") for s, _ in slips] + ([(message_id, "message_id")] if message_id else [])
+    conn.executemany("INSERT OR IGNORE INTO receipt_tombstones(key, kind, origin_sha, deleted_at) VALUES (?, ?, ?, ?)",
+                     [(key, kind, sha, now) for key, kind in marks])
+    conn.execute("DELETE FROM receipt_lines WHERE receipt_id=?", (receipt_id,))
+    conn.execute("DELETE FROM receipt_payments WHERE receipt_id=?", (receipt_id,))
+    conn.execute("DELETE FROM receipt_slips WHERE receipt_id=?", (receipt_id,))
+    conn.execute("DELETE FROM receipts WHERE id=?", (receipt_id,))
+    paths = [stored] + [path for _, path in slips]
+    return [p for p in dict.fromkeys(paths)
+            if not conn.execute("SELECT 1 FROM receipts WHERE stored_path=? UNION ALL "
+                                "SELECT 1 FROM receipt_slips WHERE stored_path=?", (p, p)).fetchone()]
 
 
 def _detect(data: bytes, filename: str, parsers: list[ReceiptParser]) -> tuple[ReceiptParser | None, str]:
@@ -98,12 +130,17 @@ def ingest_file(conn: sqlite3.Connection, data: bytes, filename: str, receipts_d
     sha = hashlib.sha256(data).hexdigest()
     if _known(conn, sha):
         return FileResult(filename, "duplicate")
+    if origin == "imap" and _tombstoned(conn, sha, message_id):
+        return FileResult(filename, "ignored", message="ticket supprimé")
     parser, kind = _detect(data, filename, parsers)
     if parser is None and store is None:
         return FileResult(filename, "rejected", message=NOT_SUPPORTED)
     store = store or parser.store
     match = STAMP_RE.search(filename)
     stamp = match.group(1) if match else None
+
+    if origin == "upload":      # dépôt explicite : l'utilisateur rajoute le ticket, la suppression est levée
+        conn.execute("DELETE FROM receipt_tombstones WHERE key=? OR origin_sha=?", (sha, sha))
 
     receipts_dir.mkdir(parents=True, exist_ok=True)
     stored = receipts_dir / f"{sha}.pdf"
