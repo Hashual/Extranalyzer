@@ -152,8 +152,9 @@ def _ingest_message(msg: FetchedMessage, receipts_dir: Path,
     """Une transaction par message : ses pièces jointes et l'avancement de `last_uid` réussissent ensemble."""
     def run(conn: sqlite3.Connection) -> int:
         files = 0
-        known = msg.message_id and conn.execute("SELECT 1 FROM receipts WHERE message_id=?",
-                                                (msg.message_id,)).fetchone()
+        known = msg.message_id and (
+            conn.execute("SELECT 1 FROM receipts WHERE message_id=?", (msg.message_id,)).fetchone()
+            or conn.execute("SELECT 1 FROM receipt_tombstones WHERE key=?", (msg.message_id,)).fetchone())
         if not known:
             for name, data in msg.attachments:
                 result = ingest_file(conn, data, name, receipts_dir, parsers, origin="imap",

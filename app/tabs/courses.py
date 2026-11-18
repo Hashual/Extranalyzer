@@ -15,6 +15,7 @@ import sqlite3
 from dataclasses import asdict
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -29,7 +30,7 @@ from app.importer.amounts import from_cents
 from app.receipts import PARSERS_RECEIPTS
 from app.receipts.mailruntime import MailNotConfigured
 from app.receipts.matching import candidates, link_manual, match_receipts
-from app.receipts.service import FileResult, ingest_file, reread
+from app.receipts.service import FileResult, delete_receipt, ingest_file, reread
 from app.store.db import transactional
 from app.tabs._params import Scope, scope
 from app.tabs.registry import Tab
@@ -290,6 +291,34 @@ def link(receipt_id: int, body: LinkBody, request: Request):
         raise HTTPException(404, str(exc)) from None
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from None
+
+
+@router.delete("/receipts/{receipt_id}")
+def remove_receipt(receipt_id: int, request: Request):
+    """Supprime le ticket (et ses tickets CB), rapproche à nouveau, puis efface les PDF devenus orphelins."""
+    state = request.app.state
+
+    def run(conn: sqlite3.Connection) -> list[str]:
+        orphans = delete_receipt(conn, receipt_id)
+        if orphans is None:
+            raise NotFound(f"ticket {receipt_id} introuvable")
+        match_receipts(conn)
+        return orphans
+
+    def delete(conn: sqlite3.Connection) -> None:
+        orphans = transactional(run)(conn)
+        for name in orphans:        # après validation mais sous le verrou : un dépôt concurrent ne perd pas son PDF
+            if Path(name).name != name:
+                continue
+            try:
+                (state.receipts_dir / name).unlink(missing_ok=True)
+            except OSError:
+                log.warning("PDF de ticket non supprimé")
+    try:
+        state.write(delete)
+    except NotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {"deleted": receipt_id}
 
 
 # --- Rayons et familles ------------------------------------------------------------------------
