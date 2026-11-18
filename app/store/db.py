@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -248,6 +248,19 @@ PRAGMA user_version = 10;
 COMMIT;
 """
 
+# 10 -> 11 : tickets supprimés, que la relève ne doit pas réimporter (`origin_sha` : ticket supprimé d'où vient la clé)
+_MIGRATE_10_TO_11 = """
+BEGIN;
+CREATE TABLE receipt_tombstones (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('sha256','message_id')),
+    origin_sha TEXT NOT NULL,
+    deleted_at TEXT NOT NULL
+);
+PRAGMA user_version = 11;
+COMMIT;
+"""
+
 
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
@@ -293,6 +306,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 9
         if version == 9:    # 9 -> 10 : cryptos regroupées
             conn.executescript(_MIGRATE_9_TO_10)
+            version = 10
+        if version == 10:   # 10 -> 11 : tickets supprimés
+            conn.executescript(_MIGRATE_10_TO_11)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

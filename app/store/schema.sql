@@ -274,6 +274,15 @@ CREATE TABLE balance_overrides (
 CREATE TABLE crypto_groups (asset_key TEXT PRIMARY KEY, group_name TEXT NOT NULL);
 -- fin v10
 
-PRAGMA user_version = 10;
+-- v11 : tickets supprimés, que la relève ne doit pas réimporter
+CREATE TABLE receipt_tombstones (
+    key TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('sha256','message_id')),
+    origin_sha TEXT NOT NULL,
+    deleted_at TEXT NOT NULL
+);
+-- fin v11
+
+PRAGMA user_version = 11;
 
 COMMIT;
