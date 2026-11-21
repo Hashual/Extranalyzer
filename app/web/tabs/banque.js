@@ -4,6 +4,7 @@
 import { el, emptyNote, formatDate, money, section } from "../ui.js";
 import { gmailSection } from "./banque-gmail.js";
 import { walletsSection } from "./banque-wallets.js";
+import { krakenSection } from "./banque-kraken.js";
 
 export const id = "banque";
 export const title = "Connexions";
@@ -290,10 +291,12 @@ export async function render(container, ctx) {
   // une panne côté portefeuilles ne doit pas masquer la partie bancaire
   const wallets = await walletsSection(ctx).catch((e) => el("p", { className: "error", attrs: { role: "alert" },
     text: `Portefeuilles Solana : ${e.message}` }));
+  const kraken = await krakenSection(ctx).catch((e) => el("p", { className: "error", attrs: { role: "alert" },
+    text: `Compte Kraken : ${e.message}` }));
   const gmail = await gmailSection(ctx).catch((e) => el("p", { className: "error", attrs: { role: "alert" },
     text: `Tickets de caisse (Gmail) : ${e.message}` }));
   if (!data.configured && !data.links.length) {
-    container.replaceChildren(notConfigured(), wallets, gmail);
+    container.replaceChildren(notConfigured(), wallets, kraken, gmail);
     return;
   }
   container.replaceChildren(...[
@@ -303,6 +306,7 @@ export async function render(container, ctx) {
     ...data.links.map((link) => linkCard(link, data, ctx)),
     data.configured ? addBankCard(data, ctx) : null,
     wallets,
+    kraken,
     gmail,
     runsCard(data),
     data.configured ? pasteCard(ctx) : null,

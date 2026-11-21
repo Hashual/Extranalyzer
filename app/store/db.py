@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -261,6 +261,14 @@ PRAGMA user_version = 11;
 COMMIT;
 """
 
+# 11 -> 12 : comptes Kraken suivis comme les portefeuilles (relevés et positions partagés)
+_MIGRATE_11_TO_12 = """
+BEGIN;
+ALTER TABLE wallets ADD COLUMN provider TEXT NOT NULL DEFAULT 'solana' CHECK(provider IN ('solana','kraken'));
+PRAGMA user_version = 12;
+COMMIT;
+"""
+
 
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
@@ -309,6 +317,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 10
         if version == 10:   # 10 -> 11 : tickets supprimés
             conn.executescript(_MIGRATE_10_TO_11)
+            version = 11
+        if version == 11:   # 11 -> 12 : comptes Kraken
+            conn.executescript(_MIGRATE_11_TO_12)
     except Exception:
         if conn.in_transaction:
             conn.rollback()

@@ -283,6 +283,10 @@ CREATE TABLE receipt_tombstones (
 );
 -- fin v11
 
-PRAGMA user_version = 11;
+-- v12 : comptes Kraken suivis comme les portefeuilles (provider)
+ALTER TABLE wallets ADD COLUMN provider TEXT NOT NULL DEFAULT 'solana' CHECK(provider IN ('solana','kraken'));
+-- fin v12
+
+PRAGMA user_version = 12;
 
 COMMIT;
