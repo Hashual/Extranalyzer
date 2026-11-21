@@ -148,7 +148,7 @@ def test_by_asset_groups_and_hides(conn):
     names = [p["name"] for p in parts]
     assert len(parts) == h.ASSET_SLICES + 1 and names[-1] == "Autres"
     assert "HID" not in names and "NOV" not in names
-    assert names[:2] == ["SOL disponible", "SOL en staking"]
+    assert names[0] == "SOL" and parts[0]["value"] == 50_000          # disponible et en staking : une seule part
     assert [p["value"] for p in parts] == sorted((p["value"] for p in parts[:-1]), reverse=True) + [parts[-1]["value"]]
 
 
@@ -490,13 +490,75 @@ def test_crypto_group(conn):
     h.set_crypto_group(conn, "mBONK", "Altcoins")
     h.set_crypto_group(conn, "mWIF", "Altcoins")
     cats = {c["key"]: c for c in _categories(conn)}
-    alt = cats["Altcoins"]
+    alt = cats["group:Altcoins"]
     assert alt["group"] and alt["value"] == 5_000
     assert [m["key"] for m in alt["members"]] == ["mBONK", "mWIF"]
     assert "mBONK" not in cats and "mWIF" not in cats
     h.set_crypto_group(conn, "mBONK", None)          # retiré du groupe : redevient une catégorie à lui seul
     cats = {c["key"]: c for c in _categories(conn)}
-    assert cats["mBONK"]["value"] == 4_000 and cats["Altcoins"]["value"] == 1_000
+    assert cats["mBONK"]["value"] == 4_000
+    assert cats["mWIF"]["value"] == 1_000 and "group:Altcoins" not in cats      # groupe d'un seul membre : dissous
+
+
+def test_remove_keeps_group_with_several_members(conn):
+    _crypto_fixture(conn)
+    for key in ("mBONK", "mWIF", "mJUP"):
+        h.set_crypto_group(conn, key, "Altcoins")
+    h.set_crypto_group(conn, "mJUP", None)
+    cats = {c["key"]: c for c in _categories(conn)}
+    assert cats["group:Altcoins"]["value"] == 5_000 and cats["mJUP"]["value"] == 15_000
+
+
+def test_merge_asset_into_asset(conn):
+    _crypto_fixture(conn)
+    h.merge_crypto(conn, "mWIF", "mJUP", "JUP")
+    cats = {c["key"]: c for c in _categories(conn)}
+    jup = cats["group:JUP"]
+    assert jup["name"] == "JUP" and jup["group"] and jup["value"] == 16_000
+    assert [m["key"] for m in jup["members"]] == ["mJUP", "mWIF"]
+    assert "mJUP" not in cats and "mWIF" not in cats
+
+
+def test_merge_into_grouped_asset_and_group(conn):
+    _crypto_fixture(conn)
+    h.set_crypto_group(conn, "mBONK", "Altcoins")
+    h.merge_crypto(conn, "mWIF", "mBONK", "BONK")                # cible déjà groupée : la source rejoint son groupe
+    assert {c["key"] for c in _categories(conn)} == {"SOL", "mJUP", "group:Altcoins"}
+    h.merge_crypto(conn, "mJUP", "group:Altcoins", "ignoré")     # cible = groupe
+    alt = {c["key"]: c for c in _categories(conn)}["group:Altcoins"]
+    assert [m["key"] for m in alt["members"]] == ["mJUP", "mBONK", "mWIF"] and alt["value"] == 20_000
+
+
+def test_merge_group_into_asset(conn):
+    _crypto_fixture(conn)
+    h.set_crypto_group(conn, "mBONK", "Altcoins")
+    h.set_crypto_group(conn, "mWIF", "Altcoins")
+    h.merge_crypto(conn, "group:Altcoins", "SOL", "SOL")
+    cats = {c["key"]: c for c in _categories(conn)}
+    assert set(cats) == {"group:SOL", "mJUP"}
+    assert cats["group:SOL"]["value"] == 55_000
+    assert conn.execute("SELECT COUNT(*) FROM crypto_groups WHERE group_name = 'Altcoins'").fetchone()[0] == 0
+
+
+def test_merge_rejects_self(conn):
+    _crypto_fixture(conn)
+    with pytest.raises(ValueError):
+        h.merge_crypto(conn, "mJUP", "mJUP", "JUP")
+
+
+def test_group_named_like_an_asset_does_not_collide(conn):
+    _crypto_fixture(conn)
+    h.set_crypto_group(conn, "mWIF", "mJUP")                     # groupe qui porte la clé d'un actif
+    cats = {c["key"]: c for c in _categories(conn)}
+    assert cats["mJUP"]["value"] == 15_000 and cats["group:mJUP"]["value"] == 1_000
+
+
+def test_by_asset_follows_crypto_categories(conn):
+    _crypto_fixture(conn)
+    h.merge_crypto(conn, "mWIF", "mBONK", "BONK")
+    d = h.dashboard(conn, Period(date(2026, 2, 1), date(2026, 2, 28)), date(2026, 3, 1))
+    assert d["allocation"]["by_asset"] == [{"name": "SOL", "value": 50_000}, {"name": "JUP", "value": 15_000},
+                                           {"name": "BONK", "value": 5_000}]
 
 
 def test_crypto_categories_empty_without_wallets(conn):
