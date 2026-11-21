@@ -121,6 +121,18 @@ class KrakenClient:
         """Soldes par code d'actif Kraken (ex. XXBT, ZEUR, SOL.S), montants en chaînes décimales."""
         return {k: v for k, v in self._private("Balance").items() if isinstance(k, str) and isinstance(v, str)}
 
+    def earn_allocations(self) -> list[tuple[str, str]]:
+        """Placements Earn (staking, récompenses) : (actif natif, montant total placé), hors stratégies vides.
+        Permission « Query Funds », comme Balance, qui ne les inclut pas."""
+        items = self._private("Earn/Allocations", {"hide_zero_allocations": "true"}).get("items")
+        found = []
+        for item in items if isinstance(items, list) else []:
+            native = item.get("native_asset") if isinstance(item, dict) else None
+            total = ((item.get("amount_allocated") or {}).get("total") or {}).get("native") if native else None
+            if isinstance(native, str) and isinstance(total, str):
+                found.append((native, total))
+        return found
+
     def assets(self) -> dict[str, dict]:
         return {k: v for k, v in self._public("Assets").items() if isinstance(v, dict)}
 
