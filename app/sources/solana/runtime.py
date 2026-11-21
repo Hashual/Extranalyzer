@@ -156,9 +156,10 @@ class SolanaRuntime:
         try:
             def load(conn):
                 if wallet_id is None:
-                    rows = conn.execute("SELECT id, address FROM wallets ORDER BY id").fetchall()
+                    rows = conn.execute("SELECT id, address FROM wallets WHERE provider = 'solana' ORDER BY id").fetchall()
                 else:
-                    rows = conn.execute("SELECT id, address FROM wallets WHERE id = ?", (wallet_id,)).fetchall()
+                    rows = conn.execute("SELECT id, address FROM wallets WHERE id = ? AND provider = 'solana'",
+                                        (wallet_id,)).fetchall()
                 return rows, wallets.hidden_mints(conn)
             targets, hidden = self._read(load)
             summary = RefreshSummary(refreshed=0, errors=0)

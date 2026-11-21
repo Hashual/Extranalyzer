@@ -9,6 +9,7 @@ from itertools import accumulate
 from app.analytics.periods import Period
 from app.classify.savings_target import savings_category_for_account
 from app.importer.amounts import to_cents
+from app.sources.solana.holdings import SOL_MINT
 from app.sources.solana.wallets import _net_deposited, hidden_mints
 
 MAX_DAILY_POINTS = 400
@@ -200,6 +201,11 @@ def series(conn: sqlite3.Connection, start: date, end: date) -> list[dict]:
     return points
 
 
+def _is_sol(mint: str | None) -> bool:
+    """Position de staking en SOL : compte Stake Solana (sans mint) ou SOL placé sur Kraken (mint du SOL)."""
+    return mint is None or mint == SOL_MINT
+
+
 def _short(mint: str) -> str:
     return mint if len(mint) <= 9 else f"{mint[:4]}…{mint[-4:]}"
 
@@ -211,7 +217,7 @@ def _wallet_assets(conn: sqlite3.Connection, snapshot_id: int, hidden: frozenset
         if cents is None or (kind == "token" and mint in hidden):
             continue
         if kind == "stake":
-            name = "SOL en staking"
+            name = "SOL en staking" if _is_sol(mint) else f"{symbol or _short(mint or '?')} en staking"
         elif kind == "sol":
             name = "SOL disponible"
         else:
@@ -236,7 +242,8 @@ GROUP_NAME_MAX = 40
 def _crypto_assets(conn: sqlite3.Connection, snapshot_ids: list[int], hidden: frozenset[str]) -> dict[str, dict]:
     """Actifs des relevés retenus, additionnés tous portefeuilles confondus : clé → {name, value}.
 
-    Clé : SOL_KEY pour le SOL (disponible ou en staking), l'adresse du jeton (mint) sinon."""
+    Clé : SOL_KEY pour le SOL (disponible ou en staking), l'adresse du jeton (mint) sinon ; pour Kraken, l'adresse
+    Solana de la même crypto quand elle est connue, sinon son symbole (voir app.sources.kraken.holdings)."""
     assets: dict[str, dict] = {}
     for snapshot_id in snapshot_ids:
         for kind, mint, symbol, cents in conn.execute(
@@ -244,7 +251,7 @@ def _crypto_assets(conn: sqlite3.Connection, snapshot_ids: list[int], hidden: fr
                 (snapshot_id,)):
             if cents is None or (kind == "token" and mint in hidden):
                 continue
-            if kind in ("sol", "stake"):
+            if kind == "sol" or (kind == "stake" and _is_sol(mint)):
                 key, name = SOL_KEY, "SOL"
             else:
                 key = mint or "?"
@@ -305,7 +312,8 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
                        "value": value, "change": _change(value, ledger.value(before)),
                        "deposited": None, "gap": None, "unknown": value is None,
                        "balance_source": ledger.source(as_of), "balance_as_of": ledger.as_of(as_of)})
-    for wallet_id, label, category_id in conn.execute("SELECT id, label, savings_category_id FROM wallets ORDER BY id"):
+    for wallet_id, label, category_id, provider in conn.execute(
+            "SELECT id, label, savings_category_id, provider FROM wallets ORDER BY id"):
         snaps = _Snapshots(conn, wallet_id)
         found = snaps.visible_at(conn, as_of, hidden)
         value = None if found is None else found[0]
@@ -313,7 +321,8 @@ def dashboard(conn: sqlite3.Connection, period: Period, today: date) -> dict:
         deposited = None if category_id is None else to_cents(_net_deposited(conn, category_id)[2])
         if found is not None:
             retained.append(found)
-        place = {"kind": "wallet", "id": wallet_id, "name": label, "category_id": category_id, "value": value,
+        place = {"kind": "wallet", "provider": provider, "id": wallet_id, "name": label, "category_id": category_id,
+                 "value": value,
                  "change": _change(value, None if past is None else past[0]), "deposited": deposited,
                  "gap": None if value is None or deposited is None else value - deposited, "unknown": value is None}
         wallet_places.append(place)
