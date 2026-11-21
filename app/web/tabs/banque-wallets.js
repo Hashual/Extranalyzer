@@ -99,9 +99,22 @@ function tokenRow(p, hidden, ctx) {
   return row(label, quantityText(p), priceText(p), valueText(p), hideButton(p, hidden, ctx));
 }
 
+/** Avoirs d'un compte Kraken : actif, quantité, prix, valeur, disponible ou placé (staking, Earn). */
+function krakenPositions(wallet) {
+  const ranked = [...wallet.positions].sort((a, b) =>
+    (a.value_eur === null) - (b.value_eur === null) || Number(b.value_eur || 0) - Number(a.value_eur || 0));
+  return el("div", { className: "table-wrap scroll-x" },
+    el("table", { className: "data-table wallet-table" }, head(["Actif", "Quantité", "Prix", "Valeur", ""]),
+      el("tbody", {}, ranked.map((p) => row(
+        el("span", {}, p.symbol || "?", p.name ? el("small", { className: "muted token-name", text: p.name }) : null),
+        quantityText(p), priceText(p), valueText(p),
+        el("span", { className: "muted", text: p.kind === "stake" ? "en staking" : "disponible" }))))));
+}
+
 /** Détail des positions d'un portefeuille (avec « Masquer » et « Nommer ») : affiché dans l'onglet Épargne. */
 export function positionsBlock(wallet, ctx) {
   if (!wallet.positions.length) return emptyNote("Aucune position relevée pour l'instant : actualisez.");
+  if (wallet.provider === "kraken") return krakenPositions(wallet);
   const visible = wallet.positions.filter((p) => !p.hidden);
   const hidden = wallet.positions.filter((p) => p.hidden);
   const tokens = visible.filter((p) => p.kind === "token");
@@ -227,7 +240,9 @@ function header(data, notice, ctx) {
 }
 
 export async function walletsSection(ctx) {
-  const data = await ctx.api.get("/tabs/banque/wallets");
+  const all = await ctx.api.get("/tabs/banque/wallets");
+  const data = { ...all, wallets: all.wallets.filter((w) => w.provider === "solana") };
+  data.last_refresh = data.wallets.map((w) => w.last_sync_at).filter(Boolean).sort().at(-1) || null;
   const notice = lastNotice;
   lastNotice = null;
   if (!data.configured) {

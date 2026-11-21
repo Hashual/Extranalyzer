@@ -165,8 +165,8 @@ def overview(conn: sqlite3.Connection) -> dict:
     hidden = hidden_mints(conn)
     validators = dict(conn.execute("SELECT vote_account, label FROM validator_labels").fetchall())
     wallets = []
-    for wid, label, address, cat_id, last_sync, last_error in conn.execute(
-            "SELECT id, label, address, savings_category_id, last_sync_at, last_error FROM wallets ORDER BY id"
+    for wid, label, address, cat_id, last_sync, last_error, provider in conn.execute(
+            "SELECT id, label, address, savings_category_id, last_sync_at, last_error, provider FROM wallets ORDER BY id"
     ).fetchall():
         cat_name = None
         if cat_id is not None:
@@ -179,7 +179,7 @@ def overview(conn: sqlite3.Connection) -> dict:
         history = [{"taken_at": t, "total_eur": from_cents(c)} for t, c in conn.execute(
             "SELECT taken_at, total_eur_cents FROM wallet_snapshots WHERE wallet_id = ? AND status = 'ok' "
             "ORDER BY taken_at, id", (wid,)).fetchall()]
-        wallets.append({"id": wid, "label": label, "address": address, "category_id": cat_id,
+        wallets.append({"id": wid, "provider": provider, "label": label, "address": address, "category_id": cat_id,
                         "category_name": cat_name, "net_deposited": net, "deposits": deposits,
                         "withdrawals": withdrawals, "total_eur": None if total_cents is None else from_cents(total_cents),
                         "unpriced_count": unpriced, "last_sync_at": last_sync, "last_error": last_error,
