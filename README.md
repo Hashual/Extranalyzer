@@ -213,6 +213,23 @@ sudo chown 10001:10001 secrets/helius.key && sudo chmod 400 secrets/helius.key
 
 `HELIUS_URL` (optional) overrides the service address; it must start with `https://`.
 
+### Kraken account
+
+Optional: shows the euro value of your Kraken balances (spot, staking and Earn, euros left on the account)
+next to the Solana wallets in the **Épargne** (Savings) tab. Prices come from Kraken's public ticker (euro pair,
+or dollar pair converted at the EUR/USD rate); an asset without a pair stays unpriced.
+
+**Setup, from the interface:**
+
+1. On Kraken, Settings → Security → API, create a key with **only "Query Funds"** checked (no trading,
+   no deposit, no withdrawal).
+2. In Extranalyzer, **Connexions** tab, "Compte Kraken" section: paste the API key and the private key, then
+   click "Relier Kraken". The application checks them by reading the balances before saving them.
+
+The key is stored in the data volume (`/data/kraken.key`, mode 600), never written to the database, logged or
+displayed again. "Délier Kraken" deletes it; the account and its history stay in Épargne. The container must be
+able to reach `https://api.kraken.com` outbound. Scheduled refresh follows `SYNC_HOURS`.
+
 ### Troubleshooting
 
 - Connexions tab shows "non configurée" (not configured) even though `.env` is filled in: `docker compose logs`
