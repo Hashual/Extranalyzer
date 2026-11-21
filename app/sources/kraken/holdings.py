@@ -1,6 +1,9 @@
 """Lecture des soldes Kraken en positions valorisées en euros, au format des portefeuilles Solana.
 
 - Codes d'actif Kraken normalisés : XXBT → BTC, ZEUR → EUR, SOL.S → SOL placé (staking ou Earn).
+- Placements Earn : Balance ne montre pas les fonds placés dans Earn (staking SOL, BTC rémunéré…), lus dans
+  Earn/Allocations. Pour un même actif, le montant placé est le plus grand des deux sources, jamais leur somme (un
+  ancien placement peut figurer des deux côtés, ex. SOL.S).
 - Clé d'actif (`mint`) : l'adresse Solana de la même crypto quand elle est connue (le SOL de Kraken et celui des
   portefeuilles font une seule part dans la répartition), sinon le symbole (`BTC`, `EUR`).
 - Prix : paire en euros, sinon paire en dollars convertie par le cours EUR/USD. Aucun prix n'est inventé : une
@@ -9,7 +12,7 @@
 from decimal import Decimal
 
 from app.importer.amounts import to_cents
-from app.sources.kraken.client import KrakenClient
+from app.sources.kraken.client import AuthError, KrakenClient, KrakenError
 from app.sources.solana.holdings import EURC_MINT, SOL_MINT, Position, WalletReading
 
 EARN_SUFFIXES = {"S", "M", "F", "B", "P", "T"}       # staking, Earn (bloqué, flexible, parachain…)
@@ -68,6 +71,33 @@ def _last_price(ticker: dict[str, dict], pair: str | None) -> Decimal | None:
     return price if price is not None and price > 0 else None
 
 
+def _earn_allocations(client: KrakenClient) -> list[tuple[str, Decimal]]:
+    """Placements Earn ; [] si Kraken ne les sert pas à cette clé. Une limite de débit ou une panne remonte : un
+    relevé sans le staking serait faux."""
+    try:
+        raw = client.earn_allocations()
+    except AuthError as e:
+        if e.permission:
+            return []
+        raise
+    except KrakenError as e:
+        if e.status == 404 or e.code == "EGeneral:Unknown method":
+            return []
+        raise
+    return [(native, amount) for native, total in raw if (amount := _decimal(total)) is not None and amount > 0]
+
+
+def _base_code(native: str, assets: dict[str, dict]) -> str:
+    """Code Kraken de base d'un actif nommé par Earn (« SOL », « BTC », « XBT » ou « XXBT »)."""
+    if native in assets:
+        return native
+    wanted = {native, *(alt for alt, sym in ALIASES.items() if sym == native)}
+    for code, info in assets.items():
+        if info.get("altname") in wanted:
+            return code
+    return native
+
+
 def read_account(client: KrakenClient, hidden_mints: frozenset[str] = frozenset()) -> WalletReading:
     balances: dict[tuple[str, bool], Decimal] = {}
     for code, raw in client.balance().items():
@@ -76,10 +106,18 @@ def read_account(client: KrakenClient, hidden_mints: frozenset[str] = frozenset(
         if amount is None or amount <= 0 or base in IGNORED:
             continue
         balances[(base, earn)] = balances.get((base, earn), Decimal(0)) + amount
-    if not balances:
+    allocations = _earn_allocations(client)
+    if not balances and not allocations:
         return WalletReading(positions=[], total_eur_cents=0, unpriced_count=0)
 
     assets = client.assets()
+    placed: dict[str, Decimal] = {}
+    for native, amount in allocations:
+        base = RAW_ALIASES.get(_base_code(native, assets), _base_code(native, assets))
+        placed[base] = placed.get(base, Decimal(0)) + amount
+    for base, amount in placed.items():
+        balances[(base, True)] = max(balances.get((base, True), Decimal(0)), amount)
+
     index = _pair_index(client.asset_pairs())
     bases = {b for b, _ in balances} - {EUR}
     eur_pairs = {b: index.get((b, EUR)) for b in bases}

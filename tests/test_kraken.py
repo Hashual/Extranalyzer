@@ -124,6 +124,57 @@ def test_unknown_asset_without_assets_entry_falls_back():
     assert position.symbol == "LTC" and position.value_eur_cents is None
 
 
+
+def _allocation(native: str, total: str) -> dict:
+    return {"strategy_id": f"STRAT-{native}", "native_asset": native,
+            "amount_allocated": {"total": {"native": total, "converted": "0"}}, "total_rewarded": {"native": "0"}}
+
+
+def _earn(*items) -> dict:
+    return {"converted_asset": "EUR", "total_allocated": "0", "total_rewarded": "0", "items": list(items)}
+
+
+def test_earn_allocations_are_counted():
+    """Les placements Earn (staking SOL, BTC rémunéré…) n'apparaissent pas dans Balance : lus dans Earn/Allocations."""
+    fake = _kraken({"ZEUR": "10.0"}).on("Allocations", _earn(_allocation("SOL", "4.0"), _allocation("BTC", "0.5"),
+                                                              _allocation("XXBT", "0.25"), _allocation("DOT", "0")))
+    reading = read_account(_client(fake))
+    by = {(p.kind, p.symbol): p for p in reading.positions}
+    assert set(by) == {("token", "EUR"), ("stake", "SOL"), ("stake", "BTC")}
+    assert by[("stake", "SOL")].amount == Decimal(4) and by[("stake", "SOL")].mint == SOL_MINT
+    assert by[("stake", "BTC")].amount == Decimal("0.75") and by[("stake", "BTC")].value_eur_cents == 4_500_000
+    assert reading.total_eur_cents == 1_000 + 60_000 + 4_500_000
+    (call,) = fake.calls("Allocations")
+    assert call["path"] == "/0/private/Earn/Allocations" and call["form"]["hide_zero_allocations"] == "true"
+
+
+def test_earn_allocation_not_counted_twice_with_balance_suffix():
+    """Si Balance montre déjà le placement (SOL.S), on garde le plus grand des deux montants, sans les additionner."""
+    fake = _kraken({"SOL.S": "1.0", "DOT.S": "10"}).on("Allocations", _earn(_allocation("SOL", "3.0"),
+                                                                               _allocation("DOT", "10")))
+    by = {(p.kind, p.symbol): p.amount for p in read_account(_client(fake)).positions}
+    assert by == {("stake", "SOL"): Decimal(3), ("stake", "DOT"): Decimal(10)}
+
+
+def test_earn_allocations_only_account_is_read():
+    fake = _kraken({"ZEUR": "0"}).on("Allocations", _earn(_allocation("SOL", "2")))
+    (position,) = read_account(_client(fake)).positions
+    assert position.kind == "stake" and position.value_eur_cents == 30_000
+
+
+@pytest.mark.parametrize("error", [(404, {"error": ["EGeneral:Unknown method"]}),
+                                   (200, {"error": ["EGeneral:Permission denied"]})])
+def test_earn_unavailable_keeps_balance(error):
+    fake = _kraken({"ZEUR": "10.0"}).on("Allocations", error)
+    assert read_account(_client(fake)).total_eur_cents == 1_000
+
+
+def test_earn_rate_limit_fails_the_reading():
+    """Mieux vaut un relevé en échec (réessayé plus tard) qu'un relevé sans le staking."""
+    fake = _kraken({"ZEUR": "10.0"}).error("Allocations", "EAPI:Rate limit exceeded")
+    with pytest.raises(RateLimited):
+        read_account(_client(fake))
+
 # --- runtime ---------------------------------------------------------------------------------------------------
 
 @pytest.fixture
