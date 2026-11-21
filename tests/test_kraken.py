@@ -317,5 +317,5 @@ def test_epargne_merges_same_crypto_across_sources(tmp_path):
     assert cats["SOL"]["value"] == 45_000 + 30_000 + 15_000          # portefeuille + Kraken (disponible et placé)
     assert cats["ETH"]["value"] == 150_000 and cats["EUR"]["value"] == 10_050
     assert cats[KNOWN_MINTS["USDC"]]["name"] == "USDC"
-    names = {s["name"] for s in d["allocation"]["by_asset"]}
-    assert "ETH en staking" in names and "SOL en staking" in names
+    by_asset = {s["name"]: s["value"] for s in d["allocation"]["by_asset"]}
+    assert by_asset["SOL"] == cats["SOL"]["value"] and by_asset["ETH"] == 150_000

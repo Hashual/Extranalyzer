@@ -277,9 +277,10 @@ function balanceActions(p, ctx) {
   return el("div", { className: "place-actions" }, fix, reset, error);
 }
 
-// ---- Cryptos : répartition par catégorie (actif seul ou groupe « Altcoins ») ----
+// ---- Cryptos : répartition par catégorie (actif seul, ou groupe : « Altcoins », fusion WBTC + BTC…) ----
 
 const ALTCOINS = "Altcoins";
+const ALTCOINS_KEY = `group:${ALTCOINS}`;
 
 /** Lance une modification puis rafraîchit l'onglet ; l'erreur s'affiche dans `error`. */
 async function mutate(ctx, error, fn) {
@@ -293,6 +294,27 @@ async function mutate(ctx, error, fn) {
 
 const setGroup = (ctx, key, group) =>
   ctx.api.put(`/tabs/epargne/crypto/group/${encodeURIComponent(key)}`, { group });
+
+/** Menu « Fusionner avec… » : la ligne rejoint la cible choisie (actif, groupe, ou « Altcoins »). */
+function mergePicker(ctx, error, cat, cats) {
+  const targets = cats.filter((c) => c.key !== cat.key);
+  if (!cats.some((c) => c.key === ALTCOINS_KEY) && cat.key !== ALTCOINS_KEY) {
+    targets.push({ key: ALTCOINS_KEY, name: ALTCOINS, group: true, members: [] });
+  }
+  if (!targets.length) return null;
+  const select = el("select", { className: "merge-picker", attrs: { "aria-label": `Fusionner ${cat.name} avec` } },
+    el("option", { value: "", text: "Fusionner avec…" }),
+    targets.map((t) => el("option", { value: t.key, text: t.group ? `${t.name} (groupe)` : t.name })));
+  select.addEventListener("change", () => {
+    const target = targets.find((t) => t.key === select.value);
+    if (!target) return;
+    select.disabled = true;
+    mutate(ctx, error, () => ctx.api.post("/tabs/epargne/crypto/merge",
+      { source: cat.key, target: target.key, name: target.name }))
+      .finally(() => { select.disabled = false; select.value = ""; });
+  });
+  return select;
+}
 
 function cryptoAllocationCard(d, ctx) {
   const cats = d.crypto_categories.filter((c) => Number(c.value) > 0);
@@ -310,15 +332,15 @@ function cryptoAllocationCard(d, ctx) {
       swatch(colors[i]),
       el("span", { className: "legend-name", text: c.group ? `${c.name} (${c.members.length})` : c.name }),
       el("span", { className: "num muted", text: share(c.value) }),
-      c.group || c.key === "SOL" ? null : link(`→ ${ALTCOINS}`, `Regrouper ${c.name} dans ${ALTCOINS}`,
-        () => setGroup(ctx, c.key, ALTCOINS))),
+      mergePicker(ctx, error, c, cats)),
     c.group ? el("ul", { className: "plain-list group-members" }, c.members.map((m) => el("li", {},
       el("span", { className: "legend-name", text: m.name }),
       el("span", { className: "num muted", text: share(m.value) }),
       link("Retirer", `Sortir ${m.name} de ${c.name}`, () => setGroup(ctx, m.key, null))))) : null)));
 
   const card = section("Répartition des cryptos", host, legend, error,
-    el("p", { className: "muted small", text: `Regroupez les petites positions dans « ${ALTCOINS} » : elles forment une seule part.` }));
+    el("p", { className: "muted small", text: "« Fusionner avec… » réunit deux cryptos en une seule part (ex. WBTC "
+      + `avec BTC) ; rangez les petites positions dans « ${ALTCOINS} ». « Retirer » défait la fusion.` }));
   if (!cats.length) {
     host.replaceChildren(emptyNote("Aucune crypto valorisée."));
     return card;
