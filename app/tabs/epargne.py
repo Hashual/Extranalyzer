@@ -168,5 +168,29 @@ def set_crypto_group(asset_key: str, body: GroupBody, conn: Annotated[sqlite3.Co
     return {"ok": True}
 
 
+class MergeBody(BaseModel):
+    source: str                     # clé d'une catégorie de la répartition : actif, ou « group:<nom> »
+    target: str
+    name: str                       # nom du groupe créé quand la cible est un actif hors groupe (son symbole)
+
+
+def _category_key(raw: str) -> str:
+    if raw.startswith(holdings.GROUP_PREFIX):
+        return holdings.GROUP_PREFIX + _key(raw[len(holdings.GROUP_PREFIX):], holdings.GROUP_NAME_MAX, "groupe")
+    return _key(raw, holdings.ASSET_KEY_MAX, "actif")
+
+
+@router.post("/crypto/merge")
+def merge_crypto(body: MergeBody, conn: Annotated[sqlite3.Connection, Depends(get_conn)]):
+    """Fusionne deux cryptos de la répartition (ex. WBTC dans BTC) : elles ne forment plus qu'une part."""
+    source, target = _category_key(body.source), _category_key(body.target)
+    name = _key(body.name, holdings.GROUP_NAME_MAX, "nom de groupe")
+    try:
+        with conn:
+            group = holdings.merge_crypto(conn, source, target, name)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return {"ok": True, "group": group}
+
 
 TAB = Tab("epargne", "Épargne", 40, router)

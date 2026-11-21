@@ -24,7 +24,7 @@ lecture seule, puis voir le compte et ses avoirs en euros dans l'onglet Épargne
 
 ## Décisions (validées avec l'utilisateur)
 
-1. Solde actuel seulement (`Balance`).
+1. Solde actuel seulement (`Balance`), plus les placements Earn (`Earn/Allocations`, même permission « Query Funds ») que `Balance` ne montre pas ; pour un même actif, le plus grand des deux montants placés.
 2. Staking et Earn comptés (suffixes `.S`, `.M`, `.F`, `.B`, `.P`, `.T`) : position « en staking ».
 3. Une même crypto à deux endroits fait une seule part dans la répartition : SOL de Kraken avec le SOL des
    portefeuilles, USDC/USDT/EURC… avec le jeton Solana correspondant.
