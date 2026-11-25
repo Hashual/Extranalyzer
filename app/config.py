@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.auth import hash_password
+from app.auth import hash_password, password_tag
 
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ class SolanaSettings:
 class Settings:
     data_dir: Path
     password_hash: bytes          # sel || scrypt, voir app.auth.hash_password
+    session_tag: bytes = field(default=b"", repr=False)   # app.auth.password_tag : nouveau mot de passe, sessions invalidées
     max_upload_mb: int = 20
     auto_threshold: float = 0.90  # seuil du classement automatique par le modèle
     mail: MailSettings | None = None    # identifiants Gmail du serveur ; None : saisis dans l'onglet Connexions
@@ -223,8 +224,10 @@ def _sync_hours() -> int:
 
 
 def load_settings() -> Settings:
+    password = _password()
     return Settings(data_dir=Path(os.environ.get("EXTRANALYZER_DATA_DIR", "/data")),
-                    password_hash=hash_password(_password()),
+                    password_hash=hash_password(password),
+                    session_tag=password_tag(password),
                     max_upload_mb=_max_upload_mb(),
                     auto_threshold=auto_threshold(),
                     mail=mail_settings(),

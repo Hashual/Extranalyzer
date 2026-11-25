@@ -1,6 +1,7 @@
 """Mot de passe (scrypt), cookie de session signé et limitation des tentatives de connexion."""
 import hashlib
 import hmac
+import json
 import os
 import secrets
 import threading
@@ -64,21 +65,82 @@ def load_or_create_secret(path: Path) -> bytes:
     return secret
 
 
+_TAG_SALT = b"xa-session-tag"
+
+
+def password_tag(password: str) -> bytes:
+    """Empreinte stable du mot de passe (scrypt, sel fixe), mêlée à la clé de signature des sessions :
+    changer de mot de passe invalide toutes les sessions ouvertes. Gardée en mémoire seulement."""
+    return hashlib.scrypt(password.encode("utf-8"), salt=_TAG_SALT, **_SCRYPT)
+
+
 class Sessions:
-    def __init__(self, secret: bytes):
-        self._serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
+    """Jetons signés `{"v": 2, "sid": …}`. La clé de signature mêle la clé du serveur et l'empreinte du mot de
+    passe ; une déconnexion révoque l'identifiant `sid`, mémorisé jusqu'à l'expiration du jeton."""
+
+    def __init__(self, secret: bytes, revoked_file: Path | None = None, tag: bytes = b"",
+                 clock: Callable[[], float] = time.time):
+        self._serializer = URLSafeTimedSerializer(secret + tag, salt=_SESSION_SALT)
+        self._revoked_file, self._clock = revoked_file, clock
+        self._lock = threading.Lock()
+        self._revoked: dict[str, float] = self._load_revoked()
+
+    def _load_revoked(self) -> dict[str, float]:
+        if self._revoked_file is None or not self._revoked_file.exists():
+            return {}
+        try:
+            data = json.loads(self._revoked_file.read_text(encoding="utf-8"))
+            return {str(sid): float(exp) for sid, exp in data.items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            # fichier illisible : on échoue fermé en refusant toutes les sessions existantes via un sel neuf
+            self._serializer = URLSafeTimedSerializer(secrets.token_bytes(SECRET_LEN), salt=_SESSION_SALT)
+            return {}
+
+    def _save_revoked(self) -> None:
+        if self._revoked_file is None:
+            return
+        path = self._revoked_file
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(json.dumps(self._revoked).encode("utf-8"))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    def _sid(self, token: str | None) -> str | None:
+        if not token:
+            return None
+        try:
+            data = self._serializer.loads(token, max_age=SESSION_MAX_AGE)
+        except BadSignature:       # inclut SignatureExpired
+            return None
+        sid = data.get("sid") if isinstance(data, dict) else None
+        return sid if isinstance(sid, str) and sid else None
 
     def issue(self) -> str:
-        return self._serializer.dumps({"v": 1})
+        return self._serializer.dumps({"v": 2, "sid": secrets.token_urlsafe(16)})
 
     def valid(self, token: str | None) -> bool:
-        if not token:
+        sid = self._sid(token)
+        if sid is None:
             return False
-        try:
-            self._serializer.loads(token, max_age=SESSION_MAX_AGE)
-        except BadSignature:       # inclut SignatureExpired
-            return False
-        return True
+        with self._lock:
+            return sid not in self._revoked
+
+    def revoke(self, token: str | None) -> None:
+        sid = self._sid(token)
+        if sid is None:
+            return
+        with self._lock:
+            now = self._clock()
+            self._revoked = {s: exp for s, exp in self._revoked.items() if exp > now}
+            self._revoked[sid] = now + SESSION_MAX_AGE
+            self._save_revoked()
 
 
 class RateLimiter:

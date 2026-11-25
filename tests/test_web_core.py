@@ -8,7 +8,7 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from app.auth import RateLimiter, hash_password, verify_password
+from app.auth import RateLimiter, hash_password, password_tag, verify_password
 from app.config import ConfigError, Settings, load_settings
 from app.main import create_app
 from app.store.db import connect
@@ -161,6 +161,49 @@ def test_tampered_cookie_rejected(settings):
 def test_logout(client):
     assert client.post("/api/logout", headers=H).status_code == 200
     assert client.get("/api/tabs").status_code == 401
+
+
+def test_logout_revokes_copied_token_even_after_restart(settings):
+    c1 = _client(settings)
+    _login(c1)
+    token = c1.cookies.get("xa_session")
+    assert c1.post("/api/logout", headers=H).status_code == 200
+    c2 = _client(settings)                       # redémarrage : la révocation est persistée
+    c2.cookies.set("xa_session", token)
+    assert c2.get("/api/tabs").status_code == 401
+
+
+def test_logout_keeps_other_sessions(settings):
+    phone, pc = _client(settings), _client(settings)
+    _login(phone)
+    _login(pc)
+    pc.post("/api/logout", headers=H)
+    assert phone.get("/api/tabs").status_code == 200
+
+
+def test_password_change_invalidates_sessions(settings):
+    old = Settings(data_dir=settings.data_dir, password_hash=settings.password_hash, max_upload_mb=1,
+                   session_tag=password_tag(PASSWORD))
+    c1 = _client(old)
+    _login(c1)
+    new = Settings(data_dir=settings.data_dir, password_hash=hash_password("nouveau"), max_upload_mb=1,
+                   session_tag=password_tag("nouveau"))
+    c2 = _client(new)
+    c2.cookies.set("xa_session", c1.cookies.get("xa_session"))
+    assert c2.get("/api/tabs").status_code == 401
+
+
+def test_login_body_is_bounded(settings):
+    c = _client(settings)
+    r = c.post("/api/login", content=b'{"password": "' + b"a" * 5000 + b'"}',
+               headers={**H, "Content-Type": "application/json"})
+    assert r.status_code == 413
+
+
+def test_validation_error_does_not_echo_input(settings):
+    c = _client(settings)
+    r = c.post("/api/login", json={"password": "s" * 2000}, headers=H)   # < 4 Ko mais trop long
+    assert r.status_code == 422 and "sss" not in r.text
 
 
 def test_session_survives_restart_with_same_secret(settings):

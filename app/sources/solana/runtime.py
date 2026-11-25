@@ -124,9 +124,12 @@ class SolanaRuntime:
             raise
         tmp = self._key_file.with_name(self._key_file.name + ".tmp")
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            tmp.unlink(missing_ok=True)      # jamais un .tmp préexistant aux droits plus larges
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(key)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp, self._key_file)
         except OSError:
             tmp.unlink(missing_ok=True)      # aucune copie de la clé ne reste derrière un échec d'écriture

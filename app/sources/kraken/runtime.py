@@ -119,9 +119,12 @@ class KrakenRuntime:
             raise KeyInvalid("clé refusée par Kraken : vérifiez la clé API et la clé privée") from None
         tmp = self._key_file.with_name(self._key_file.name + ".tmp")
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            tmp.unlink(missing_ok=True)      # jamais un .tmp préexistant aux droits plus larges
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump({"api_key": key, "api_secret": secret}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp, self._key_file)
         except OSError:
             tmp.unlink(missing_ok=True)      # aucune copie de la clé ne reste derrière un échec d'écriture

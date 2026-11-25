@@ -28,6 +28,7 @@ Write = Callable[[Callable[[sqlite3.Connection], T]], T]
 
 HOST, PORT, TIMEOUT_S = "imap.gmail.com", 993, 60
 MAX_ERROR_LEN = 160
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024   # un ticket fait quelques centaines de Ko ; au-delà : ignoré
 
 
 @dataclass
@@ -55,6 +56,9 @@ def _pdf_attachments(msg: email.message.EmailMessage) -> list[tuple[str, bytes]]
         if part.is_multipart() or not (name.lower().endswith(".pdf") or part.get_content_type() == "application/pdf"):
             continue
         payload = part.get_payload(decode=True)
+        if payload and len(payload) > MAX_ATTACHMENT_BYTES:     # expéditeur arbitraire : pas d'analyse d'un PDF géant
+            log.warning("pièce jointe PDF ignorée : %d octets (maximum %d)", len(payload), MAX_ATTACHMENT_BYTES)
+            continue
         if payload:
             found.append((name or "ticket.pdf", payload))
     return found
