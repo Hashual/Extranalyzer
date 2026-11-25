@@ -18,3 +18,13 @@ __pycache__/
 build/
 dist/
 .env
+.env.*
+# Bases et clés, où qu'elles soient
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+# Worktrees et réglages locaux de Claude Code
+.claude/

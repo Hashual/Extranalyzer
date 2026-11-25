@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Annotated, TypeVar
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.analytics.totals import unclassified_count
@@ -54,6 +55,8 @@ PARSERS = [CreditMutuelParser()]
 SAFE_METHODS = frozenset({"GET", "HEAD"})
 CSRF_HEADER = "x-extranalyzer"
 MULTIPART_OVERHEAD = 64 * 1024     # marge d'en-têtes multipart tolérée au-delà de la taille maximale
+MAX_LOGIN_BYTES = 4096            # corps de /api/login, lu avant toute authentification
+MAX_PASSWORD_LEN = 1024
 UPLOAD_PATHS = frozenset({"/api/upload", "/api/tabs/courses/upload"})     # dépôts soumis à la garde de taille
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
@@ -69,7 +72,7 @@ class UnknownSection(LookupError):
 
 
 class LoginBody(BaseModel):
-    password: str
+    password: str = Field(max_length=MAX_PASSWORD_LEN)
 
 
 class ResolveBody(BaseModel):
@@ -169,7 +172,8 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
     _init_storage(settings)
     db_path, pdf_dir = settings.data_dir / "extranalyzer.db", settings.data_dir / "pdfs"
     receipts_dir = settings.data_dir / "receipts"
-    sessions = Sessions(load_or_create_secret(settings.data_dir / "secret.key"))
+    sessions = Sessions(load_or_create_secret(settings.data_dir / "secret.key"),
+                        revoked_file=settings.data_dir / "sessions_revoked.json", tag=settings.session_tag)
     limiter = RateLimiter(limit=5, window=60)
     write_lock = threading.Lock()      # une seule écriture lourde (import, conflit, ré-analyse) à la fois
     max_bytes = settings.max_upload_mb * 1024 * 1024
@@ -216,6 +220,13 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
 
     app = FastAPI(title="Extranalyzer", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.db_path = db_path
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Sans le champ `input` que FastAPI renvoie par défaut : il recopierait la saisie fautive (mot de passe,
+        # clé API, secret) dans la réponse.
+        detail = [{k: v for k, v in err.items() if k in ("type", "loc", "msg")} for err in exc.errors()]
+        return JSONResponse({"detail": detail}, status_code=422)
     app.state.receipts_dir = receipts_dir
     app.state.write = write
     app.state.max_upload_bytes = max_bytes
@@ -239,7 +250,13 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         path = request.url.path
         if request.method not in SAFE_METHODS and request.headers.get(CSRF_HEADER) != "1":
             return JSONResponse({"detail": "en-tête X-Extranalyzer manquant"}, status_code=403)
-        if path != "/api/login" and not sessions.valid(request.cookies.get(SESSION_COOKIE)):
+        if path == "/api/login" and request.method == "POST":
+            length = _content_length(request)       # seul corps lu sans session : borné avant analyse
+            if length is None:
+                return JSONResponse({"detail": "en-tête Content-Length requis"}, status_code=411)
+            if length > MAX_LOGIN_BYTES:
+                return JSONResponse({"detail": "requête trop volumineuse"}, status_code=413)
+        elif not sessions.valid(request.cookies.get(SESSION_COOKIE)):
             return JSONResponse({"detail": "authentification requise"}, status_code=401)
         if path in UPLOAD_PATHS and request.method == "POST":
             length = _content_length(request)
@@ -278,7 +295,8 @@ def create_app(settings: Settings, enabled_tabs: list[str] | None = None,
         return {"ok": True}
 
     @api.post("/logout")
-    def logout(response: Response):
+    def logout(request: Request, response: Response):
+        sessions.revoke(request.cookies.get(SESSION_COOKIE))     # le jeton ne vaut plus rien, même copié
         response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict", secure=False)
         return {"ok": True}
 

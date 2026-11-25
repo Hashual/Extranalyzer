@@ -4,6 +4,7 @@ import imaplib
 import pytest
 
 from app.config import MailSettings
+from app.receipts import mailsync
 from app.receipts.mailsync import MailSyncThread, fetch_new, sync_once
 from app.store.db import connect
 
@@ -233,3 +234,11 @@ def test_deleted_receipt_message_is_not_reingested_after_uidvalidity_change(tmp_
     assert rows(write, "SELECT COUNT(*) FROM receipt_slips") == [(0,)]
     assert rows(write, "SELECT last_uid, uidvalidity FROM mail_sync") == [(2, 8)]
 
+
+
+def test_oversized_pdf_attachment_is_skipped(monkeypatch):
+    monkeypatch.setattr(mailsync, "MAX_ATTACHMENT_BYTES", 100)
+    msg = email.message.EmailMessage()
+    msg.add_attachment(b"%PDF-1.4\n" + b"x" * 200, maintype="application", subtype="pdf", filename="geant.pdf")
+    msg.add_attachment(b"%PDF-1.4\npetit", maintype="application", subtype="pdf", filename="petit.pdf")
+    assert [name for name, _ in mailsync._pdf_attachments(msg)] == ["petit.pdf"]

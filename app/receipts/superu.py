@@ -41,6 +41,7 @@ import pdfplumber
 from app.receipts.model import ParsedReceipt, Payment, ReceiptLine, ReceiptParseError
 from app.store.repo import fold
 
+MAX_PAGES = 20          # un ticket tient sur quelques pages ; au-delà, un PDF hostile ou inattendu
 NO_AISLE = "SANS RAYON"
 DISCOUNT_AISLE = "REMISES"
 
@@ -77,7 +78,7 @@ def _rows(pdf: Path, first_page_only: bool = False) -> list[_Row]:
     """Lignes de texte dans l'ordre de lecture (mots regroupés par ordonnée)."""
     rows: list[_Row] = []
     with pdfplumber.open(pdf) as doc:
-        for page in doc.pages[:1] if first_page_only else doc.pages:
+        for page in doc.pages[:1 if first_page_only else MAX_PAGES]:     # PDF venu d'un e-mail : lecture bornée
             words = sorted(page.extract_words(extra_attrs=["fontname"]), key=lambda w: (round(w["top"]), w["x0"]))
             line: list[dict] = []
             for word in words:
