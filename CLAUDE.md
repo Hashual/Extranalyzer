@@ -20,4 +20,4 @@ toute question réseau. Dans les fichiers versionnés, utiliser des exemples gé
 ## Conventions
 
 Commits en français, terminés par une ligne `Co-Authored-By` qui nomme le modèle. Venv :
-`C:/Users/<utilisateur>/Documents/Perso/Applications/Extranalyzer/.venv`.
+`.venv` à la racine du checkout principal (chemin absolu dans `CLAUDE.local.md`).
