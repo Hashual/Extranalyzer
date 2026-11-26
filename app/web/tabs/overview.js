@@ -2,7 +2,7 @@
 // plus grosses hausses et dépenses récurrentes.
 import { cssVar, mountChart, palette } from "../charts.js";
 import { isMasked } from "../privacy.js";
-import { el, emptyNote, formatMonth, hasTab, money, percent, scopeParams, section, signedMoney } from "../ui.js";
+import { el, emptyNote, formatMonth, hasTab, money, percent, scopeParams, section, setFill, signedMoney } from "../ui.js";
 
 export const id = "overview";
 export const title = "Vue d'ensemble";
@@ -63,9 +63,7 @@ function colorMap(names) {
 function categoryBars(ctx, categories, colorOf) {
   const max = Math.max(...categories.map((c) => plotted(c.amount)), 0);
   return el("ul", { className: "bars" }, categories.map((c) => {
-    const fill = el("span", { className: "bar-fill" });
-    fill.style.width = `${max > 0 ? (plotted(c.amount) / max) * 100 : 0}%`;
-    fill.style.background = colorOf(c.name);
+    const fill = setFill(el("span", { className: "bar-fill" }), max > 0 ? plotted(c.amount) / max : 0, colorOf(c.name));
     const open = categoryLink(ctx, c);
     return el("li", {}, el("button", { type: "button", className: "bar-row-button", disabled: !open,
                                        on: { click: () => open && open() } },

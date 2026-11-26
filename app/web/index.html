@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="utf-8">
@@ -6,64 +6,83 @@
   <meta name="color-scheme" content="light dark">
   <title>Extranalyzer</title>
   <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/vendor/chart.umd.min.js"></script>
+  <!-- Modules chargés par app.js : téléchargés en parallèle plutôt qu'en cascade. -->
+  <link rel="modulepreload" href="/static/api.js">
+  <link rel="modulepreload" href="/static/privacy.js">
+  <link rel="modulepreload" href="/static/ui.js">
+  <script src="/static/vendor/chart.umd.min.js" defer></script>
   <script type="module" src="/static/app.js"></script>
 </head>
 <body>
-  <section id="login" class="login" hidden>
-    <form id="login-form" class="login-card">
-      <h1>Extranalyzer</h1>
+  <div id="login" class="login" hidden>
+    <form id="login-form" class="login-card" aria-labelledby="login-title">
+      <h1 id="login-title">Extranalyzer</h1>
       <label for="password">Mot de passe</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <input id="password" name="password" type="password" autocomplete="current-password" required
+             aria-describedby="login-error">
       <button type="submit">Se connecter</button>
       <p id="login-error" class="error" role="alert"></p>
     </form>
-  </section>
+  </div>
 
   <div id="app" hidden>
+    <a class="skip-link" href="#tab-container">Aller au contenu</a>
     <header class="bar">
       <div class="bar-row">
-        <strong class="brand">Extranalyzer</strong>
+        <h1 class="brand">Extranalyzer</h1>
         <button id="unclassified" type="button" class="pill" disabled>À classer (0)</button>
         <button id="bank-alert" type="button" class="pill alert" hidden></button>
         <button id="bar-toggle" type="button" class="bar-toggle" aria-expanded="false" aria-controls="bar-extra">Période</button>
         <label class="button upload">
           Déposer un relevé
-          <input id="upload-input" type="file" accept="application/pdf,.pdf" multiple hidden>
+          <input id="upload-input" type="file" accept="application/pdf,.pdf" multiple class="visually-hidden">
         </label>
         <div class="privacy" role="group" aria-label="Masquage des montants">
           <button id="privacy-toggle" type="button" class="privacy-toggle" aria-pressed="false">Masquer les montants</button>
-          <details id="privacy-menu" class="privacy-menu">
-            <summary aria-label="Choisir les montants affichés" title="Choisir les montants affichés">▾</summary>
-            <div id="privacy-list" class="privacy-list"></div>
-          </details>
+          <button id="privacy-menu-button" type="button" class="menu-button privacy-menu-button"
+                  popovertarget="privacy-menu" aria-label="Choisir les montants affichés"><span aria-hidden="true">▾</span></button>
+          <div id="privacy-menu" class="menu-panel privacy-menu" popover>
+            <fieldset class="menu-fields">
+              <legend>Montants affichés</legend>
+              <div id="privacy-list" class="menu-list"></div>
+              <p id="privacy-note" class="muted privacy-note" hidden>Tous les montants sont masqués.</p>
+            </fieldset>
+          </div>
         </div>
         <button id="logout" type="button" class="link">Déconnexion</button>
       </div>
-      <div id="bar-extra" class="bar-row period">
-        <label>Du <input id="period-from" type="date"></label>
-        <label>au <input id="period-to" type="date"></label>
+      <search id="bar-extra" class="bar-row period" aria-label="Période et comptes">
+        <label for="period-from">Du</label>
+        <input id="period-from" name="from" type="date">
+        <label for="period-to">au</label>
+        <input id="period-to" name="to" type="date">
         <div class="shortcuts" role="group" aria-label="Raccourcis de période">
           <button type="button" data-shortcut="month">Mois</button>
           <button type="button" data-shortcut="quarter">Trimestre</button>
           <button type="button" data-shortcut="year">Année</button>
           <button type="button" data-shortcut="all">Tout</button>
         </div>
-        <label>Comparer à
-          <select id="compare">
-            <option value="none">aucune</option>
-            <option value="previous">période précédente</option>
-            <option value="yoy">même période N−1</option>
-          </select>
-        </label>
-        <details id="accounts" class="accounts">
-          <summary>Comptes courants</summary>
-          <div id="accounts-list" class="accounts-list"></div>
-        </details>
-      </div>
-      <nav id="tabs" class="tabs" aria-label="Onglets"></nav>
+        <label for="compare">Comparer à</label>
+        <select id="compare" name="cmp">
+          <option value="none">aucune</option>
+          <option value="previous">période précédente</option>
+          <option value="yoy">même période N−1</option>
+        </select>
+        <div class="accounts">
+          <button id="accounts-button" type="button" class="menu-button" popovertarget="accounts-menu">Comptes courants</button>
+          <div id="accounts-menu" class="menu-panel" popover>
+            <fieldset class="menu-fields">
+              <legend>Comptes affichés</legend>
+              <div id="accounts-list" class="menu-list"></div>
+            </fieldset>
+          </div>
+        </div>
+      </search>
+      <nav class="tabs" aria-label="Onglets">
+        <ul id="tabs"></ul>
+      </nav>
     </header>
-    <main id="tab-container" class="content"></main>
+    <main id="tab-container" class="content" tabindex="-1"></main>
   </div>
 
   <div id="toasts" class="toasts" aria-live="polite"></div>

@@ -2,8 +2,8 @@
 // cartes par endroit ; les flux de la période (versements, retraits, net) sont dans une section repliable.
 // Les avoirs passent par money(…, "balance") et les flux par money(…, "savings") : tout suit le masquage.
 import { cssVar, mountChart, palette } from "../charts.js";
-import { amount, el, emptyNote, formatDate, formatMonth, hasTab, money, scopeParams, section,
-  signedMoney } from "../ui.js";
+import { amount, confirmDialog, el, emptyNote, formatDate, formatMonth, hasTab, money, promptDialog,
+  scopeParams, section, signedMoney } from "../ui.js";
 import { isMasked, MASK } from "../privacy.js";
 import { positionsBlock } from "./banque-wallets.js";
 
@@ -108,10 +108,13 @@ function dashboardTiles(d) {
     tile("Versé → valeur", comparison, gapNote));
 }
 
-/** Pastille de couleur : réglée par le CSSOM (un attribut style en ligne serait bloqué par la CSP). */
+/**
+ * Pastille de couleur : la couleur passe au CSS par la propriété --swatch, réglée par le CSSOM
+ * (un attribut style en ligne serait bloqué par la CSP).
+ */
 function swatch(color) {
   const node = el("span", { className: "swatch" });
-  node.style.background = color;
+  node.style.setProperty("--swatch", color);
   return node;
 }
 
@@ -264,13 +267,13 @@ function balanceActions(p, ctx) {
     }
   };
   const fix = el("button", { type: "button", className: "link", text: "Corriger le solde", on: { click: () => run(async () => {
-    const value = window.prompt(`Solde réel de « ${p.name} » aujourd'hui (en euros) :`, "");
+    const value = await promptDialog(`Solde réel de « ${p.name} » aujourd'hui (en euros) :`, { inputMode: "decimal" });
     if (value === null || !value.trim()) return false;
     await ctx.api.put(`/tabs/epargne/balance/${p.id}`, { amount: value.trim() });
   }) } });
   const reset = p.balance_source === "manual"
     ? el("button", { type: "button", className: "link", text: "Revenir au calcul automatique", on: { click: () => run(async () => {
-      if (!window.confirm("Oublier le solde saisi ? Le montant sera de nouveau calculé.")) return false;
+      if (!(await confirmDialog("Oublier le solde saisi ? Le montant sera de nouveau calculé."))) return false;
       await ctx.api.delete(`/tabs/epargne/balance/${p.id}`);
     }) } })
     : null;

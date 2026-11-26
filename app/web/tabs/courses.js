@@ -2,7 +2,7 @@
 // avec les débits, rayons à ranger, relève des tickets et dépôt manuel.
 // Paramètres d'onglet : `family=<id>` (détail d'une famille, 0 = à ranger), `receipt=<id>` (fiche d'un ticket),
 // `receipts=<état>` (liste filtrée : to_link, broken, error, pending_parser).
-import { amount, el, emptyNote, formatDate, money, scopeParams, section, signedMoney } from "../ui.js";
+import { amount, el, emptyNote, formatDate, money, scopeParams, section, setFill, signedMoney } from "../ui.js";
 
 export const id = "courses";
 export const title = "Courses";
@@ -93,9 +93,7 @@ function familyBars(ctx, data) {
   const undetailed = Number(data.undetailed);
   const max = Math.max(...data.families.map((f) => Number(f.amount)), undetailed, 0);
   const bar = (name, value, compare, onClick) => {
-    const fill = el("span", { className: "bar-fill" });
-    fill.style.width = `${max > 0 ? (Math.max(Number(value), 0) / max) * 100 : 0}%`;
-    fill.style.background = "var(--accent)";
+    const fill = setFill(el("span", { className: "bar-fill" }), max > 0 ? Number(value) / max : 0);
     return el("li", {}, el("button", { type: "button", className: "bar-row-button", disabled: !onClick,
                                        on: { click: () => onClick && onClick() } },
       el("span", { className: "bar-name", text: name }),

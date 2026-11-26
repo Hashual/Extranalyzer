@@ -1,6 +1,6 @@
 // Section « Compte Kraken » de l'onglet Connexions : clé API en lecture seule collée ici, avoirs lus dans Épargne.
 // Les montants en euros passent par money(…, "balance") : ils suivent le masquage des soldes.
-import { el, hasTab, money, section } from "../ui.js";
+import { confirmDialog, el, hasTab, money, section } from "../ui.js";
 
 const KRAKEN_API = "https://www.kraken.com/u/security/api";
 
@@ -17,7 +17,7 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
   const button = el("button", { type: "button", className, text: label });
   const error = el("span", { className: "error", attrs: { role: "alert" } });
   button.addEventListener("click", async () => {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmDialog(confirm))) return;
     button.disabled = true;
     error.textContent = "";
     try {

@@ -1,6 +1,6 @@
 // Onglet « Règles » : tableau modifiable des règles de classement (motif, correspondance, sens, compte,
 // catégorie, priorité), ajout, suppression et aperçu des libellés reconnus par un motif.
-import { categorySelect, el, emptyNote, score, section } from "../ui.js";
+import { categorySelect, confirmDialog, el, emptyNote, score, section } from "../ui.js";
 
 export const id = "regles";
 export const title = "Règles";
@@ -136,7 +136,7 @@ function ruleRow(rule, meta, ctx) {
   remove.addEventListener("click", async () => {
     const question = `Supprimer la règle « ${rule.pattern} » → ${rule.category_path} ? ` +
       `Ses ${rule.tx_count} opération(s) seront reclassées par les autres règles ou iront dans « À classer ».`;
-    if (!window.confirm(question)) return;
+    if (!(await confirmDialog(question, { confirmLabel: "Supprimer", danger: true }))) return;
     remove.disabled = true;
     try {
       await ctx.api.delete(`/tabs/regles/${rule.id}`);
