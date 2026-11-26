@@ -2,7 +2,8 @@
 // mensuelle, transactions avec reclassement sur place). La catégorie affichée est le paramètre `id`.
 // On y crée une racine (bas de la liste) ou une sous-catégorie, on renomme et on supprime (détail).
 import { cssVar, mountChart } from "../charts.js";
-import { el, emptyNote, formatMonth, hasTab, money, scopeParams, section, transactionsTable } from "../ui.js";
+import { confirmDialog, el, emptyNote, formatMonth, hasTab, money, scopeParams, section, setFill,
+  transactionsTable } from "../ui.js";
 
 export const id = "categories";
 export const title = "Catégories";
@@ -137,9 +138,7 @@ async function detailPanel(ctx, categoryId, meta) {
   if (data.children.length) {
     const max = Math.max(...data.children.map((c) => Number(c.amount)), 0);
     panel.append(section("Sous-catégories", el("ul", { className: "bars" }, data.children.map((c) => {
-      const fill = el("span", { className: "bar-fill" });
-      fill.style.width = `${max > 0 ? (Math.max(Number(c.amount), 0) / max) * 100 : 0}%`;   // jamais négatif
-      fill.style.background = cssVar("--accent");
+      const fill = setFill(el("span", { className: "bar-fill" }), max > 0 ? Number(c.amount) / max : 0);
       const isSelf = c.id === data.id || c.id === null;     // pseudo-ligne : pas de détail
       return el("li", {}, el("button", {
         type: "button", className: "bar-row-button", disabled: isSelf,
@@ -230,7 +229,8 @@ function manageBar(ctx, data, meta) {
     }
     const { transactions, rules, overrides } = data.usage;
     if (!transactions && !rules && !overrides) {
-      if (!window.confirm(`Supprimer la catégorie « ${data.name} » ? Aucune opération ni règle ne l'utilise.`)) return;
+      if (!(await confirmDialog(`Supprimer la catégorie « ${data.name} » ? Aucune opération ni règle ne l'utilise.`,
+                                { confirmLabel: "Supprimer", danger: true }))) return;
       try {
         await ctx.api.delete(`/tabs/categories/${data.id}`);
         afterDelete();

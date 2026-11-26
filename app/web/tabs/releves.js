@@ -1,7 +1,7 @@
 // Onglet « Relevés » : relevés importés, statut de réconciliation de chaque section, conflits à trancher,
 // suppression d'un relevé et ré-analyse de tous les relevés (routes du cœur /sections/{id}/resolve,
 // DELETE /documents/{id} et /reanalyse).
-import { el, emptyNote, formatDate, money, section } from "../ui.js";
+import { confirmDialog, el, emptyNote, formatDate, money, section } from "../ui.js";
 
 export const id = "releves";
 export const title = "Relevés";
@@ -42,7 +42,7 @@ function conflictActions(s, ctx, error) {
       : accept
         ? `Remplacer les opérations de ${where} par cette nouvelle version ?`
         : `Garder la version déjà importée de ${where} et écarter celle-ci ?`;
-    if (!window.confirm(question)) return;
+    if (!(await confirmDialog(question))) return;
     button.disabled = true;
     error.textContent = "";
     try {
@@ -110,7 +110,7 @@ function deleteAction(doc, ctx) {
 `
       + "Le PDF conservé est effacé. Vos reclassements manuels sont gardés : ils se ré-appliqueront "
       + "si vous réimportez ce relevé.";
-    if (!window.confirm(question)) return;
+    if (!(await confirmDialog(question))) return;
     button.disabled = true;
     error.textContent = "";
     try {
@@ -160,7 +160,7 @@ function toolbar(ctx) {
   const button = el("button", { type: "button", text: "Ré-analyser tous les relevés" });
   const status = el("p", { className: "muted", attrs: { role: "status" } });
   button.addEventListener("click", async () => {
-    if (!window.confirm("Relire tous les relevés conservés avec le parseur actuel ?")) return;
+    if (!(await confirmDialog("Relire tous les relevés conservés avec le parseur actuel ?", { confirmLabel: "Ré-analyser" }))) return;
     button.disabled = true;
     status.className = "muted";
     status.textContent = "Ré-analyse en cours…";

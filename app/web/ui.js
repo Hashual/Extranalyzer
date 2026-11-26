@@ -75,11 +75,75 @@ export function el(tag, props = {}, ...children) {
   return node;
 }
 
-/** Montant coloré : négatif en rouge, positif en vert (classes CSS) ; masqué, sans couleur (le signe se lirait). */
+/** Texte lu par les lecteurs d'écran mais invisible à l'écran. */
+export function visuallyHidden(text) {
+  return el("span", { className: "visually-hidden", text });
+}
+
+/**
+ * Montant coloré : négatif en rouge, positif en vert (classes CSS ; le signe « - » porte aussi l'information) ;
+ * masqué, sans couleur (le signe se lirait) et annoncé « Montant masqué » plutôt que six astérisques.
+ */
 export function amount(value, kind = signKind(value), tag = "span") {
   const n = Number(value);
-  if (isMasked(kind)) return el(tag, { className: "amount masked", text: MASK, title: "Montant masqué" });
+  if (isMasked(kind)) {
+    return el(tag, { className: "amount masked" }, el("span", { text: MASK, attrs: { "aria-hidden": "true" } }),
+      visuallyHidden("Montant masqué"));
+  }
   return el(tag, { className: `amount ${n < 0 ? "neg" : n > 0 ? "pos" : ""}`.trim(), text: money(value, kind) });
+}
+
+/**
+ * Barre horizontale proportionnelle : la largeur et la couleur passent au CSS par des propriétés
+ * personnalisées (--fill, --fill-color), le style reste dans la feuille.
+ */
+export function setFill(node, ratio, color) {
+  node.style.setProperty("--fill", `${Math.min(Math.max(ratio, 0), 1) * 100}%`);
+  if (color) node.style.setProperty("--fill-color", color);
+  return node;
+}
+
+// --- Boîtes de dialogue modales (remplacent window.confirm / window.prompt) -------------------------
+
+let dialogCount = 0;
+
+/**
+ * Ouvre un <dialog> modal natif (focus piégé, Échap, clic hors de la boîte) et renvoie une promesse :
+ * la valeur saisie (ou "" sans champ) si l'utilisateur valide, null s'il annule.
+ */
+function openDialog({ message, input = null, confirmLabel, cancelLabel = "Annuler", danger = false }) {
+  const { promise, resolve } = Promise.withResolvers();
+  const textId = `dialog-${++dialogCount}-text`;
+  const text = input
+    ? el("label", { id: textId, htmlFor: input.id, className: "dialog-message", text: message })
+    : el("p", { id: textId, className: "dialog-message", text: message });
+  // Bouton de validation d'abord dans le DOM : Entrée dans le champ soumet avec lui.
+  const actions = el("div", { className: "dialog-actions" },
+    el("button", { type: "submit", value: "ok", className: danger ? "danger" : "primary", text: confirmLabel }),
+    // Action destructrice : le focus initial va sur « Annuler », jamais sur l'action irréversible.
+    el("button", { type: "submit", value: "cancel", text: cancelLabel, autofocus: danger, attrs: { formnovalidate: "" } }));
+  const form = el("form", { method: "dialog" }, text, input, actions);
+  const dialog = el("dialog", { className: "dialog", attrs: { "aria-labelledby": textId, closedby: "any" } }, form);
+  dialog.addEventListener("close", () => {
+    const result = dialog.returnValue === "ok" ? (input ? input.value : "") : null;
+    dialog.remove();
+    resolve(result);
+  });
+  document.body.append(dialog);
+  dialog.showModal();
+  return promise;
+}
+
+/** Demande une confirmation ; résout à true si l'utilisateur confirme. */
+export async function confirmDialog(message, { confirmLabel = "Confirmer", danger = false } = {}) {
+  return (await openDialog({ message, confirmLabel, danger })) !== null;
+}
+
+/** Demande une valeur ; résout à la chaîne saisie, ou null si l'utilisateur annule. */
+export function promptDialog(message, { value = "", inputMode = null, confirmLabel = "Valider" } = {}) {
+  const input = el("input", { type: "text", id: `dialog-${dialogCount + 1}-input`, value, autofocus: true,
+                              attrs: inputMode ? { inputmode: inputMode, autocomplete: "off" } : { autocomplete: "off" } });
+  return openDialog({ message, input, confirmLabel });
 }
 
 /** Vrai si l'onglet `tabId` est activé (les liens vers un onglet désactivé sont masqués). */
@@ -152,8 +216,9 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
     }, `Catégorie de « ${tx.label} »`);
     const labelCell = el("td", { className: "label" }, el("span", { text: tx.label }));
     if (tx.receipt_id) {
-      labelCell.append(el("a", { className: "receipt-icon", href: receiptHref(tx.receipt_id),
-                                 text: "🧾", title: "Voir le ticket de caisse", attrs: { "aria-label": "Voir le ticket de caisse" } }));
+      labelCell.append(el("a", { className: "receipt-icon", href: receiptHref(tx.receipt_id) },
+                          el("span", { text: "🧾", attrs: { "aria-hidden": "true" } }),
+                          visuallyHidden("Voir le ticket de caisse")));
     }
     if (tx.manual) labelCell.append(el("span", { className: "tag", text: "manuel" }));
     if (tx.mirror) labelCell.append(el("span", { className: "tag", text: "miroir" }));
@@ -168,5 +233,6 @@ export function transactionsTable(rows, { categories, accounts, reclass }) {
       el("td", { className: "num" }, amount(tx.amount, kindOf.get(tx.category_id) || signKind(tx.amount))),
       el("td", { className: "category" }, select, error)));
   }
-  return el("div", { className: "table-wrap" }, el("table", { className: "tx-table" }, head, body));
+  return el("div", { className: "table-wrap" },
+    el("table", { className: "tx-table" }, el("caption", { className: "visually-hidden", text: "Opérations" }), head, body));
 }

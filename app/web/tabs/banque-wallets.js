@@ -1,6 +1,6 @@
 // Section « Portefeuilles Solana » de l'onglet Connexions : suivi en lecture seule (SOL, jetons, staking) valorisé en euros.
 // Tous les montants en euros passent par money(…, "balance") : ils suivent le masquage des soldes.
-import { el, emptyNote, hasTab, money, section } from "../ui.js";
+import { confirmDialog, el, emptyNote, hasTab, money, promptDialog, section } from "../ui.js";
 import { isMasked, MASK } from "../privacy.js";
 
 const SOLSCAN = "https://solscan.io/account/";
@@ -28,7 +28,7 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
   const button = el("button", { type: "button", className, text: label });
   const error = el("span", { className: "error", attrs: { role: "alert" } });
   button.addEventListener("click", async () => {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmDialog(confirm))) return;
     button.disabled = true;
     error.textContent = "";
     try {
@@ -85,7 +85,7 @@ function stakeRow(p, ctx) {
     " ", el("span", { className: "muted", text: STAKE_STATES[p.stake_state] || p.stake_state || "" }));
   const rename = p.vote_account
     ? action("Nommer", async () => {
-      const value = window.prompt("Nom de ce validateur :", p.validator_label || "");
+      const value = await promptDialog("Nom de ce validateur :", { value: p.validator_label || "" });
       if (value === null) return false;
       await ctx.api.put(`/tabs/banque/wallets/validators/${encodeURIComponent(p.vote_account)}`, { label: value });
     }, ctx, { className: "link" })
@@ -101,7 +101,7 @@ function tokenRow(p, hidden, ctx) {
 
 /** Avoirs d'un compte Kraken : actif, quantité, prix, valeur, disponible ou placé (staking, Earn). */
 function krakenPositions(wallet) {
-  const ranked = [...wallet.positions].sort((a, b) =>
+  const ranked = wallet.positions.toSorted((a, b) =>
     (a.value_eur === null) - (b.value_eur === null) || Number(b.value_eur || 0) - Number(a.value_eur || 0));
   return el("div", { className: "table-wrap scroll-x" },
     el("table", { className: "data-table wallet-table" }, head(["Actif", "Quantité", "Prix", "Valeur", ""]),
@@ -150,7 +150,7 @@ function walletsList(wallets, ctx) {
       : dateTime(wallet.last_sync_at)),
     el("td", {}, el("div", { className: "filters" },
       action("Renommer", async () => {
-        const value = window.prompt("Nouveau nom du portefeuille :", wallet.label);
+        const value = await promptDialog("Nouveau nom du portefeuille :", { value: wallet.label });
         if (value === null || !value.trim()) return false;
         await ctx.api.patch(`/tabs/banque/wallets/${wallet.id}`, { label: value.trim() });
       }, ctx, { className: "link" }),

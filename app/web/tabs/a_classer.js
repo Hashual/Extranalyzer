@@ -4,7 +4,7 @@
 // suggestions fondées sur une seule opération similaire, tant que l'utilisateur ne les a pas choisies lui-même).
 // Le bouton « Suggestions seulement » masque les libellés sans suggestion ; la validation groupée ne prend
 // que les lignes visibles.
-import { amount, el, emptyNote, formatDate, scopeParams, suggestionScore } from "../ui.js";
+import { amount, confirmDialog, el, emptyNote, formatDate, scopeParams, suggestionScore } from "../ui.js";
 
 export const id = "a_classer";
 export const title = "À classer";
@@ -139,7 +139,7 @@ function acceptAll(rows, ctx) {
                      "Chacune devient une décision manuelle ; aucune règle n'est créée." +
                      (skipped ? ` ${skipped} libellé(s) dont la suggestion ne repose que sur une opération ` +
                                 "similaire ne sont pas inclus : choisissez leur catégorie pour les inclure." : "");
-    if (!window.confirm(question)) return;
+    if (!(await confirmDialog(question, { confirmLabel: "Classer" }))) return;
     button.disabled = true;
     error.textContent = "";
     try {

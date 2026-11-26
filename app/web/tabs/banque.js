@@ -1,7 +1,7 @@
 // Onglet « Connexions » (id banque) : connexions Enable Banking (une par banque), comptes bancaires (rattachement, type, contrôle
 // de solde), ajout d'une banque choisie dans la liste d'Enable Banking, synchros ; portefeuilles Solana et
 // tickets de caisse Gmail (modules voisins).
-import { el, emptyNote, formatDate, money, section } from "../ui.js";
+import { confirmDialog, el, emptyNote, formatDate, money, section } from "../ui.js";
 import { gmailSection } from "./banque-gmail.js";
 import { walletsSection } from "./banque-wallets.js";
 import { krakenSection } from "./banque-kraken.js";
@@ -43,7 +43,7 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
   const button = el("button", { type: "button", className, text: label });
   const error = el("span", { className: "error", attrs: { role: "alert" } });
   button.addEventListener("click", async () => {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmDialog(confirm))) return;
     button.disabled = true;
     error.textContent = "";
     try {

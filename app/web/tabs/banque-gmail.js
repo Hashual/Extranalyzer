@@ -1,7 +1,7 @@
 // Section « Tickets de caisse (Gmail) » de l'onglet Connexions : connexion de la boîte Gmail (lecture seule) par
 // mot de passe d'application, état de la relève par libellé, relève immédiate et déconnexion.
 // Le mot de passe saisi n'est jamais réaffiché : le serveur ne renvoie que l'adresse partiellement masquée.
-import { el, section } from "../ui.js";
+import { confirmDialog, el, section } from "../ui.js";
 
 const URL = "/tabs/banque/gmail";
 
@@ -18,7 +18,7 @@ function action(label, run, ctx, { className = "", confirm = null } = {}) {
   const button = el("button", { type: "button", className, text: label });
   const error = el("span", { className: "error", attrs: { role: "alert" } });
   button.addEventListener("click", async () => {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmDialog(confirm))) return;
     button.disabled = true;
     error.textContent = "";
     try {

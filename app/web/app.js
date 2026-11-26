@@ -3,13 +3,14 @@
 // L'état (onglet, période, comparaison, comptes, paramètres d'onglet) vit dans le hash de l'URL.
 import { api, ApiError, setUnauthorizedHandler } from "./api.js";
 import { hideAll, isKindVisible, KINDS, onPrivacyChange, setKindVisible, toggleHideAll } from "./privacy.js";
+import { el, visuallyHidden } from "./ui.js";
 
 const $ = (id) => document.getElementById(id);
 const RESERVED = new Set(["tab", "from", "to", "cmp", "acc"]);
 const COMPARE_MODES = new Set(["none", "previous", "yoy"]);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-const state = { tabs: [], modules: new Map(), meta: null, renderToken: 0 };
+const state = { tabs: [], modules: new Map(), meta: null, renderToken: 0, focusContent: false };
 
 // --- Dates (chaînes ISO AAAA-MM-JJ, calculs en UTC pour éviter les décalages horaires) ----------
 
@@ -164,17 +165,13 @@ function normalized(route) {
 
 // --- Toasts ------------------------------------------------------------------------------------
 
+/** Notification ; un bouton la ferme (accessible au clavier), les durables restent jusqu'à ce clic. */
 function toast(lines, kind = "info", duration = 8000) {
-  const box = document.createElement("div");
-  box.className = `toast ${kind}`;
-  box.setAttribute("role", kind === "error" ? "alert" : "status");
-  for (const line of [].concat(lines)) {
-    const p = document.createElement("p");
-    p.textContent = line;
-    box.append(p);
-  }
+  const box = el("div", { className: `toast ${kind}`, attrs: { role: kind === "error" ? "alert" : "status" } },
+    el("div", { className: "toast-body" }, [].concat(lines).map((line) => el("p", { text: line }))));
   const close = () => box.remove();
-  box.addEventListener("click", close);
+  box.append(el("button", { type: "button", className: "toast-close", on: { click: close } },
+    el("span", { text: "×", attrs: { "aria-hidden": "true" } }), visuallyHidden("Fermer la notification")));
   $("toasts").append(box);
   if (duration) setTimeout(close, duration);
   return close;
@@ -260,19 +257,13 @@ function renderBar(route) {
   $("bar-toggle").textContent = periodLabel(route.from, route.to);
   $("bar-toggle").title = `Du ${formatDate(route.from)} au ${formatDate(route.to)}`;
 
-  const list = $("accounts-list");
-  list.replaceChildren();
-  for (const account of state.meta?.accounts || []) {
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = account.id;
-    // Sans sélection explicite : vue par défaut de l'API = comptes courants.
-    box.checked = route.acc.length ? route.acc.includes(account.id) : account.kind === "checking";
-    label.append(box, ` ${account.label} ••${account.number_tail}`);
-    list.append(label);
-  }
-  $("accounts").querySelector("summary").textContent = accountsLabel(route.acc);
+  $("accounts-list").replaceChildren(...(state.meta?.accounts || []).map((account) =>
+    el("label", { className: "check" },
+      // Sans sélection explicite : vue par défaut de l'API = comptes courants.
+      el("input", { type: "checkbox", name: "acc", value: account.id,
+                    checked: route.acc.length ? route.acc.includes(account.id) : account.kind === "checking" }),
+      ` ${account.label} ••${account.number_tail}`)));
+  $("accounts-button").textContent = accountsLabel(route.acc);
 
   const count = state.meta?.unclassified_count ?? 0;
   const badge = $("unclassified");
@@ -282,12 +273,17 @@ function renderBar(route) {
 
   renderBankAlert();
 
-  for (const button of $("tabs").querySelectorAll("button")) {
-    const current = button.dataset.tab === route.tab;
-    button.setAttribute("aria-current", current ? "page" : "false");
+  for (const link of $("tabs").querySelectorAll("a")) {
+    const current = link.dataset.tab === route.tab;
+    // Vrais liens : la période, la comparaison et les comptes suivent ; ouvrables dans un nouvel onglet.
+    link.href = routeHash({ ...route, tab: link.dataset.tab, params: {} });
+    if (current) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
     // Barre d'onglets défilante (téléphone) : l'onglet actif reste visible, même ouvert par un lien.
-    if (current) button.scrollIntoView({ block: "nearest", inline: "center" });
+    if (current) link.scrollIntoView({ block: "nearest", inline: "center" });
   }
+  const tab = state.tabs.find((t) => t.id === route.tab);
+  document.title = tab ? `${tab.title} · Extranalyzer` : "Extranalyzer";
   // Changer d'onglet replie la barre (téléphone) ; changer de période la laisse ouverte.
   if (state.lastTab && state.lastTab !== route.tab) setBarOpen(false);
   state.lastTab = route.tab;
@@ -355,11 +351,17 @@ function setupBar() {
     setBarOpen(!document.querySelector(".bar").classList.contains("open"));
   });
   // Fondu du bord droit des onglets (téléphone) : retiré quand on a défilé jusqu'au dernier.
-  const nav = $("tabs");
+  const nav = document.querySelector(".tabs");
   const markEnd = () => nav.classList.toggle("at-end", nav.scrollLeft + nav.clientWidth >= nav.scrollWidth - 2);
   nav.addEventListener("scroll", markEnd, { passive: true });
   window.addEventListener("resize", markEnd);
-  new MutationObserver(markEnd).observe(nav, { childList: true });
+  new MutationObserver(markEnd).observe($("tabs"), { childList: true });
+  // Hauteur de la barre collante → --bar-block-size : scroll-padding pour qu'un élément focalisé
+  // ou une ancre ne finisse jamais caché dessous.
+  const bar = document.querySelector(".bar");
+  new ResizeObserver(() => {
+    document.documentElement.style.setProperty("--bar-block-size", `${bar.offsetHeight}px`);
+  }).observe(bar);
 
   const onDates = () => {
     const from = $("period-from").value;
@@ -391,8 +393,7 @@ function setupBar() {
 
   $("accounts-list").addEventListener("change", () => {
     // Sélection explicite, même si tout est coché (sinon retour à la vue « comptes courants »).
-    const checked = [...$("accounts-list").querySelectorAll("input")].filter((b) => b.checked)
-      .map((b) => Number(b.value));
+    const checked = [...$("accounts-list").querySelectorAll("input:checked")].map((b) => Number(b.value));
     updateRoute({ acc: checked });
   });
 
@@ -444,25 +445,12 @@ function renderPrivacy() {
 }
 
 function setupPrivacy() {
-  const list = $("privacy-list");
-  list.append(Object.assign(document.createElement("p"), {
-    className: "privacy-title", textContent: "Montants affichés" }));
-  for (const [kind, label] of KINDS) {
-    const row = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.value = kind;
-    box.addEventListener("change", () => setKindVisible(kind, box.checked));
-    row.append(box, ` ${label}`);
-    list.append(row);
-  }
-  const note = Object.assign(document.createElement("p"), {
-    id: "privacy-note", className: "muted privacy-note", textContent: "Tous les montants sont masqués." });
-  list.append(note);
+  $("privacy-list").replaceChildren(...KINDS.map(([kind, label]) =>
+    el("label", { className: "check" },
+      el("input", { type: "checkbox", name: "kind", value: kind,
+                    on: { change: (event) => setKindVisible(kind, event.target.checked) } }),
+      ` ${label}`)));
   $("privacy-toggle").addEventListener("click", toggleHideAll);
-  document.addEventListener("click", (event) => {       // le menu se ferme en cliquant ailleurs
-    if (!$("privacy-menu").contains(event.target)) $("privacy-menu").open = false;
-  });
   onPrivacyChange(() => {
     renderPrivacy();
     renderCurrent();
@@ -470,10 +458,55 @@ function setupPrivacy() {
   renderPrivacy();
 }
 
+// --- Menus déroulants (API Popover) -------------------------------------------------------------
+// Le menu s'ouvre dans la couche supérieure et se ferme seul (Échap, clic ailleurs). Il est accroché
+// à son bouton par le positionnement d'ancrage CSS ; sans lui, le script le place sous le bouton ;
+// sans l'API Popover (navigateurs anciens), le bouton bascule une classe.
+
+const HAS_POPOVER = Object.hasOwn(HTMLElement.prototype, "popover");
+const HAS_ANCHOR = CSS.supports("position-area: block-end");
+
+/** Place `menu` (position: fixed) sous `trigger`, aligné sur son bord droit, sans déborder de la fenêtre. */
+function placeMenu(menu, trigger) {
+  const box = trigger.getBoundingClientRect();
+  const margin = 8;
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  const left = Math.max(Math.min(box.right - width, window.innerWidth - width - margin), margin);
+  const below = box.bottom + 4;
+  const top = below + height > window.innerHeight - margin ? Math.max(box.top - height - 4, margin) : below;
+  menu.style.setProperty("--menu-left", `${left}px`);
+  menu.style.setProperty("--menu-top", `${top}px`);
+}
+
+function setupMenus() {
+  for (const trigger of document.querySelectorAll("[popovertarget]")) {
+    const menu = $(trigger.getAttribute("popovertarget"));
+    if (!HAS_POPOVER) {
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.addEventListener("click", () => {
+        const open = menu.classList.toggle("is-open");
+        trigger.setAttribute("aria-expanded", String(open));
+      });
+      document.addEventListener("click", (event) => {
+        if (!menu.contains(event.target) && !trigger.contains(event.target)) {
+          menu.classList.remove("is-open");
+          trigger.setAttribute("aria-expanded", "false");
+        }
+      });
+    } else if (!HAS_ANCHOR) {
+      menu.addEventListener("toggle", (event) => {
+        if (event.newState === "open") placeMenu(menu, trigger);
+      });
+    }
+  }
+}
+
 // --- Onglets -----------------------------------------------------------------------------------
 
 function navigate(tabId, params = {}) {
   if (!state.tabs.some((t) => t.id === tabId)) return;
+  state.focusContent = true;
   go({ ...readRoute(), tab: tabId, params });
 }
 
@@ -483,16 +516,10 @@ async function refresh() {
 }
 
 function buildTabs() {
-  const nav = $("tabs");
-  nav.replaceChildren();
-  for (const tab of state.tabs) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.tab = tab.id;
-    button.textContent = tab.title;
-    button.addEventListener("click", () => navigate(tab.id));
-    nav.append(button);
-  }
+  // Liens vers l'URL de l'onglet (href mis à jour par renderBar) : la navigation passe par hashchange.
+  $("tabs").replaceChildren(...state.tabs.map((tab) =>
+    el("li", {}, el("a", { href: `#tab=${encodeURIComponent(tab.id)}`, text: tab.title, dataset: { tab: tab.id },
+                           on: { click: () => { state.focusContent = true; } } }))));
 }
 
 async function loadModule(tabId) {
@@ -506,10 +533,7 @@ async function loadModule(tabId) {
 }
 
 function showMessage(container, text, className = "placeholder") {
-  const p = document.createElement("p");
-  p.className = className;
-  p.textContent = text;
-  container.replaceChildren(p);
+  container.replaceChildren(el("p", { className, text }));
 }
 
 async function renderCurrent() {
@@ -519,6 +543,8 @@ async function renderCurrent() {
   if (fixed) return go(fixed, { replace: true });
 
   renderBar(route);
+  const focus = state.focusContent;
+  state.focusContent = false;
   const token = ++state.renderToken;
   const container = $("tab-container");
   const period = { from: route.from, to: route.to };
@@ -536,6 +562,9 @@ async function renderCurrent() {
     const module = await loadModule(route.tab);
     if (token !== state.renderToken) return;      // un affichage plus récent a pris la main
     await module.render(container, ctx);
+    // Changement d'onglet voulu par l'utilisateur : le focus passe au nouveau contenu (lecteurs d'écran,
+    // clavier) ; un changement de période ou un rafraîchissement le laisse où il est.
+    if (focus && token === state.renderToken) container.focus();
   } catch (error) {
     if (token !== state.renderToken || (error instanceof ApiError && error.status === 401)) return;
     showMessage(container, `Impossible d'afficher l'onglet : ${error.message}`, "error");
@@ -582,6 +611,7 @@ setUnauthorizedHandler(showLogin);
 setupLogin();
 setupBar();
 setupPrivacy();
+setupMenus();
 window.addEventListener("hashchange", () => renderCurrent());
 showApp().catch((error) => {
   if (!(error instanceof ApiError && error.status === 401)) toast(`Chargement impossible : ${error.message}`, "error", 0);
