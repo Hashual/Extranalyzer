@@ -287,6 +287,16 @@ CREATE TABLE receipt_tombstones (
 ALTER TABLE wallets ADD COLUMN provider TEXT NOT NULL DEFAULT 'solana' CHECK(provider IN ('solana','kraken'));
 -- fin v12
 
-PRAGMA user_version = 12;
+-- v13 : objectifs de budget mensuels, datés (l'objectif d'un mois est la ligne la plus récente qui le précède)
+CREATE TABLE budget_targets (
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,          -- 'AAAA-MM'
+    monthly_cents INTEGER NULL CHECK(monthly_cents IS NULL OR monthly_cents >= 0),   -- NULL : plus d'objectif
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(category_id, effective_from)
+);
+-- fin v13
+
+PRAGMA user_version = 13;
 
 COMMIT;

@@ -1387,3 +1387,94 @@
     border: 0;
   }
 }
+
+/* --- Onglet Budget --------------------------------------------------------------------------------- */
+@layer tabs {
+  .budget-slot:empty { display: none; }
+  .tile-value.neg { color: var(--danger); }
+
+  .budget-list { list-style: none; margin: 0; padding: 0; }
+  .budget-row {
+    padding-block: 0.45rem;
+    border-block-end: 1px solid var(--border);
+
+    &:last-child { border-block-end: none; }
+  }
+  .budget-head { display: flex; align-items: baseline; gap: 0.6rem; margin-block-end: 0.3rem; }
+  .budget-name {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+    text-align: start;
+    font-weight: 600;
+
+    &.link { padding: 0; color: var(--text); text-decoration: none; }
+    &.link:hover { text-decoration: underline; }
+  }
+  .budget-pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .budget-status {
+    &.ok { color: var(--success); }
+    &.risk { color: var(--warning); }
+    &.over { color: var(--danger); font-weight: 600; }
+    &.none { color: var(--muted); }
+  }
+
+  /* Barre de suivi : positions fournies par le script en propriétés personnalisées (--fill, --at, --len). */
+  .budget-track {
+    position: relative;
+    display: block;
+    block-size: 0.8rem;
+    background: var(--bg);
+    border-radius: var(--radius-pill);
+  }
+  .budget-fill, .budget-ghost {
+    position: absolute;
+    inset-block: 0;
+    border-radius: var(--radius-pill);
+  }
+  .budget-fill {
+    inset-inline-start: 0;
+    inline-size: var(--fill, 0%);
+    background: var(--fill-color, var(--accent));
+
+    @media (forced-colors: active) { background: CanvasText; }
+  }
+  .budget-ghost {
+    inset-inline-start: var(--at, 0%);
+    inline-size: var(--len, 0%);
+    background: var(--muted);
+    opacity: 0.25;
+  }
+  .budget-target, .budget-expected {
+    position: absolute;
+    inset-block: -0.2rem;
+    inset-inline-start: var(--at, 0%);
+    translate: -50% 0;
+  }
+  .budget-target { inline-size: 3px; background: var(--text); border-radius: 2px; }
+  .budget-expected { inline-size: 0; border-inline-start: 2px dotted var(--text); }
+
+  .budget-details { margin: var(--space-s) 0 0; font-size: var(--text-s); }
+  .budget-legend { margin: var(--space-m) 0 0; font-size: var(--text-xs); }
+  .budget-subtitle { margin: var(--space-l) 0 0.3rem; font-size: 0.9rem; color: var(--muted); }
+  .plain-list .link.label { padding: 0; text-align: start; color: var(--text); }
+
+  .budget-edit input[type="text"] { inline-size: 6.5rem; text-align: end; }
+  .budget-history { margin-block-start: 0.8rem; }
+
+  .budget-quiz {
+    display: grid;
+    gap: 0.6rem;
+    max-inline-size: 34rem;
+
+    & label { display: grid; gap: 0.2rem; }
+    & label > span:first-child { color: var(--muted); font-size: 0.9rem; }
+    & input[type="text"] { max-inline-size: 10rem; }
+  }
+
+  .budget-tips {
+    & li { align-items: baseline; }
+    & .tag { margin-inline-start: 0; min-inline-size: 5.5rem; text-align: center; }
+    & .tag.good { border-color: var(--success); color: var(--success); }
+  }
+}

@@ -6,7 +6,7 @@ from typing import TypeVar
 
 T = TypeVar("T")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 BUSY_TIMEOUT_S = 30     # une écriture d'onglet attend la fin d'une ré-analyse au lieu d'échouer
 
 _MIGRATE_2_TO_3 = """
@@ -269,6 +269,20 @@ PRAGMA user_version = 12;
 COMMIT;
 """
 
+# 12 -> 13 : objectifs de budget mensuels datés
+_MIGRATE_12_TO_13 = """
+BEGIN;
+CREATE TABLE budget_targets (
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,
+    monthly_cents INTEGER NULL CHECK(monthly_cents IS NULL OR monthly_cents >= 0),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(category_id, effective_from)
+);
+PRAGMA user_version = 13;
+COMMIT;
+"""
+
 
 def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
     """Ouvre la base ; crée le schéma si user_version vaut 0, migre une base plus ancienne.
@@ -320,6 +334,9 @@ def connect(path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection
             version = 11
         if version == 11:   # 11 -> 12 : comptes Kraken
             conn.executescript(_MIGRATE_11_TO_12)
+            version = 12
+        if version == 12:   # 12 -> 13 : objectifs de budget
+            conn.executescript(_MIGRATE_12_TO_13)
     except Exception:
         if conn.in_transaction:
             conn.rollback()
