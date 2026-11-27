@@ -604,3 +604,37 @@ details.card summary { cursor: pointer; font-weight: 600; }
 .legend-row .merge-picker { width: auto; max-width: 10rem; padding: 0.1rem 0.3rem; font-size: 0.85em; }
 .group-members { margin: 0.15rem 0 0.35rem 1.25rem; font-size: 0.9em; }
 .small { font-size: 0.85rem; }
+
+/* --- Onglet Budget --- */
+.tile-value.neg { color: var(--danger); }
+.budget-slot:empty { display: none; }
+.budget-list { list-style: none; margin: 0; padding: 0; }
+.budget-row { padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
+.budget-row:last-child { border-bottom: none; }
+.budget-head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.3rem; }
+.budget-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; text-align: left; font-weight: 600; }
+.budget-name.link { padding: 0; color: var(--text); text-decoration: none; }
+.budget-name.link:hover { text-decoration: underline; }
+.budget-pct { font-variant-numeric: tabular-nums; font-weight: 600; }
+.budget-status.ok { color: var(--success); }
+.budget-status.risk { color: var(--warning); }
+.budget-status.over { color: var(--danger); font-weight: 600; }
+.budget-track { position: relative; display: block; height: 0.8rem; background: var(--bg); border-radius: 999px; }
+.budget-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+.budget-ghost { position: absolute; top: 0; bottom: 0; background: var(--muted); opacity: 0.25; border-radius: 999px; }
+.budget-target, .budget-expected { position: absolute; top: -0.2rem; bottom: -0.2rem; transform: translateX(-50%); }
+.budget-target { width: 3px; background: var(--text); border-radius: 2px; }
+.budget-expected { width: 0; border-left: 2px dotted var(--text); }
+.budget-details { margin: 0.25rem 0 0; font-size: 0.85rem; }
+.budget-subtitle { margin: 1rem 0 0.3rem; font-size: 0.9rem; color: var(--muted); }
+.legend { font-size: 0.8rem; margin: 0.5rem 0 0; }
+.budget-edit input[type="text"] { width: 6.5rem; text-align: right; }
+.budget-history { margin-top: 0.8rem; }
+.budget-quiz { display: grid; gap: 0.6rem; max-width: 34rem; }
+.budget-quiz label { display: grid; gap: 0.2rem; }
+.budget-quiz label > span:first-child { color: var(--muted); font-size: 0.9rem; }
+.budget-quiz input[type="text"] { max-width: 10rem; }
+.budget-tips li { align-items: baseline; }
+.budget-tips .tag { margin-left: 0; min-width: 5.5rem; text-align: center; }
+.tag.good { border-color: var(--success); color: var(--success); }
+.plain-list .link.label { padding: 0; text-align: left; color: var(--text); }

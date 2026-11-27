@@ -91,7 +91,7 @@ def test_invalid_periods_are_rejected(env, path):
 
 
 def test_tabs_are_registered_in_order(env):
-    assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "categories", "courses",
+    assert [t["id"] for t in env[0].get("/api/tabs").json()] == ["overview", "budget", "categories", "courses",
                                                                  "transactions", "epargne", "a_classer", "releves",
                                                                  "banque", "regles"]
 
@@ -1012,7 +1012,7 @@ def test_regles_test_preview(env):
 
 # --- Modules -----------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("module", ["overview", "categories", "courses", "transactions", "epargne", "a_classer",
+@pytest.mark.parametrize("module", ["overview", "budget", "categories", "courses", "transactions", "epargne", "a_classer",
                                     "releves", "regles"])
 def test_tab_module_imports_alone_without_app_main(module):
     code = (f"import sys, app.tabs.{module} as m; "

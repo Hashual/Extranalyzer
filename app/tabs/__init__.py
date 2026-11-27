@@ -5,7 +5,7 @@ Chaque id correspond à un module `app/tabs/<id>.py` exposant `TAB = Tab(...)` e
 """
 from app.tabs.registry import Tab, load_tabs_from
 
-ENABLED_TABS: list[str] = ["overview", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
+ENABLED_TABS: list[str] = ["overview", "budget", "categories", "courses", "transactions", "epargne", "a_classer", "releves",
                            "banque", "regles"]
 
 
